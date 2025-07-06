@@ -67,24 +67,7 @@ describe('MCP Server', () => {
     });
   });
 
-  describe('Resource Registration', () => {
-    it('should register greeting resource', () => {
-      // 挨拶リソースが登録されることを確認
-      mockServer.registerResource('greeting', new ResourceTemplate('greeting://{name}', { list: undefined }), {
-        title: "Greeting Resource",
-        description: "Dynamic greeting generator"
-      }, () => {});
-      expect(mockServer.registerResource).toHaveBeenCalledWith(
-        'greeting',
-        expect.any(ResourceTemplate),
-        expect.objectContaining({
-          title: "Greeting Resource",
-          description: "Dynamic greeting generator"
-        }),
-        expect.any(Function)
-      );
-    });
-  });
+
 
   describe('Server Connection', () => {
     it('should connect server to transport', async () => {

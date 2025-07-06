@@ -142,19 +142,13 @@ Claude Desktopの設定ファイル `claude_desktop_config.json` に以下の設
     - 日本の電話番号（0から始まる）は自動的にE.164形式に変換
     - 送信結果とメッセージIDを返却
 
-#### リソース
-- **greeting**: 動的挨拶リソース
-  - URI: `greeting://{name}`
-  - 例: `greeting://Alice` → "Hello, Alice!"
+
 
 ### 4. 使用例
 
 Claude Desktopで以下のような質問ができます：
 
 ```
-「Aliceに挨拶してください」
-→ greetingリソースを使用して挨拶メッセージを生成
-
 「09045327751に「これはVonage MCPサーバーを使って送信しています。」とSMSを送ってください」
 → send_smsツールを使用してSMS送信
 ```
