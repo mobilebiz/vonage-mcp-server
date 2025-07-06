@@ -1,6 +1,6 @@
-# MCP Demo Server
+# Vonage MCP Server
 
-A simple MCP (Model Context Protocol) Server implementation in TypeScript.
+VonageのSMS送信機能を提供するMCP (Model Context Protocol) Server実装です。
 
 ## セットアップ
 
@@ -9,6 +9,27 @@ A simple MCP (Model Context Protocol) Server implementation in TypeScript.
 ```bash
 npm install
 ```
+
+### Vonage設定
+
+1. **Vonageアカウントの作成**
+   - [Vonage Developer Portal](https://developer.vonage.com/) でアカウントを作成
+   - アプリケーションを作成し、Application IDを取得
+
+2. **秘密鍵の準備**
+   - Vonage Developer Portalで秘密鍵（private.key）をダウンロード
+   - プロジェクトルートに `private.key` として保存
+
+3. **環境変数の設定**
+   ```bash
+   cp .env.example .env
+   ```
+   
+   `.env` ファイルを編集して以下を設定：
+   ```
+   VONAGE_APPLICATION_ID=your_application_id_here
+   VONAGE_PRIVATE_KEY_PATH=./private.key
+   ```
 
 ### 開発用依存関係のインストール
 
@@ -116,6 +137,15 @@ Claude Desktopの設定ファイル `claude_desktop_config.json` に以下の設
   - 入力: `a` (数値), `b` (数値)
   - 出力: 加算結果
 
+- **send_sms**: SMS送信ツール
+  - 入力: 
+    - `to` (必須): 送信先の電話番号
+    - `message` (必須): 送信するメッセージ
+    - `from` (オプション): 送信元（省略時は'VonageMCP'）
+  - 機能:
+    - 日本の電話番号（0から始まる）は自動的にE.164形式に変換
+    - 送信結果とメッセージIDを返却
+
 #### リソース
 - **greeting**: 動的挨拶リソース
   - URI: `greeting://{name}`
@@ -131,6 +161,9 @@ Claude Desktopで以下のような質問ができます：
 
 「Aliceに挨拶してください」
 → greetingリソースを使用して挨拶メッセージを生成
+
+「09045327751に「これはVonage MCPサーバーを使って送信しています。」とSMSを送ってください」
+→ send_smsツールを使用してSMS送信
 ```
 
 ### 5. トラブルシューティング
@@ -153,7 +186,8 @@ Claude Desktopで以下のような質問ができます：
 ```
 vonage-mcp-server/
 ├── src/                    # TypeScriptソースコード
-│   └── index.ts           # エントリーポイント
+│   ├── index.ts           # エントリーポイント
+│   └── vonage.ts          # Vonage SMS送信機能
 ├── tests/                  # テストファイル
 │   ├── index.test.ts      # メイン機能のテスト
 │   ├── utils.test.ts      # ユーティリティのテスト
@@ -162,6 +196,8 @@ vonage-mcp-server/
 ├── package.json           # プロジェクト設定
 ├── tsconfig.json          # TypeScript設定
 ├── jest.config.js         # Jest設定
+├── .env.example           # 環境変数設定例
+├── private.key            # Vonage秘密鍵（要設定）
 └── README.md             # このファイル
 ```
 

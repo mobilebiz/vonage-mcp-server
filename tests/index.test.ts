@@ -1,32 +1,37 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { vi, beforeEach, afterEach, describe, it, expect } from 'vitest';
 
 // テスト用のモック関数
-jest.mock("@modelcontextprotocol/sdk/server/mcp.js");
-jest.mock("@modelcontextprotocol/sdk/server/stdio.js");
+vi.mock("@modelcontextprotocol/sdk/server/mcp.js");
+vi.mock("@modelcontextprotocol/sdk/server/stdio.js");
 
 describe('MCP Server', () => {
-  let mockServer: jest.Mocked<McpServer>;
-  let mockTransport: jest.Mocked<StdioServerTransport>;
+  let mockServer: any;
+  let mockTransport: any;
 
   beforeEach(() => {
     // モックのリセット
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     
     // McpServerのモック
     mockServer = {
-      registerTool: jest.fn(),
-      registerResource: jest.fn(),
-      connect: jest.fn(),
-    } as any;
+      registerTool: vi.fn(),
+      registerResource: vi.fn(),
+      connect: vi.fn(),
+    };
     
     // StdioServerTransportのモック
-    mockTransport = {} as any;
+    mockTransport = {};
     
     // コンストラクタのモック
-    (McpServer as jest.MockedClass<typeof McpServer>).mockImplementation(() => mockServer);
-    (StdioServerTransport as jest.MockedClass<typeof StdioServerTransport>).mockImplementation(() => mockTransport);
+    vi.mocked(McpServer).mockImplementation(() => mockServer);
+    vi.mocked(StdioServerTransport).mockImplementation(() => mockTransport);
+  });
+
+  afterEach(() => {
+    vi.resetAllMocks();
   });
 
   describe('Server Initialization', () => {
