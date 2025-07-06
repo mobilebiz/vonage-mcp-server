@@ -14,6 +14,8 @@ export default defineConfig({
         '**/*.config.*'
       ]
     },
-    globals: true
+    globals: true,
+    // デフォルトでrunモードにする場合
+    // run: true
   }
 }) 

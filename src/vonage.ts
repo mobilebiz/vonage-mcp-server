@@ -113,6 +113,7 @@ export async function sendSMS(params: SMSParams): Promise<{ success: boolean; me
 // 電話番号の検証関数
 export function validatePhoneNumber(phoneNumber: string): boolean {
   const normalized = normalizePhoneNumber(phoneNumber);
-  // 基本的な電話番号形式の検証（+で始まり、数字のみ）
-  return /^\+[1-9]\d{1,14}$/.test(normalized);
+  // E.164形式: +[国番号][番号]（合計10～15桁）
+  if (!/^\+[1-9]\d{9,14}$/.test(normalized)) return false;
+  return true;
 } 

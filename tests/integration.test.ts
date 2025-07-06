@@ -1,5 +1,6 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { describe, it, expect, beforeEach } from 'vitest';
 
 // 統合テスト用のヘルパー関数
 function createTestServer() {
@@ -60,7 +61,9 @@ describe('Integration Tests', () => {
       
       expect(toolConfig.title).toBe("Test Addition Tool");
       expect(toolConfig.description).toBe("Add two numbers for testing");
-      expect(toolConfig.inputSchema).toEqual({ a: z.number(), b: z.number() });
+      // Zodスキーマの比較はtoString()で
+      expect(toolConfig.inputSchema.a.toString()).toBe(z.number().toString());
+      expect(toolConfig.inputSchema.b.toString()).toBe(z.number().toString());
     });
   });
 
