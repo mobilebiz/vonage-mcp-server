@@ -38,7 +38,7 @@ function normalizePhoneNumber(phoneNumber: string): string {
 function createVonageClient(config: VonageConfig): any {
   try {
     const privateKey = readFileSync(config.privateKeyPath, 'utf8');
-    
+
     // @ts-ignore - Vonageライブラリの型定義の問題を回避
     return new Vonage({
       applicationId: config.applicationId,
@@ -70,38 +70,26 @@ export async function sendSMS(params: SMSParams): Promise<{ success: boolean; me
     const normalizedTo = normalizePhoneNumber(params.to);
     const from = params.from || 'VonageMCP';
     
-    // SMS送信
-    const result = await new Promise<{ success: boolean; messageId?: string; error?: string }>((resolve) => {
-      // @ts-ignore - Vonageライブラリの型定義の問題を回避
-      vonage.messages.sendSms(
-        from,
-        normalizedTo,
-        params.message,
-        (err: any, responseData: any) => {
-          if (err) {
-            resolve({
-              success: false,
-              error: `SMS送信エラー: ${err.message}`
-            });
-          } else {
-            const message = responseData.messages[0];
-            if (message.status === '0') {
-              resolve({
-                success: true,
-                messageId: message['message-id']
-              });
-            } else {
-              resolve({
-                success: false,
-                error: `SMS送信エラー: ${message['error-text']}`
-              });
-            }
-          }
-        }
-      );
-    });
-    
-    return result;
+    // SMS送信（シンプルなPromiseベース）
+    try {
+      const response = await vonage.messages.send({
+        text: params.message,
+        message_type: "text",
+        to: normalizedTo,
+        from: from,
+        channel: "sms",
+      });
+
+      return {
+        success: true,
+        messageId: response.messageUUID
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: `SMS送信エラー: ${error instanceof Error ? error.message : String(error)}`
+      };
+    }
   } catch (error) {
     return {
       success: false,

@@ -1,15 +1,16 @@
-import { config } from 'dotenv';
-import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
+// import { config } from 'dotenv';
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { sendSMS, validatePhoneNumber } from "./vonage.js";
 
-// 環境変数を読み込み
-config();
+// dotenvを使用せず、直接Node.jsの--env-fileオプションを使用して環境変数を読み込むことを推奨
+// 実行方法: node --env-file=.env dist/index.js
+// または: npm run start:env
 
 // Create an MCP server
 const server = new McpServer({
-  name: "demo-server",
+  name: "vonage-mcp-server",
   version: "1.0.0"
 });
 
