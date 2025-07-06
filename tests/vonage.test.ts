@@ -1,4 +1,5 @@
 import { validatePhoneNumber } from '../src/vonage.js';
+import { describe, test, expect } from 'vitest';
 
 describe('Vonage SMS Tests', () => {
   describe('validatePhoneNumber', () => {

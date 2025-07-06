@@ -1,3 +1,5 @@
+import { describe, it, expect } from 'vitest';
+
 // ユーティリティ関数のテスト例
 describe('Utility Functions', () => {
   describe('Math Operations', () => {
