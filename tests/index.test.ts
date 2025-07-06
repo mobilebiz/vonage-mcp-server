@@ -43,27 +43,27 @@ describe('MCP Server', () => {
   });
 
   describe('Tool Registration', () => {
-    it('should register addition tool', () => {
-      // 加算ツールが登録されることを確認
-      const inputSchema = { a: z.number(), b: z.number() };
-      mockServer.registerTool('add', {
-        title: "Addition Tool",
-        description: "Add two numbers",
+    it('should register SMS tool', () => {
+      // SMSツールが登録されることを確認
+      const inputSchema = { 
+        to: z.string().describe("送信先の電話番号（必須）"),
+        message: z.string().describe("送信するメッセージ（必須）"),
+        from: z.string().optional().describe("送信元（省略時は'VonageMCP'）")
+      };
+      mockServer.registerTool('send_sms', {
+        title: "SMS送信ツール",
+        description: "Vonageを使用してSMSを送信します。日本の電話番号（0から始まる）は自動的にE.164形式に変換されます。",
         inputSchema
       }, () => {});
       expect(mockServer.registerTool).toHaveBeenCalledWith(
-        'add',
+        'send_sms',
         expect.objectContaining({
-          title: "Addition Tool",
-          description: "Add two numbers",
+          title: "SMS送信ツール",
+          description: "Vonageを使用してSMSを送信します。日本の電話番号（0から始まる）は自動的にE.164形式に変換されます。",
           inputSchema: expect.any(Object)
         }),
         expect.any(Function)
       );
-      // スキーマの構造比較
-      const callArgs = mockServer.registerTool.mock.calls[0][1].inputSchema;
-      expect(callArgs.a.toString()).toBe(z.number().toString());
-      expect(callArgs.b.toString()).toBe(z.number().toString());
     });
   });
 

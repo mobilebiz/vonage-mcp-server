@@ -13,18 +13,6 @@ const server = new McpServer({
   version: "1.0.0"
 });
 
-// Add an addition tool
-server.registerTool("add",
-  {
-    title: "Addition Tool",
-    description: "Add two numbers",
-    inputSchema: { a: z.number(), b: z.number() }
-  },
-  async ({ a, b }) => ({
-    content: [{ type: "text", text: String(a + b) }]
-  })
-);
-
 // Add SMS sending tool
 server.registerTool("send_sms",
   {

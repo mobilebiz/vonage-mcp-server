@@ -133,10 +133,6 @@ Claude Desktopの設定ファイル `claude_desktop_config.json` に以下の設
 設定完了後、Claude Desktopで以下の機能が利用できます：
 
 #### ツール
-- **add**: 2つの数値を加算するツール
-  - 入力: `a` (数値), `b` (数値)
-  - 出力: 加算結果
-
 - **send_sms**: SMS送信ツール
   - 入力: 
     - `to` (必須): 送信先の電話番号
@@ -156,9 +152,6 @@ Claude Desktopの設定ファイル `claude_desktop_config.json` に以下の設
 Claude Desktopで以下のような質問ができます：
 
 ```
-「5と3を足してください」
-→ addツールを使用して計算
-
 「Aliceに挨拶してください」
 → greetingリソースを使用して挨拶メッセージを生成
 
