@@ -104,4 +104,60 @@ export function validatePhoneNumber(phoneNumber: string): boolean {
   // E.164形式: +[国番号][番号]（合計10～15桁）
   if (!/^\+[1-9]\d{9,14}$/.test(normalized)) return false;
   return true;
+}
+
+// バルクSMS送信の結果インターフェース
+export interface BulkSMSResult {
+  totalRequests: number;
+  successCount: number;
+  failureCount: number;
+  results: Array<{
+    to: string;
+    from: string;
+    success: boolean;
+    messageId?: string;
+    error?: string;
+  }>;
+}
+
+// バルクSMS送信関数
+export async function sendBulkSMS(requests: SMSParams[]): Promise<BulkSMSResult> {
+  const results: BulkSMSResult['results'] = [];
+  let successCount = 0;
+  let failureCount = 0;
+
+  // 並列実行ではなく順次実行でAPI制限を回避
+  for (const params of requests) {
+    const result = await sendSMS(params);
+    
+    if (result.success) {
+      successCount++;
+      results.push({
+        to: params.to,
+        from: params.from || 'VonageMCP',
+        success: true,
+        messageId: result.messageId
+      });
+    } else {
+      failureCount++;
+      results.push({
+        to: params.to,
+        from: params.from || 'VonageMCP',
+        success: false,
+        error: result.error
+      });
+    }
+    
+    // API制限を回避するため、送信間隔を設ける（100ms）
+    if (requests.length > 1) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+
+  return {
+    totalRequests: requests.length,
+    successCount,
+    failureCount,
+    results
+  };
 } 

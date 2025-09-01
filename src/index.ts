@@ -2,7 +2,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { sendSMS, validatePhoneNumber } from "./vonage.js";
+import { sendSMS, validatePhoneNumber, sendBulkSMS } from "./vonage.js";
+import { parseAndValidateCSV, generateCSVSummary } from "./csvUtils.js";
 
 // dotenvを使用せず、直接Node.jsの--env-fileオプションを使用して環境変数を読み込むことを推奨
 // 実行方法: node --env-file=.env dist/index.js
@@ -51,6 +52,74 @@ server.registerTool("send_sms",
         content: [{ 
           type: "text", 
           text: `SMS送信失敗: ${result.error}` 
+        }]
+      };
+    }
+  }
+);
+
+// Add CSV bulk SMS sending tool
+server.registerTool("bulk_sms_from_csv",
+  {
+    title: "CSV一括SMS送信",
+    description: "CSVファイル（phone,from,message）から一括SMS送信を行います。無効な行はスキップされ、処理結果がまとめて返されます。",
+    inputSchema: { 
+      csv_content: z.string().describe("CSVファイルの内容（phone,from,messageのヘッダー付き）")
+    }
+  },
+  async ({ csv_content }) => {
+    try {
+      // CSVを解析・バリデーション
+      const parseResult = parseAndValidateCSV(csv_content);
+      const summary = generateCSVSummary(parseResult);
+      
+      // 有効な行が0の場合は送信せずに終了
+      if (parseResult.validRows.length === 0) {
+        return {
+          content: [{ 
+            type: "text", 
+            text: `エラー: 送信可能な有効な行がありませんでした。\n\n${summary}` 
+          }]
+        };
+      }
+      
+      // バルクSMS送信用にCSVRowをSMSParamsに変換
+      const smsParams = parseResult.validRows.map(row => ({
+        to: row.phone,
+        message: row.message,
+        from: row.from
+      }));
+      
+      const bulkResult = await sendBulkSMS(smsParams);
+      
+      // 結果をまとめて返却
+      let resultText = `CSV一括SMS送信完了！\n\n`;
+      resultText += `${summary}\n`;
+      resultText += `送信結果:\n`;
+      resultText += `- 送信成功: ${bulkResult.successCount}件\n`;
+      resultText += `- 送信失敗: ${bulkResult.failureCount}件\n`;
+      
+      // 失敗した送信の詳細を表示
+      const failures = bulkResult.results.filter(r => !r.success);
+      if (failures.length > 0) {
+        resultText += `\n失敗した送信:\n`;
+        failures.forEach(failure => {
+          resultText += `- ${failure.to}: ${failure.error}\n`;
+        });
+      }
+      
+      return {
+        content: [{ 
+          type: "text", 
+          text: resultText 
+        }]
+      };
+      
+    } catch (error) {
+      return {
+        content: [{ 
+          type: "text", 
+          text: `CSV一括SMS送信エラー: ${error instanceof Error ? error.message : String(error)}` 
         }]
       };
     }
