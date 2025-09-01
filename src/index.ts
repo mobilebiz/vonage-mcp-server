@@ -4,6 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { sendSMS, validatePhoneNumber, sendBulkSMS } from "./vonage.js";
 import { parseAndValidateCSV, generateCSVSummary } from "./csvUtils.js";
+import { makeVoiceCall, validateVoiceName, estimateCallDuration } from "./voiceCall.js";
 
 // dotenvを使用せず、直接Node.jsの--env-fileオプションを使用して環境変数を読み込むことを推奨
 // 実行方法: node --env-file=.env dist/index.js
@@ -120,6 +121,62 @@ server.registerTool("bulk_sms_from_csv",
         content: [{ 
           type: "text", 
           text: `CSV一括SMS送信エラー: ${error instanceof Error ? error.message : String(error)}` 
+        }]
+      };
+    }
+  }
+);
+
+// Add Voice call tool
+server.registerTool("make_voice_call",
+  {
+    title: "音声通話",
+    description: "指定した番号に発信してメッセージを読み上げます。日本の電話番号（0から始まる）は自動的にE.164形式に変換されます。",
+    inputSchema: { 
+      to: z.string().describe("発信先電話番号（0ABJ形式）"),
+      message: z.string().describe("読み上げるメッセージ"),
+      voice: z.string().optional().describe("音声タイプ（デフォルト: Mizuki）")
+    }
+  },
+  async ({ to, message, voice }) => {
+    // 電話番号の検証
+    if (!validatePhoneNumber(to)) {
+      return {
+        content: [{ 
+          type: "text", 
+          text: `エラー: 無効な電話番号形式です。正しい形式で入力してください。` 
+        }]
+      };
+    }
+    
+    // 音声タイプの検証（指定された場合）
+    if (voice && !validateVoiceName(voice)) {
+      return {
+        content: [{ 
+          type: "text", 
+          text: `エラー: 無効な音声タイプです。利用可能: Mizuki（女性）, Takumi（男性）` 
+        }]
+      };
+    }
+    
+    // 通話時間の見積もり
+    const estimatedDuration = estimateCallDuration(message);
+    
+    // Voice通話を発信
+    const result = await makeVoiceCall({ to, message, voice });
+    
+    if (result.success) {
+      return {
+        content: [{ 
+          type: "text", 
+          text: `音声通話を開始しました！\n発信先: ${to}\n通話ID: ${result.callId}\nメッセージ: ${message}\n音声: ${voice || 'Mizuki'}\n推定通話時間: ${estimatedDuration}秒` 
+        }]
+      };
+    } else {
+      return {
+        content: [{ 
+          type: "text", 
+          text: `音声通話の発信に失敗しました: ${result.error}` 
         }]
       };
     }

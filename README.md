@@ -1,6 +1,6 @@
 # Vonage MCP Server
 
-VonageのSMS送信機能とCSV一括送信機能を提供するMCP (Model Context Protocol) Server実装です。
+VonageのSMS送信、CSV一括送信、音声通話機能を提供するMCP (Model Context Protocol) Server実装です。
 
 ## セットアップ
 
@@ -31,6 +31,7 @@ npm install
    ```sh
    VONAGE_APPLICATION_ID=your_application_id_here
    VONAGE_PRIVATE_KEY_PATH=./private.key
+   VONAGE_VOICE_FROM=14155550100  # Voice通話用のFROM番号
    ```
 
 ### 開発用依存関係のインストール
@@ -180,6 +181,17 @@ Claude Desktopの設定ファイル `claude_desktop_config.json` に以下の設
     - 送信結果の詳細レポートを返却
     - API制限回避のため100ms間隔で順次送信
 
+- **make_voice_call**: 音声通話ツール
+  - 入力:
+    - `to` (必須): 発信先電話番号（0ABJ形式）
+    - `message` (必須): 読み上げるメッセージ
+    - `voice` (オプション): 音声タイプ（デフォルト: Mizuki）
+  - 機能:
+    - 指定番号に発信してメッセージを音声で読み上げ
+    - 日本語音声対応（Mizuki:女性、Takumi:男性）
+    - NCCO（Nexmo Call Control Object）を使用
+    - 通話時間の自動見積もり
+
 ### 4. 使用例
 
 Claude Desktopで以下のような質問ができます：
@@ -198,6 +210,15 @@ phone,from,message
 080-9876-5432,SalesTeam,お打ち合わせの件でご連絡しました
 
 → bulk_sms_from_csvツールを使用して一括送信
+```
+
+#### 音声通話
+```text
+「090XXXXYYYYに電話をかけて『会議は明日の10時からです』と伝えてください」
+→ make_voice_callツールを使用して発信・音声読み上げ
+
+「緊急連絡として080XXXXYYYYに『システム障害が発生しました。至急対応をお願いします』と電話で伝えて」
+→ make_voice_callツールを使用して緊急連絡
 ```
 
 ## CSV一括送信機能
@@ -244,6 +265,44 @@ phone,from,message
 - `csv/sales_follow_up.csv` - 営業フォロー用
 - `csv/invalid_data_example.csv` - バリデーションテスト用
 
+## Voice通話機能
+
+### 機能概要
+
+Voice APIを使用して自動音声通話を発信し、指定されたメッセージを日本語で読み上げます。
+
+### 主な特徴
+
+- **自動発信**: 指定番号への自動発信
+- **日本語音声**: Mizuki（女性）/Takumi（男性）による自然な読み上げ
+- **NCCO制御**: Nexmo Call Control Objectによる通話フロー制御
+- **通話時間見積**: メッセージ長から自動的に通話時間を算出
+
+### 音声オプション
+
+| 音声名 | 性別 | 言語 | 特徴 |
+|--------|------|------|------|
+| Mizuki | 女性 | 日本語 | 自然で聞き取りやすい（推奨） |
+| Takumi | 男性 | 日本語 | 落ち着いた男性音声 |
+
+### 使用例
+
+```javascript
+// 会議リマインダー
+make_voice_call({
+  to: "090-1234-5678",
+  message: "明日の会議は10時から会議室Aで行います。資料をご準備ください。",
+  voice: "Mizuki"
+})
+
+// 緊急連絡
+make_voice_call({
+  to: "080-9876-5432",
+  message: "システム障害が発生しました。至急対応をお願いします。",
+  voice: "Takumi"
+})
+```
+
 ### 5. トラブルシューティング
 
 #### サーバーが起動しない場合
@@ -270,6 +329,17 @@ phone,from,message
 - サーバーのログを確認（Claude Desktopの設定画面で確認可能）
 - サーバーを再起動
 
+#### Voice通話機能のトラブルシューティング
+
+- Voice通話が発信されない場合:
+  - `VONAGE_VOICE_FROM`環境変数が正しく設定されているか確認
+  - VonageアプリケーションでVoice機能が有効になっているか確認
+  - FROM番号がVonageアカウントに登録されているか確認
+  
+- 通話は繋がるが音声が再生されない場合:
+  - NCCOパラメータの音声設定を確認
+  - 対象地域で指定した音声（Mizuki/Takumi）がサポートされているか確認
+
 ## プロジェクト構造
 
 ```sh
@@ -277,7 +347,8 @@ vonage-mcp-server/
 ├── src/                    # TypeScriptソースコード
 │   ├── index.ts           # エントリーポイント・MCPツール定義
 │   ├── vonage.ts          # Vonage SMS送信機能
-│   └── csvUtils.ts        # CSV解析・バリデーション機能
+│   ├── csvUtils.ts        # CSV解析・バリデーション機能
+│   └── voiceCall.ts       # Voice通話機能・NCCO生成
 ├── csv/                    # サンプルCSVファイル
 │   ├── sample_contacts.csv        # 基本テスト用
 │   ├── meeting_reminder.csv       # 会議リマインダー用
@@ -296,6 +367,16 @@ vonage-mcp-server/
 ├── private.key            # Vonage秘密鍵（要設定）
 └── README.md             # このファイル
 ```
+
+## 依存関係
+
+### 主要パッケージ
+
+- `@vonage/server-sdk` - Vonage SMS機能
+- `@vonage/voice` - Voice通話機能専用SDK
+- `csv-parse` - CSVファイル解析
+- `@modelcontextprotocol/sdk` - MCP Server実装
+- `zod` - スキーマ検証
 
 ## ライセンス
 
