@@ -4,7 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { sendSMS, validatePhoneNumber, sendBulkSMS } from "./vonage.js";
 import { parseAndValidateCSV, generateCSVSummary } from "./csvUtils.js";
-import { makeVoiceCall, validateVoiceName, estimateCallDuration } from "./voiceCall.js";
+import { makeVoiceCall, validateVoiceName, estimateCallDuration, normalizeVoiceName } from "./voiceCall.js";
 
 // dotenvを使用せず、直接Node.jsの--env-fileオプションを使用して環境変数を読み込むことを推奨
 // 実行方法: node --env-file=.env dist/index.js
@@ -13,7 +13,7 @@ import { makeVoiceCall, validateVoiceName, estimateCallDuration } from "./voiceC
 // Create an MCP server
 const server = new McpServer({
   name: "vonage-mcp-server",
-  version: "1.0.0"
+  version: "1.1.0"
 });
 
 // Add SMS sending tool
@@ -135,7 +135,7 @@ server.registerTool("make_voice_call",
     inputSchema: { 
       to: z.string().describe("発信先電話番号（0ABJ形式）"),
       message: z.string().describe("読み上げるメッセージ"),
-      voice: z.string().optional().describe("音声タイプ（デフォルト: Mizuki）")
+      voice: z.string().optional().describe("音声タイプ（デフォルト: 女性）")
     }
   },
   async ({ to, message, voice }) => {
@@ -154,7 +154,7 @@ server.registerTool("make_voice_call",
       return {
         content: [{ 
           type: "text", 
-          text: `エラー: 無効な音声タイプです。利用可能: Mizuki（女性）, Takumi（男性）` 
+          text: `エラー: 無効な音声タイプです。利用可能: 女性、男性` 
         }]
       };
     }
@@ -166,10 +166,11 @@ server.registerTool("make_voice_call",
     const result = await makeVoiceCall({ to, message, voice });
     
     if (result.success) {
+      const finalVoice = normalizeVoiceName(voice || '女性');
       return {
         content: [{ 
           type: "text", 
-          text: `音声通話を開始しました！\n発信先: ${to}\n通話ID: ${result.callId}\nメッセージ: ${message}\n音声: ${voice || 'Mizuki'}\n推定通話時間: ${estimatedDuration}秒` 
+          text: `音声通話を開始しました！\n発信先: ${to}\n通話ID: ${result.callId}\nメッセージ: ${message}\n音声: ${finalVoice}\n推定通話時間: ${estimatedDuration}秒` 
         }]
       };
     } else {

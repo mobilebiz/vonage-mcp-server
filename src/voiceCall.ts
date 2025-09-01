@@ -34,15 +34,23 @@ export function formatPhoneNumberForVoice(phoneNumber: string): string {
 }
 
 // NCCOを生成する関数
-export function generateNCCO(message: string, voice: string = 'Mizuki'): NCCOAction[] {
+export function generateNCCO(message: string, voice: string = '女性'): NCCOAction[] {
+  // 音声タイプからstyleパラメータを決定
+  // style: 1 = 女性音声, style: 3 = 男性音声
+  const voiceStyleMapping: { [key: string]: number } = {
+    '女性': 1,   // 女性音声
+    '男性': 3    // 男性音声
+  };
+  
+  const style = voiceStyleMapping[voice] || 1; // デフォルトは女性音声
+  
   return [
     {
       action: 'talk',
       text: message,
       language: 'ja-JP',
-      style: 1,
-      premium: true,
-      voiceName: voice
+      style: style,
+      premium: true
     } as NCCOAction
   ];
 }
@@ -77,8 +85,12 @@ export async function makeVoiceCall(params: VoiceCallParams): Promise<{ success:
     // 電話番号をE.164形式に変換（+なし）
     const normalizedTo = formatPhoneNumberForVoice(params.to);
     
-    // NCCOを生成
-    const ncco = generateNCCO(params.message, params.voice);
+    // NCCOを生成（音声名を正規化）
+    const normalizedVoice = normalizeVoiceName(params.voice || '女性');
+    const ncco = generateNCCO(params.message, normalizedVoice);
+    
+    // デバッグ用: NCCOの内容をログ出力
+    console.log('Generated NCCO:', JSON.stringify(ncco, null, 2));
     
     // Voice通話パラメータを構築
     // @vonage/voice SDKのCreateCallRequestインターフェースに準拠
@@ -142,14 +154,14 @@ export async function makeVoiceCall(params: VoiceCallParams): Promise<{ success:
 
 // 音声オプションのバリデーション
 export function validateVoiceName(voice: string): boolean {
-  // 日本語対応の音声リスト
-  const validVoices = [
-    'Mizuki', // 女性（推奨）
-    'Takumi', // 男性
-    'Seoyeon', // 韓国語（日本語も可）
-  ];
-  
+  const validVoices = ['女性', '男性'];
   return validVoices.includes(voice);
+}
+
+// 音声名を正規化する関数
+export function normalizeVoiceName(voice: string): string {
+  const validVoices = ['女性', '男性'];
+  return validVoices.includes(voice) ? voice : '女性';
 }
 
 // 通話時間の見積もり（文字数から概算）
