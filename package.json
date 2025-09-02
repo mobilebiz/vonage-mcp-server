@@ -8,7 +8,7 @@
     "dev": "tsc --watch",
     "start": "node --env-file=.env dist/index.js",
     "start:legacy": "node dist/index.js",
-    "dev:start": "ts-node --env-file=.env src/index.ts",
+    "dev:start": "npm run build && node --env-file=.env dist/index.js",
     "clean": "rm -rf dist",
     "test": "vitest --run",
     "test:watch": "vitest --watch",
@@ -29,6 +29,7 @@
   "devDependencies": {
     "@types/node": "^20.19.4",
     "@vitest/coverage-v8": "^3.2.4",
+    "dotenv": "^17.2.1",
     "ts-node": "^10.9.2",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4"

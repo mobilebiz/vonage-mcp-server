@@ -89,8 +89,6 @@ export async function makeVoiceCall(params: VoiceCallParams): Promise<{ success:
     const normalizedVoice = normalizeVoiceName(params.voice || '女性');
     const ncco = generateNCCO(params.message, normalizedVoice);
     
-    // デバッグ用: NCCOの内容をログ出力
-    console.log('Generated NCCO:', JSON.stringify(ncco, null, 2));
     
     // Voice通話パラメータを構築
     // @vonage/voice SDKのCreateCallRequestインターフェースに準拠

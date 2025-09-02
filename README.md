@@ -197,12 +197,14 @@ Claude Desktopの設定ファイル `claude_desktop_config.json` に以下の設
 Claude Desktopで以下のような質問ができます：
 
 #### 単発SMS送信
+
 ```text
 「090XXXXYYYYに「これはVonage MCPサーバーを使って送信しています。」とSMSを送ってください」
 → send_smsツールを使用してSMS送信
 ```
 
 #### CSV一括SMS送信
+
 ```text
 「以下のCSVデータで一括SMS送信をしてください」
 phone,from,message
@@ -213,6 +215,7 @@ phone,from,message
 ```
 
 #### 音声通話
+
 ```text
 「090XXXXYYYYに女性の声で『会議は明日の10時からです』と電話をかけて」
 → make_voice_callツールを使用して発信・音声読み上げ

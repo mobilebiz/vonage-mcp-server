@@ -10,6 +10,36 @@ import { makeVoiceCall, validateVoiceName, estimateCallDuration, normalizeVoiceN
 // 実行方法: node --env-file=.env dist/index.js
 // または: npm run start:env
 
+// デバッグログ機能（環境変数DEBUG=trueで有効化）
+import { appendFileSync } from 'fs';
+
+const isDebugMode = process.env.DEBUG === 'true';
+const logFile = process.env.LOG_FILE;
+
+function debugLog(message: string, data?: any) {
+  if (isDebugMode) {
+    const timestamp = new Date().toISOString();
+    const logMessage = `[DEBUG ${timestamp}] ${message}`;
+    const logData = data ? JSON.stringify(data, null, 2) : '';
+    const fullLog = logData ? `${logMessage}\n${logData}\n` : `${logMessage}\n`;
+    
+    // コンソール出力（stderr）
+    console.error(logMessage);
+    if (data) {
+      console.error(logData);
+    }
+    
+    // ファイル出力（指定されている場合）
+    if (logFile) {
+      try {
+        appendFileSync(logFile, fullLog);
+      } catch (error) {
+        console.error(`Failed to write to log file: ${error}`);
+      }
+    }
+  }
+}
+
 // Create an MCP server
 const server = new McpServer({
   name: "vonage-mcp-server",
@@ -28,6 +58,8 @@ server.registerTool("send_sms",
     }
   },
   async ({ to, message, from }) => {
+    debugLog("SMS送信ツールが呼び出されました", { to, message, from });
+    
     // 電話番号の検証
     if (!validatePhoneNumber(to)) {
       return {
@@ -69,6 +101,8 @@ server.registerTool("bulk_sms_from_csv",
     }
   },
   async ({ csv_content }) => {
+    debugLog("CSV一括SMS送信ツールが呼び出されました", { csvContentLength: csv_content.length });
+    
     try {
       // CSVを解析・バリデーション
       const parseResult = parseAndValidateCSV(csv_content);
@@ -139,6 +173,8 @@ server.registerTool("make_voice_call",
     }
   },
   async ({ to, message, voice }) => {
+    debugLog("音声通話ツールが呼び出されました", { to, message, voice });
+    
     // 電話番号の検証
     if (!validatePhoneNumber(to)) {
       return {
