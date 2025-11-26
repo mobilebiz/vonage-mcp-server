@@ -10,6 +10,8 @@ import { makeVoiceCall, validateVoiceName, estimateCallDuration, normalizeVoiceN
 // 実行方法: node --env-file=.env dist/index.js
 // または: npm run start:env
 
+console.error("DEBUG: src/index.ts is starting...");
+
 // デバッグログ機能（環境変数DEBUG=trueで有効化）
 import { appendFileSync } from 'fs';
 

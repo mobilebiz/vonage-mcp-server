@@ -1,0 +1,57 @@
+{
+  "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/mcpb/refs/heads/main/schemas/mcpb-manifest-v0.2.schema.json",
+  "manifest_version": "0.2",
+  "name": "@mobilebiz/vonage-mcp-server",
+  "display_name": "Vonage MCP Server",
+  "version": "1.1.0",
+  "description": "Vonage SMS and Voice MCP Server - Send SMS and make voice calls using Vonage API",
+  "long_description": "This extension provides Model Context Protocol (MCP) server capabilities for Vonage, allowing AI assistants to send SMS messages and make voice calls through the Vonage API.",
+  "author": {
+    "name": "Katsumi",
+    "url": "https://github.com/mobilebiz"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mobilebiz/vonage-mcp-server"
+  },
+  "homepage": "https://github.com/mobilebiz/vonage-mcp-server",
+  "documentation": "https://github.com/mobilebiz/vonage-mcp-server/blob/main/README.md",
+  "support": "https://github.com/mobilebiz/vonage-mcp-server/issues",
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/dist/index.js"
+      ],
+      "env": {
+        "VONAGE_APPLICATION_ID": "${user_config.vonage_application_id}",
+        "VONAGE_PRIVATE_KEY_PATH": "${user_config.vonage_private_key_path}",
+        "VONAGE_VOICE_FROM": "${user_config.vonage_voice_from}"
+      }
+    }
+  },
+  "user_config": {
+    "vonage_application_id": {
+      "type": "string",
+      "title": "Vonage Application ID",
+      "description": "Your Vonage Application ID from the Vonage Developer Portal",
+      "required": true
+    },
+    "vonage_private_key_path": {
+      "type": "string",
+      "title": "Private Key Path",
+      "description": "Full path to your Vonage private key file (e.g., /Users/your-name/vonage/private.key)",
+      "required": true
+    },
+    "vonage_voice_from": {
+      "type": "string",
+      "title": "Voice Call From Number",
+      "description": "Phone number to use for voice calls in E.164 format (e.g., 81345438093)",
+      "required": true
+    }
+  }
+}
+
+

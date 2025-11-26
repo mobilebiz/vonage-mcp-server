@@ -2,6 +2,29 @@
 
 VonageのSMS送信、CSV一括送信、音声通話機能を提供するMCP (Model Context Protocol) Server実装です。
 
+## インストール方法
+
+### 方法1: MCPB Bundle（推奨 - ワンクリックインストール）
+
+Claude Desktopで簡単にインストールできます：
+
+1. **MCPBファイルのダウンロード**
+   - [vonage-mcp-server.mcpb](https://github.com/mobilebiz/vonage-mcp-server/releases/latest) をダウンロード
+
+2. **Claude Desktopで開く**
+   - `.mcpb`ファイルをダブルクリック、またはClaude Desktopにドラッグ&ドロップ
+
+3. **環境変数の設定**
+   - Claude Desktopのインストールダイアログで以下を入力：
+     - `VONAGE_APPLICATION_ID`: Vonage Application ID
+     - `VONAGE_PRIVATE_KEY_PATH`: 秘密鍵ファイルのパス（例: `/Users/your-name/vonage/private.key`）
+     - `VONAGE_VOICE_FROM`: 音声通話用の電話番号（E.164形式、例: `81345438093`）
+
+4. **インストール完了**
+   - Claude Desktopを再起動すると、Vonage MCPサーバーが利用可能になります
+
+### 方法2: 手動セットアップ
+
 ## セットアップ
 
 ### 依存関係のインストール
@@ -57,7 +80,7 @@ npm run build
 ### コンパイルされたコードの実行
 
 ```bash
-# 環境変数ファイル(.env)を使用して実行（推奨・Node.js v20.6.0以降）
+# 環境変数ファイル(.env)を使用して実行（推奨・Node.js v22以降）
 npm start
 
 # 環境変数ファイルを使用せずに実行（従来方式）
@@ -98,20 +121,53 @@ npm run test:coverage
 
 このMCPサーバーをClaude Desktopで利用するための設定方法を説明します。
 
-### 1. サーバーのビルドと起動
+### 方法1: MCPB Bundle（推奨 - ワンクリックインストール）
+
+`.mcpb`ファイルを使用すると、Claude Desktopに簡単にインストールできます。
+
+#### インストール手順
+
+1. **MCPBファイルの作成**
+   ```bash
+   npm run build:mcpb
+   ```
+   これにより `vonage-mcp-server.mcpb` ファイルが作成されます。
+
+2. **Claude Desktopで開く**
+   - 作成された `.mcpb` ファイルをダブルクリック
+   - または Claude Desktop にドラッグ&ドロップ
+
+3. **環境変数の設定**
+   Claude Desktop のインストールダイアログで以下を入力：
+   - **Vonage Application ID**: Vonage Application ID
+   - **Private Key Path**: 秘密鍵ファイルの絶対パス（例: `/Users/your-name/vonage/private.key`）
+   - **Voice Call From Number**: 音声通話用の電話番号（E.164形式、例: `81345438093`）
+
+4. **インストール完了**
+   Claude Desktop を再起動すると、Vonage MCP サーバーが利用可能になります。
+
+#### MCPBファイルの配布
+
+作成した `.mcpb` ファイルは他のユーザーと共有できます：
+- GitHub Releases で配布
+- 直接ファイルを共有
+
+### 方法2: 手動セットアップ
+
+#### 1. サーバーのビルドと起動
 
 ```bash
 # プロジェクトをビルド
 npm run build
 
-# サーバーを起動（Node.js v20.6.0以降、推奨）
+# サーバーを起動（Node.js v22以降、推奨）
 npm start
 
 # または従来方式で起動（環境変数ファイルを使用しない場合）
 npm run start:legacy
 ```
 
-### 2. Claude Desktopの設定
+#### 2. Claude Desktopの設定
 
 Claude Desktopの設定ファイル `claude_desktop_config.json` に以下の設定を追加します：
 
@@ -362,6 +418,63 @@ vonage-mcp-server/
 │   ├── index.test.ts      # メイン機能のテスト
 │   ├── utils.test.ts      # ユーティリティのテスト
 │   └── integration.test.ts # 統合テスト
+
+### HTTPラッパー (Dify / 外部アプリ用)
+
+HTTPラッパーを使用してサーバーを実行することで、外部アプリケーション（Difyなど）からHTTP POSTリクエスト経由でMCPツールを呼び出すことができます。
+
+```bash
+npm run start:http
+```
+
+これにより、ポート3000（デフォルト）でHTTPサーバーが起動します。
+
+#### 認証
+
+すべてのリクエスト（`/health`を除く）には、`X-API-KEY` ヘッダが必要です。
+値には、環境変数 `VONAGE_APPLICATION_ID` の値を指定してください。
+
+```bash
+curl -X POST http://localhost:3000/mcp-invoke \
+  -H "Content-Type: application/json" \
+  -H "X-API-KEY: your_application_id" \
+  -d '{"tool": "tool_name", "params": { ... }}'
+```
+
+#### APIエンドポイント
+
+**GET** `/mcp-tools`
+
+利用可能なツールの一覧を返します。
+
+**Response:**
+```json
+{
+  "tools": [
+    {
+      "name": "tool_name",
+      "description": "Tool description",
+      "inputSchema": { ... }
+    }
+  ]
+}
+```
+
+**POST** `/mcp-invoke`
+
+**Body:**
+```json
+{
+  "tool": "tool_name",
+  "params": {
+    "param1": "value1"
+  }
+}
+```
+
+**Response:**
+MCPツールからのJSON形式の結果。
+
 ├── dist/                  # コンパイルされたJavaScript
 ├── package.json           # プロジェクト設定
 ├── tsconfig.json          # TypeScript設定

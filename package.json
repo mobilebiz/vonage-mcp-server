@@ -7,29 +7,40 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node --env-file=.env dist/index.js",
+    "start:http": "npm run build && node --env-file=.env dist/http-server.js",
     "start:legacy": "node dist/index.js",
     "dev:start": "npm run build && node --env-file=.env dist/index.js",
     "clean": "rm -rf dist",
     "test": "vitest --run",
     "test:watch": "vitest --watch",
-    "test:coverage": "vitest --coverage --run"
+    "test:coverage": "vitest --coverage --run",
+    "build:mcpb": "sh scripts/build-mcpb.sh"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.15.0",
     "@vonage/jwt": "^1.11.0",
     "@vonage/server-sdk": "^3.22.0",
     "@vonage/voice": "^1.18.1",
+    "cors": "^2.8.5",
     "csv-parse": "^6.1.0",
+    "dotenv": "^17.2.1",
+    "express": "^5.1.0",
     "zod": "^3.25.72"
   },
   "devDependencies": {
-    "@types/node": "^20.19.4",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.5",
+    "@types/node": "^22.0.0",
+    "@types/supertest": "^6.0.3",
     "@vitest/coverage-v8": "^3.2.4",
-    "dotenv": "^17.2.1",
+    "supertest": "^7.1.4",
     "ts-node": "^10.9.2",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4"
