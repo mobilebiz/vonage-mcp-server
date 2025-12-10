@@ -47,7 +47,7 @@ function debugLog(message: string, data?: any) {
 // Create an MCP server
 const server = new McpServer({
   name: "vonage-mcp-server",
-  version: "1.2.0"
+  version: "1.2.1"
 });
 
 // Add SMS sending tool
