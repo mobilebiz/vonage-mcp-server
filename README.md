@@ -239,7 +239,7 @@ Claude Desktopの設定ファイル `claude_desktop_config.json` に以下の設
 
 - **make_voice_call**: 音声通話ツール
   - 入力:
-    - `to` (必須): 発信先電話番号（0ABJ形式）
+    - `to` (必須): 発信先電話番号(0ABJ形式)
     - `message` (必須): 読み上げるメッセージ
     - `voice` (オプション): 音声タイプ（デフォルト: 女性）
   - 機能:
@@ -247,6 +247,25 @@ Claude Desktopの設定ファイル `claude_desktop_config.json` に以下の設
     - 日本語音声対応（女性・男性）
     - NCCO（Nexmo Call Control Object）を使用
     - 通話時間の自動見積もり
+
+- **get_call_status**: 通話ステータス取得ツール
+  - 入力:
+    - `callId` (必須): 取得する通話のCall ID（UUID形式）
+  - 機能:
+    - Vonage Voice APIから通話のステータス情報を取得
+    - status（通話ステータス）、price（料金）、rate（レート）、duration（通話時間）を返却
+    - 環境変数から自動的にApplication IDとPrivate Keyを読み込み
+
+- **generate_jwt**: JWT生成ツール
+  - 入力:
+    - `expiresIn` (オプション): トークンの有効期限（秒単位、デフォルト: 86400 = 24時間）
+    - `subject` (オプション): トークンのサブジェクト（デフォルト: VonageMCP）
+  - 機能:
+    - Vonage Voice API用のJWT認証トークンを生成
+    - 環境変数から自動的にApplication IDとPrivate Keyを読み込み
+    - デフォルトのACL設定を含む（Voice API用の標準パス）
+    - 有効期限とサブジェクトをカスタマイズ可能
+
 
 ### 4. 使用例
 
@@ -278,6 +297,29 @@ phone,from,message
 
 「080XXXXYYYYに男性の声で『システム障害が発生しました。至急対応をお願いします』と電話で伝えて」
 → make_voice_callツールを使用して緊急連絡
+```
+
+#### 通話ステータス取得
+
+```text
+「Call ID ca6b7710-3423-4c8d-b630-7b981ec4b2c2 の通話ステータスを取得してください」
+→ get_call_statusツールを使用して通話情報を取得
+
+「先ほどの通話の料金と時間を教えてください」
+→ get_call_statusツールで通話詳細を確認
+```
+
+#### JWT生成
+
+```text
+「Vonage Voice API用のJWTトークンを生成してください」
+→ generate_jwtツールを使用してデフォルト設定（24時間有効）でJWT生成
+
+「有効期限1時間のJWTトークンを生成してください」
+→ generate_jwtツールを使用してexpiresIn=3600でJWT生成
+
+「サブジェクトを'AdminUser'にしてJWTトークンを生成してください」
+→ generate_jwtツールを使用してカスタムサブジェクトでJWT生成
 ```
 
 ## CSV一括送信機能
@@ -362,6 +404,100 @@ make_voice_call({
 })
 ```
 
+## 通話ステータス取得機能
+
+### 機能概要
+
+Vonage Voice APIを使用して、過去の通話のステータス情報を取得します。通話の詳細（ステータス、料金、レート、通話時間）を確認できます。
+
+### 主な特徴
+
+- **詳細情報取得**: 通話のステータス、料金、レート、通話時間を一度に取得
+- **自動設定読み込み**: 環境変数から自動的にApplication IDとPrivate Keyを取得
+- **エラーハンドリング**: 存在しないCall IDに対する適切なエラーメッセージ
+
+### パラメータ
+
+| パラメータ | 型 | 説明 |
+|------------|------|------|
+| callId | string | 取得する通話のCall ID（UUID形式） |
+
+### 返却される情報
+
+- **status**: 通話のステータス（completed, answered, busy, failed など）
+- **price**: 通話料金（数値形式）
+- **rate**: 通話レート（1分あたりの料金）
+- **duration**: 通話時間（秒単位）
+
+### 使用例
+
+```javascript
+// Call IDを指定して通話ステータスを取得
+get_call_status({
+  callId: "ca6b7710-3423-4c8d-b630-7b981ec4b2c2"
+})
+
+// 結果例:
+// ステータス: completed
+// 料金: 0.06287850
+// レート: 0.13973000
+// 通話時間: 27秒
+```
+
+## JWT生成機能
+
+### 機能概要
+
+Vonage Voice API用のJWT認証トークンを生成します。環境変数から自動的にApplication IDとPrivate Keyを読み込み、セキュアなトークンを生成します。
+
+### 主な特徴
+
+- **自動設定読み込み**: 環境変数から自動的にApplication IDとPrivate Keyを取得
+- **カスタマイズ可能**: 有効期限とサブジェクトを柔軟に設定
+- **デフォルトACL**: Voice API用の標準的なACL設定を自動適用
+- **有効期限管理**: トークンの有効期限を自動計算・表示
+
+### パラメータ
+
+| パラメータ | 型 | デフォルト | 説明 |
+|------------|------|------------|------|
+| expiresIn | number | 86400 | トークンの有効期限（秒単位、86400 = 24時間） |
+| subject | string | VonageMCP | トークンのサブジェクト（識別用） |
+
+### 使用例
+
+```javascript
+// デフォルト設定（24時間有効）
+generate_jwt()
+
+// 1時間有効のトークン
+generate_jwt({
+  expiresIn: 3600
+})
+
+// カスタムサブジェクト
+generate_jwt({
+  subject: "AdminUser",
+  expiresIn: 7200  // 2時間
+})
+```
+
+### ACL設定
+
+生成されるJWTには以下のデフォルトACL（Access Control List）が含まれます：
+
+- `/*/users/**` - ユーザー管理
+- `/*/conversations/**` - 会話管理
+- `/*/sessions/**` - セッション管理
+- `/*/devices/**` - デバイス管理
+- `/*/image/**` - 画像管理
+- `/*/media/**` - メディア管理
+- `/*/applications/**` - アプリケーション管理
+- `/*/push/**` - プッシュ通知
+- `/*/knocking/**` - ノッキング機能
+- `/*/legs/**` - 通話レッグ管理
+
+
 ### 5. トラブルシューティング
 
 #### サーバーが起動しない場合
@@ -407,7 +543,9 @@ vonage-mcp-server/
 │   ├── index.ts           # エントリーポイント・MCPツール定義
 │   ├── vonage.ts          # Vonage SMS送信機能
 │   ├── csvUtils.ts        # CSV解析・バリデーション機能
-│   └── voiceCall.ts       # Voice通話機能・NCCO生成
+│   ├── voiceCall.ts       # Voice通話機能・NCCO生成
+│   ├── jwtUtils.ts        # JWT生成機能
+│   └── callStatus.ts      # 通話ステータス取得機能
 ├── csv/                    # サンプルCSVファイル
 │   ├── sample_contacts.csv        # 基本テスト用
 │   ├── meeting_reminder.csv       # 会議リマインダー用
@@ -417,6 +555,8 @@ vonage-mcp-server/
 ├── tests/                  # テストファイル
 │   ├── index.test.ts      # メイン機能のテスト
 │   ├── utils.test.ts      # ユーティリティのテスト
+│   ├── jwtUtils.test.ts   # JWT生成のテスト
+│   ├── callStatus.test.ts # 通話ステータス取得のテスト
 │   └── integration.test.ts # 統合テスト
 
 ### HTTPラッパー (Dify / 外部アプリ用)
@@ -490,6 +630,7 @@ MCPツールからのJSON形式の結果。
 
 - `@vonage/server-sdk` - Vonage SMS機能
 - `@vonage/voice` - Voice通話機能専用SDK
+- `@vonage/jwt` - JWT認証トークン生成
 - `csv-parse` - CSVファイル解析
 - `@modelcontextprotocol/sdk` - MCP Server実装
 - `zod` - スキーマ検証

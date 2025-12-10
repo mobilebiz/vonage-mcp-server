@@ -5,6 +5,8 @@ import { z } from "zod";
 import { sendSMS, validatePhoneNumber, sendBulkSMS } from "./vonage.js";
 import { parseAndValidateCSV, generateCSVSummary } from "./csvUtils.js";
 import { makeVoiceCall, validateVoiceName, estimateCallDuration, normalizeVoiceName } from "./voiceCall.js";
+import { generateVonageJWT } from "./jwtUtils.js";
+import { getCallStatus } from "./callStatus.js";
 
 // dotenvを使用せず、直接Node.jsの--env-fileオプションを使用して環境変数を読み込むことを推奨
 // 実行方法: node --env-file=.env dist/index.js
@@ -216,6 +218,73 @@ server.registerTool("make_voice_call",
         content: [{ 
           type: "text", 
           text: `音声通話の発信に失敗しました: ${result.error}` 
+        }]
+      };
+    }
+  }
+);
+
+// Add JWT generation tool
+server.registerTool("generate_jwt",
+  {
+    title: "JWT生成",
+    description: "Vonage Voice API用のJWT認証トークンを生成します。環境変数から自動的にApplication IDとPrivate Keyを読み込みます。",
+    inputSchema: { 
+      expiresIn: z.number().optional().describe("トークンの有効期限（秒単位、デフォルト: 86400 = 24時間）"),
+      subject: z.string().optional().describe("トークンのサブジェクト（デフォルト: VonageMCP）")
+    }
+  },
+  async ({ expiresIn, subject }) => {
+    debugLog("JWT生成ツールが呼び出されました", { expiresIn, subject });
+    
+    // JWT生成
+    const result = await generateVonageJWT({ expiresIn, subject });
+    
+    if (result.success) {
+      return {
+        content: [{ 
+          type: "text", 
+          text: `JWT生成成功！\n\nトークン:\n${result.token}\n\n有効期限: ${result.expiresAt}\nサブジェクト: ${subject || 'VonageMCP'}` 
+        }]
+      };
+    } else {
+      return {
+        content: [{ 
+          type: "text", 
+          text: `JWT生成失敗: ${result.error}` 
+        }]
+      };
+    }
+  }
+);
+
+// Add Call Status retrieval tool
+server.registerTool("get_call_status",
+  {
+    title: "通話ステータス取得",
+    description: "Vonage Voice APIを使用して通話のステータス情報（status, price, rate, duration）を取得します。",
+    inputSchema: { 
+      callId: z.string().describe("取得する通話のCall ID（UUID形式）")
+    }
+  },
+  async ({ callId }) => {
+    debugLog("通話ステータス取得ツールが呼び出されました", { callId });
+    
+    // Call Status取得
+    const result = await getCallStatus({ callId });
+    
+    if (result.success) {
+      return {
+        content: [{ 
+          type: "text", 
+          text: `通話ステータス取得成功！\n\nCall ID: ${callId}\nステータス: ${result.status}\n料金: ${result.price}\nレート: ${result.rate}\n通話時間: ${result.duration}秒` 
+        }]
+      };
+    } else {
+      return {
+        content: [{ 
+          type: "text", 
+          text: `通話ステータス取得失敗: ${result.error}` 
         }]
       };
     }
