@@ -253,7 +253,7 @@ Claude Desktopの設定ファイル `claude_desktop_config.json` に以下の設
     - `callId` (必須): 取得する通話のCall ID（UUID形式）
   - 機能:
     - Vonage Voice APIから通話のステータス情報を取得
-    - status（通話ステータス）、price（料金）、rate（レート）、duration（通話時間）を返却
+    - status（通話ステータス）、start_time（開始時刻）、price（料金）、rate（レート）、duration（通話時間）を返却
     - 環境変数から自動的にApplication IDとPrivate Keyを読み込み
 
 - **generate_jwt**: JWT生成ツール
@@ -425,6 +425,7 @@ Vonage Voice APIを使用して、過去の通話のステータス情報を取�
 ### 返却される情報
 
 - **status**: 通話のステータス（completed, answered, busy, failed など）
+- **start_time**: 通話開始時刻（ISO 8601形式）
 - **price**: 通話料金（数値形式）
 - **rate**: 通話レート（1分あたりの料金）
 - **duration**: 通話時間（秒単位）
@@ -439,6 +440,7 @@ get_call_status({
 
 // 結果例:
 // ステータス: completed
+// 開始時刻: 2025-12-10T03:53:19.000Z
 // 料金: 0.06287850
 // レート: 0.13973000
 // 通話時間: 27秒

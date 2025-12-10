@@ -19,6 +19,7 @@ export interface CallStatusResult {
   price?: string;
   rate?: string;
   duration?: number;
+  startTime?: string;
   error?: string;
 }
 
@@ -82,7 +83,8 @@ export async function getCallStatus(params: CallStatusParams): Promise<CallStatu
       status: call.status,
       price: call.price,
       rate: call.rate,
-      duration: call.duration ? parseInt(call.duration, 10) : undefined
+      duration: call.duration ? parseInt(call.duration, 10) : undefined,
+      startTime: call.startTime
     };
     
   } catch (error: any) {

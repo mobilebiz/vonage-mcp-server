@@ -22,6 +22,7 @@ async function testCallStatus() {
     console.log('✓ 成功');
     console.log(`  Call ID: ${testCallId}`);
     console.log(`  ステータス: ${result.status}`);
+    console.log(`  開始時刻: ${result.startTime}`);
     console.log(`  料金: ${result.price}`);
     console.log(`  レート: ${result.rate}`);
     console.log(`  通話時間: ${result.duration}秒`);

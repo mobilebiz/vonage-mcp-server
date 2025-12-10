@@ -277,7 +277,7 @@ server.registerTool("get_call_status",
       return {
         content: [{ 
           type: "text", 
-          text: `通話ステータス取得成功！\n\nCall ID: ${callId}\nステータス: ${result.status}\n料金: ${result.price}\nレート: ${result.rate}\n通話時間: ${result.duration}秒` 
+          text: `通話ステータス取得成功！\n\nCall ID: ${callId}\nステータス: ${result.status}\n開始時刻: ${result.startTime}\n料金: ${result.price}\nレート: ${result.rate}\n通話時間: ${result.duration}秒` 
         }]
       };
     } else {
