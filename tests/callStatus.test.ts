@@ -8,10 +8,17 @@ vi.mock('fs', () => ({
 }));
 
 // Mock @vonage/server-sdk
+//
+// getCall のモックは vi.hoisted で共有インスタンスとして作る。
+// コンストラクタ内で毎回 vi.fn() を作ると、テスト側で掴んだインスタンスと
+// getCallStatus() が内部で生成するインスタンスが別物になり、
+// テストで設定した戻り値が実装側に一切届かない。
+const { getCallMock } = vi.hoisted(() => ({ getCallMock: vi.fn() }));
+
 vi.mock('@vonage/server-sdk', () => ({
   Vonage: vi.fn().mockImplementation(() => ({
     voice: {
-      getCall: vi.fn()
+      getCall: getCallMock
     }
   }))
 }));
@@ -66,17 +73,15 @@ MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC...
     process.env.VONAGE_PRIVATE_KEY_PATH = './private.key';
     
     vi.mocked(fs.readFileSync).mockReturnValue(mockPrivateKey);
-    
+
     // Mock successful API response
-    const { Vonage } = await import('@vonage/server-sdk');
-    const mockVonageInstance = new Vonage({} as any);
-    vi.mocked(mockVonageInstance.voice.getCall).mockResolvedValue({
+    getCallMock.mockResolvedValue({
       status: 'completed',
       price: '0.06287850',
       rate: '0.13973000',
       duration: '27'
     } as any);
-    
+
     const result = await getCallStatus({ callId: 'ca6b7710-3423-4c8d-b630-7b981ec4b2c2' });
     
     expect(result.success).toBe(true);

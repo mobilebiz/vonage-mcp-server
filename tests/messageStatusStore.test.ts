@@ -30,19 +30,23 @@ describe('messageStatusStore', () => {
   it('Status Webhook を取り込んでステータスを上書きする', () => {
     recordSubmitted('msg-1', '+819012345678');
 
+    // recordSubmitted は現在時刻を打つため、webhook 側は必ずそれより後の時刻にする。
+    // 固定日付を書くと、その日付を実時刻が追い越した時点で順序保護に弾かれて壊れる。
+    const deliveredAt = new Date(Date.now() + 1000).toISOString();
+
     const result = ingestStatusWebhook({
       message_uuid: 'msg-1',
       to: '819012345678',
       from: 'VonageMCP',
       channel: 'sms',
       status: 'delivered',
-      timestamp: '2026-08-04T10:00:00.000Z',
+      timestamp: deliveredAt,
     });
 
     expect(result).not.toBeNull();
     expect(result!.ignored).toBe(false);
     expect(getMessageStatus('msg-1')!.status).toBe('delivered');
-    expect(getMessageStatus('msg-1')!.timestamp).toBe('2026-08-04T10:00:00.000Z');
+    expect(getMessageStatus('msg-1')!.timestamp).toBe(deliveredAt);
     expect(messageStatusStoreSize()).toBe(1);
   });
 

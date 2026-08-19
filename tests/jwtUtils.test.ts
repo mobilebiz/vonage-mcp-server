@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { generateVonageJWT } from '../src/jwtUtils.js';
 import * as fs from 'fs';
+import { generateKeyPairSync } from 'crypto';
 
 // Mock fs.readFileSync
 vi.mock('fs', () => ({
@@ -8,9 +9,14 @@ vi.mock('fs', () => ({
 }));
 
 describe('JWT Generation', () => {
-  const mockPrivateKey = `-----BEGIN PRIVATE KEY-----
-MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC...
------END PRIVATE KEY-----`;
+  // tokenGenerate は RS256 で実際に署名するため、本物のRSA鍵が必要。
+  // プレースホルダ（"..." を含む文字列）では署名が失敗する。
+  // 鍵はテスト実行時に生成し、リポジトリには含めない。
+  const mockPrivateKey = generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  }).privateKey;
 
   beforeEach(() => {
     // Reset environment variables
