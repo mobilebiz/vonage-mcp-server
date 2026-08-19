@@ -1,5 +1,6 @@
 import { Vonage } from '@vonage/server-sdk';
 import { readFileSync } from 'fs';
+import { E164_DIALABLE_PATTERN, normalizeToE164 } from './guardrails.js';
 
 // Vonage設定のインターフェース
 interface VonageConfig {
@@ -14,25 +15,8 @@ interface SMSParams {
   from?: string;
 }
 
-// 電話番号をE.164形式に変換する関数
-function normalizePhoneNumber(phoneNumber: string): string {
-  // 空白やハイフンを削除
-  let normalized = phoneNumber.replace(/[\s\-]/g, '');
-  
-  // 日本の番号の場合（0から始まる場合）
-  if (normalized.startsWith('0')) {
-    // 先頭の0を削除して+81を追加
-    normalized = '+81' + normalized.substring(1);
-  }
-  
-  // 既に+で始まっている場合はそのまま
-  if (normalized.startsWith('+')) {
-    return normalized;
-  }
-  
-  // その他の場合は+を追加
-  return '+' + normalized;
-}
+// 電話番号をE.164形式に変換する関数（正規化ロジックは guardrails.ts に集約）
+const normalizePhoneNumber = normalizeToE164;
 
 // Vonageクライアントを初期化する関数
 function createVonageClient(config: VonageConfig): any {
@@ -102,8 +86,7 @@ export async function sendSMS(params: SMSParams): Promise<{ success: boolean; me
 export function validatePhoneNumber(phoneNumber: string): boolean {
   const normalized = normalizePhoneNumber(phoneNumber);
   // E.164形式: +[国番号][番号]（合計10～15桁）
-  if (!/^\+[1-9]\d{9,14}$/.test(normalized)) return false;
-  return true;
+  return E164_DIALABLE_PATTERN.test(normalized);
 }
 
 // バルクSMS送信の結果インターフェース

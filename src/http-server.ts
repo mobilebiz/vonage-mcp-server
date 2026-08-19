@@ -3,10 +3,11 @@ import cors from 'cors';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { z } from 'zod';
-import { sendSMS, validatePhoneNumber, sendBulkSMS } from './vonage.js';
-import { makeVoiceCall, validateVoiceName, estimateCallDuration, normalizeVoiceName } from './voiceCall.js';
-import { parseAndValidateCSV, generateCSVSummary } from './csvUtils.js';
+
+import { listTools, runTool, toolDefinitions } from './tools.js';
+import { httpStatusForOutcome, toMcpResult, unexpectedErrorOutcome } from './toolResponse.js';
+import { ingestStatusWebhook } from './messageStatusStore.js';
+import { authenticateWebhook, isWebhookAuthConfigured } from './webhookAuth.js';
 
 // 環境変数の読み込み
 dotenv.config();
@@ -14,211 +15,45 @@ dotenv.config();
 export const app = express();
 const port = process.env.PORT || 3000;
 
+const SERVER_VERSION = '1.3.0';
+
 // ミドルウェアの設定
 app.use(cors());
-app.use(express.json());
+// Webhookの署名検証（payload_hash）に生のボディが必要なため、パース時に保持しておく
+app.use(
+  express.json({
+    verify: (req, _res, buf) => {
+      (req as express.Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf);
+    },
+  })
+);
 
-// ツール定義
-const tools = [
-  {
-    name: 'send_sms',
-    description: 'Vonageを使用してSMSを送信します。日本の電話番号（0から始まる）は自動的にE.164形式に変換されます。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        to: { type: 'string', description: '送信先の電話番号（必須）' },
-        message: { type: 'string', description: '送信するメッセージ（必須）' },
-        from: { type: 'string', description: '送信元（省略時はVonageMCP）' }
-      },
-      required: ['to', 'message']
-    }
-  },
-  {
-    name: 'make_voice_call',
-    description: '指定した番号に発信してメッセージを読み上げます。日本の電話番号（0から始まる）は自動的にE.164形式に変換されます。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        to: { type: 'string', description: '発信先電話番号（0ABJ形式）' },
-        message: { type: 'string', description: '読み上げるメッセージ' },
-        voice: { type: 'string', description: '音声タイプ（デフォルト: 女性）' }
-      },
-      required: ['to', 'message']
-    }
-  },
-  {
-    name: 'bulk_sms_from_csv',
-    description: 'CSVファイル（phone,from,message）から一括SMS送信を行います。無効な行はスキップされ、処理結果がまとめて返されます。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        csv_content: { type: 'string', description: 'CSVファイルの内容（phone,from,messageのヘッダー付き）' }
-      },
-      required: ['csv_content']
-    }
-  }
-];
+// ツール定義（共通レジストリ src/tools.ts から生成）
+const tools = listTools();
 
 // Create MCP server instance
 const mcpServer = new McpServer({
   name: 'vonage-mcp-server',
-  version: '1.1.0'
+  version: SERVER_VERSION
 });
 
-// Register send_sms tool
-mcpServer.registerTool('send_sms',
-  {
-    title: 'SMS送信ツール',
-    description: 'Vonageを使用してSMSを送信します。日本の電話番号（0から始まる）は自動的にE.164形式に変換されます。',
-    inputSchema: {
-      to: z.string().describe('送信先の電話番号（必須）'),
-      message: z.string().describe('送信するメッセージ（必須）'),
-      from: z.string().optional().describe('送信元（省略時はVonageMCP）')
+// 共通レジストリからツールを一括登録（stdio版 src/index.ts と同一の定義）
+for (const tool of toolDefinitions) {
+  mcpServer.registerTool(
+    tool.name,
+    {
+      title: tool.title,
+      description: tool.description,
+      inputSchema: tool.schema
+    },
+    async (args: any) => {
+      const outcome = await tool.handler(args).catch((error) =>
+        unexpectedErrorOutcome(tool.name, error)
+      );
+      return toMcpResult(outcome) as any;
     }
-  },
-  async ({ to, message, from }) => {
-    if (!validatePhoneNumber(to)) {
-      return {
-        content: [{
-          type: 'text',
-          text: 'エラー: 無効な電話番号形式です。正しい形式で入力してください。'
-        }]
-      };
-    }
-
-    const result = await sendSMS({ to, message, from });
-
-    if (result.success) {
-      return {
-        content: [{
-          type: 'text',
-          text: `SMS送信成功！\n送信先: ${to}\nメッセージID: ${result.messageId}`
-        }]
-      };
-    } else {
-      return {
-        content: [{
-          type: 'text',
-          text: `SMS送信失敗: ${result.error}`
-        }]
-      };
-    }
-  }
-);
-
-// Register make_voice_call tool
-mcpServer.registerTool('make_voice_call',
-  {
-    title: '音声通話',
-    description: '指定した番号に発信してメッセージを読み上げます。日本の電話番号（0から始まる）は自動的にE.164形式に変換されます。',
-    inputSchema: {
-      to: z.string().describe('発信先電話番号（0ABJ形式）'),
-      message: z.string().describe('読み上げるメッセージ'),
-      voice: z.string().optional().describe('音声タイプ（デフォルト: 女性）')
-    }
-  },
-  async ({ to, message, voice }) => {
-    if (!validatePhoneNumber(to)) {
-      return {
-        content: [{
-          type: 'text',
-          text: 'エラー: 無効な電話番号形式です。正しい形式で入力してください。'
-        }]
-      };
-    }
-
-    if (voice && !validateVoiceName(voice)) {
-      return {
-        content: [{
-          type: 'text',
-          text: 'エラー: 無効な音声タイプです。利用可能: 女性、男性'
-        }]
-      };
-    }
-
-    const estimatedDuration = estimateCallDuration(message);
-    const result = await makeVoiceCall({ to, message, voice });
-
-    if (result.success) {
-      const finalVoice = normalizeVoiceName(voice || '女性');
-      return {
-        content: [{
-          type: 'text',
-          text: `音声通話を開始しました！\n発信先: ${to}\n通話ID: ${result.callId}\nメッセージ: ${message}\n音声: ${finalVoice}\n推定通話時間: ${estimatedDuration}秒`
-        }]
-      };
-    } else {
-      return {
-        content: [{
-          type: 'text',
-          text: `音声通話の発信に失敗しました: ${result.error}`
-        }]
-      };
-    }
-  }
-);
-
-// Register bulk_sms_from_csv tool
-mcpServer.registerTool('bulk_sms_from_csv',
-  {
-    title: 'CSV一括SMS送信',
-    description: 'CSVファイル（phone,from,message）から一括SMS送信を行います。無効な行はスキップされ、処理結果がまとめて返されます。',
-    inputSchema: {
-      csv_content: z.string().describe('CSVファイルの内容（phone,from,messageのヘッダー付き）')
-    }
-  },
-  async ({ csv_content }) => {
-    try {
-      const parseResult = parseAndValidateCSV(csv_content);
-      const summary = generateCSVSummary(parseResult);
-
-      if (parseResult.validRows.length === 0) {
-        return {
-          content: [{
-            type: 'text',
-            text: `エラー: 送信可能な有効な行がありませんでした。\n\n${summary}`
-          }]
-        };
-      }
-
-      const smsParams = parseResult.validRows.map(row => ({
-        to: row.phone,
-        message: row.message,
-        from: row.from
-      }));
-
-      const bulkResult = await sendBulkSMS(smsParams);
-
-      let resultText = `CSV一括SMS送信完了！\n\n`;
-      resultText += `${summary}\n`;
-      resultText += `送信結果:\n`;
-      resultText += `- 送信成功: ${bulkResult.successCount}件\n`;
-      resultText += `- 送信失敗: ${bulkResult.failureCount}件\n`;
-
-      const failures = bulkResult.results.filter(r => !r.success);
-      if (failures.length > 0) {
-        resultText += `\n失敗した送信:\n`;
-        failures.forEach(failure => {
-          resultText += `- ${failure.to}: ${failure.error}\n`;
-        });
-      }
-
-      return {
-        content: [{
-          type: 'text',
-          text: resultText
-        }]
-      };
-    } catch (error) {
-      return {
-        content: [{
-          type: 'text',
-          text: `CSV一括SMS送信エラー: ${error instanceof Error ? error.message : String(error)}`
-        }]
-      };
-    }
-  }
-);
+  );
+}
 
 /**
  * APIキー認証ミドルウェア
@@ -244,6 +79,52 @@ app.get('/health', (_req, res) => {
 });
 
 /**
+ * Vonage Messages API の Status Webhook 受信エンドポイント
+ * POST /webhooks/message-status
+ *
+ * Messages API には配信ステータスを同期的に取得するAPIが無いため、
+ * ここで受け取ったDLRをオンメモリに保持し、get_sms_status ツールから参照する。
+ * Vonage Dashboard の Application 設定で Status URL にこのURLを登録すること。
+ *
+ * 認証: Vonageから呼ばれるため x-api-key 認証の対象外だが、必ず「Vonage由来であること」を
+ *       検証する。VONAGE_API_SIGNATURE_SECRET による署名付きJWT検証を推奨。
+ *       どちらの認証手段も未設定の場合はエンドポイントを無効化する（fail-closed）。
+ */
+app.post('/webhooks/message-status', (req, res) => {
+  const auth = authenticateWebhook(req.headers, (req as express.Request & { rawBody?: Buffer }).rawBody);
+  if (!auth.authorized) {
+    res.status(auth.status ?? 401).json({ error: auth.reason });
+    return;
+  }
+
+  const result = ingestStatusWebhook(req.body);
+
+  if (!result) {
+    // Vonageのリトライを防ぐため 200 は返さず、不正なペイロードとして 400 を返す
+    res.status(400).json({ error: 'Invalid status webhook payload: message_uuid and status are required' });
+    return;
+  }
+
+  res.status(200).json({
+    status: 'ok',
+    message_id: result.record.messageId,
+    delivery_status: result.record.status,
+    // 再送・順序逆転で古い通知が届いた場合は取り込まず、既存の状態を維持する
+    ignored: result.ignored,
+  });
+});
+
+/**
+ * Vonage Messages API の Inbound Webhook 受信エンドポイント
+ * POST /webhooks/inbound
+ *
+ * 受信メッセージは現時点で利用しないが、Vonage側の設定必須項目のため 200 を返すだけのスタブを用意する。
+ */
+app.post('/webhooks/inbound', (_req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
+
+/**
  * MCP protocol endpoint
  * POST /mcp
  * Handles MCP JSON-RPC requests with authentication
@@ -254,7 +135,7 @@ app.post('/mcp', async (req, res) => {
   const validApiKey = process.env.VONAGE_APPLICATION_ID;
 
   if (!apiKey || apiKey !== validApiKey) {
-    res.status(401).json({ 
+    res.status(401).json({
       jsonrpc: '2.0',
       error: {
         code: -32000,
@@ -293,163 +174,19 @@ app.post('/mcp', async (req, res) => {
           },
           serverInfo: {
             name: 'vonage-mcp-server',
-            version: '1.1.0'
+            version: SERVER_VERSION
           }
         };
         break;
 
       case 'tools/list':
-        result = {
-          tools: tools.map(tool => ({
-            name: tool.name,
-            description: tool.description,
-            inputSchema: tool.inputSchema
-          }))
-        };
+        result = { tools };
         break;
 
       case 'tools/call': {
-        const { name, arguments: args } = params;
-        
-        // Execute the tool directly (same logic as /mcp-invoke)
-        try {
-          switch (name) {
-            case 'send_sms': {
-              const { to, message, from } = args;
-              if (!validatePhoneNumber(to)) {
-                result = {
-                  content: [{
-                    type: 'text',
-                    text: 'エラー: 無効な電話番号形式です。正しい形式で入力してください。'
-                  }]
-                };
-              } else {
-                const smsResult = await sendSMS({ to, message, from });
-                if (smsResult.success) {
-                  result = {
-                    content: [{
-                      type: 'text',
-                      text: `SMS送信成功！\n送信先: ${to}\nメッセージID: ${smsResult.messageId}`
-                    }]
-                  };
-                } else {
-                  result = {
-                    content: [{
-                      type: 'text',
-                      text: `SMS送信失敗: ${smsResult.error}`
-                    }]
-                  };
-                }
-              }
-              break;
-            }
-
-            case 'make_voice_call': {
-              const { to, message, voice } = args;
-              if (!validatePhoneNumber(to)) {
-                result = {
-                  content: [{
-                    type: 'text',
-                    text: 'エラー: 無効な電話番号形式です。正しい形式で入力してください。'
-                  }]
-                };
-              } else if (voice && !validateVoiceName(voice)) {
-                result = {
-                  content: [{
-                    type: 'text',
-                    text: 'エラー: 無効な音声タイプです。利用可能: 女性、男性'
-                  }]
-                };
-              } else {
-                const estimatedDuration = estimateCallDuration(message);
-                const callResult = await makeVoiceCall({ to, message, voice });
-                if (callResult.success) {
-                  const finalVoice = normalizeVoiceName(voice || '女性');
-                  result = {
-                    content: [{
-                      type: 'text',
-                      text: `音声通話を開始しました！\n発信先: ${to}\n通話ID: ${callResult.callId}\nメッセージ: ${message}\n音声: ${finalVoice}\n推定通話時間: ${estimatedDuration}秒`
-                    }]
-                  };
-                } else {
-                  result = {
-                    content: [{
-                      type: 'text',
-                      text: `音声通話の発信に失敗しました: ${callResult.error}`
-                    }]
-                  };
-                }
-              }
-              break;
-            }
-
-            case 'bulk_sms_from_csv': {
-              const { csv_content } = args;
-              const parseResult = parseAndValidateCSV(csv_content);
-              const summary = generateCSVSummary(parseResult);
-
-              if (parseResult.validRows.length === 0) {
-                result = {
-                  content: [{
-                    type: 'text',
-                    text: `エラー: 送信可能な有効な行がありませんでした。\n\n${summary}`
-                  }]
-                };
-              } else {
-                const smsParams = parseResult.validRows.map(row => ({
-                  to: row.phone,
-                  message: row.message,
-                  from: row.from
-                }));
-
-                const bulkResult = await sendBulkSMS(smsParams);
-
-                let resultText = `CSV一括SMS送信完了！\n\n`;
-                resultText += `${summary}\n`;
-                resultText += `送信結果:\n`;
-                resultText += `- 送信成功: ${bulkResult.successCount}件\n`;
-                resultText += `- 送信失敗: ${bulkResult.failureCount}件\n`;
-
-                const failures = bulkResult.results.filter(r => !r.success);
-                if (failures.length > 0) {
-                  resultText += `\n失敗した送信:\n`;
-                  failures.forEach(failure => {
-                    resultText += `- ${failure.to}: ${failure.error}\n`;
-                  });
-                }
-
-                result = {
-                  content: [{
-                    type: 'text',
-                    text: resultText
-                  }]
-                };
-              }
-              break;
-            }
-
-            default:
-              res.json({
-                jsonrpc: '2.0',
-                error: {
-                  code: -32601,
-                  message: `Unknown tool: ${name}`
-                },
-                id: id ?? null
-              });
-              return;
-          }
-        } catch (toolError: any) {
-          res.json({
-            jsonrpc: '2.0',
-            error: {
-              code: -32603,
-              message: toolError.message || 'Tool execution failed'
-            },
-            id: id ?? null
-          });
-          return;
-        }
+        const { name, arguments: args } = params ?? {};
+        const outcome = await runTool(name, args);
+        result = toMcpResult(outcome);
         break;
       }
 
@@ -507,119 +244,26 @@ app.post('/mcp-invoke', async (req, res) => {
     return;
   }
 
+  if (!toolDefinitions.some((definition) => definition.name === tool)) {
+    res.status(404).json({ error: `Unknown tool: ${tool}` });
+    return;
+  }
+
   try {
-    console.log(`Invoking tool: ${tool} with params:`, params);
-    
-    // ツールを直接実行
-    let result;
-    
-    switch (tool) {
-      case 'send_sms': {
-        const { to, message, from } = params;
-        if (!validatePhoneNumber(to)) {
-          res.status(400).json({ 
-            content: [{ type: 'text', text: 'エラー: 無効な電話番号形式です。正しい形式で入力してください。' }]
-          });
-          return;
-        }
-        const smsResult = await sendSMS({ to, message, from });
-        if (smsResult.success) {
-          result = {
-            content: [{ 
-              type: 'text', 
-              text: `SMS送信成功！\n送信先: ${to}\nメッセージID: ${smsResult.messageId}` 
-            }]
-          };
-        } else {
-          result = {
-            content: [{ type: 'text', text: `SMS送信失敗: ${smsResult.error}` }]
-          };
-        }
-        break;
-      }
-      
-      case 'make_voice_call': {
-        const { to, message, voice } = params;
-        if (!validatePhoneNumber(to)) {
-          res.status(400).json({ 
-            content: [{ type: 'text', text: 'エラー: 無効な電話番号形式です。正しい形式で入力してください。' }]
-          });
-          return;
-        }
-        if (voice && !validateVoiceName(voice)) {
-          res.status(400).json({ 
-            content: [{ type: 'text', text: 'エラー: 無効な音声タイプです。利用可能: 女性、男性' }]
-          });
-          return;
-        }
-        const estimatedDuration = estimateCallDuration(message);
-        const callResult = await makeVoiceCall({ to, message, voice });
-        if (callResult.success) {
-          const finalVoice = normalizeVoiceName(voice || '女性');
-          result = {
-            content: [{ 
-              type: 'text', 
-              text: `音声通話を開始しました！\n発信先: ${to}\n通話ID: ${callResult.callId}\nメッセージ: ${message}\n音声: ${finalVoice}\n推定通話時間: ${estimatedDuration}秒` 
-            }]
-          };
-        } else {
-          result = {
-            content: [{ type: 'text', text: `音声通話の発信に失敗しました: ${callResult.error}` }]
-          };
-        }
-        break;
-      }
-      
-      case 'bulk_sms_from_csv': {
-        const { csv_content } = params;
-        const parseResult = parseAndValidateCSV(csv_content);
-        const summary = generateCSVSummary(parseResult);
-        
-        if (parseResult.validRows.length === 0) {
-          result = {
-            content: [{ type: 'text', text: `エラー: 送信可能な有効な行がありませんでした。\n\n${summary}` }]
-          };
-        } else {
-          const smsParams = parseResult.validRows.map(row => ({
-            to: row.phone,
-            message: row.message,
-            from: row.from
-          }));
-          
-          const bulkResult = await sendBulkSMS(smsParams);
-          
-          let resultText = `CSV一括SMS送信完了！\n\n`;
-          resultText += `${summary}\n`;
-          resultText += `送信結果:\n`;
-          resultText += `- 送信成功: ${bulkResult.successCount}件\n`;
-          resultText += `- 送信失敗: ${bulkResult.failureCount}件\n`;
-          
-          const failures = bulkResult.results.filter(r => !r.success);
-          if (failures.length > 0) {
-            resultText += `\n失敗した送信:\n`;
-            failures.forEach(failure => {
-              resultText += `- ${failure.to}: ${failure.error}\n`;
-            });
-          }
-          
-          result = {
-            content: [{ type: 'text', text: resultText }]
-          };
-        }
-        break;
-      }
-      
-      default:
-        res.status(404).json({ error: `Unknown tool: ${tool}` });
-        return;
-    }
-    
-    res.json(result);
+    console.log(`Invoking tool: ${tool}`);
+
+    const outcome = await runTool(tool, params);
+    const result = toMcpResult(outcome);
+
+    // エラー種別に応じたステータスを返す。
+    // 入力エラー/ガードレール違反=400、レート超過=429、未検出=404、想定外=500。
+    // Vonage API 側の送信失敗は 200（MCPのツール結果）で、v1.2.1 以前の挙動と一致する。
+    res.status(httpStatusForOutcome(outcome)).json(result);
   } catch (error: any) {
     console.error(`Error invoking tool ${tool}:`, error);
-    res.status(500).json({ 
-      error: 'Internal Server Error', 
-      details: error.message 
+    res.status(500).json({
+      error: 'Internal Server Error',
+      details: error.message
     });
   }
 });
@@ -637,6 +281,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   // HTTPサーバーの起動
   const server = app.listen(port, () => {
     console.log(`HTTP MCP Wrapper listening on port ${port}`);
+    if (!isWebhookAuthConfigured()) {
+      console.warn(
+        '[WARN] Webhook認証が未設定のため POST /webhooks/message-status は無効です。' +
+          ' VONAGE_API_SIGNATURE_SECRET（推奨）または VONAGE_WEBHOOK_SECRET を設定してください。'
+      );
+    }
   });
 
   // プロセス終了時のクリーンアップ処理
@@ -646,4 +296,3 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     process.exit(0);
   });
 }
-

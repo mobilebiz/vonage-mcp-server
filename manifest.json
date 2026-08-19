@@ -3,7 +3,7 @@
   "manifest_version": "0.2",
   "name": "@mobilebiz/vonage-mcp-server",
   "display_name": "Vonage MCP Server",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "description": "Vonage SMS and Voice MCP Server - Send SMS and make voice calls using Vonage API",
   "long_description": "This extension provides Model Context Protocol (MCP) server capabilities for Vonage, allowing AI assistants to send SMS messages and make voice calls through the Vonage API.",
   "author": {
@@ -28,7 +28,10 @@
       "env": {
         "VONAGE_APPLICATION_ID": "${user_config.vonage_application_id}",
         "VONAGE_PRIVATE_KEY_PATH": "${user_config.vonage_private_key_path}",
-        "VONAGE_VOICE_FROM": "${user_config.vonage_voice_from}"
+        "VONAGE_VOICE_FROM": "${user_config.vonage_voice_from}",
+        "ALLOWED_NUMBERS": "${user_config.allowed_numbers}",
+        "RATE_LIMIT_PER_HOUR": "${user_config.rate_limit_per_hour}",
+        "BULK_MAX_ROWS": "${user_config.bulk_max_rows}"
       }
     }
   },
@@ -50,8 +53,27 @@
       "title": "Voice Call From Number",
       "description": "Phone number to use for voice calls in E.164 format (e.g., 81345438093)",
       "required": true
+    },
+    "allowed_numbers": {
+      "type": "string",
+      "title": "Allowed Numbers (optional)",
+      "description": "Comma-separated whitelist of destination numbers in E.164 format (e.g., +819012345678,+819087654321). Leave empty to allow any number.",
+      "required": false,
+      "default": ""
+    },
+    "rate_limit_per_hour": {
+      "type": "string",
+      "title": "Rate Limit Per Hour",
+      "description": "Maximum number of SMS/voice messages per hour, per tool. Bulk sending consumes one unit per message. Set to 0 to disable.",
+      "required": false,
+      "default": "5"
+    },
+    "bulk_max_rows": {
+      "type": "string",
+      "title": "Bulk CSV Max Rows",
+      "description": "Maximum number of rows accepted by bulk_sms_from_csv in a single call. Set to 0 for no limit.",
+      "required": false,
+      "default": "100"
     }
   }
 }
-
-

@@ -57,6 +57,39 @@ npm install
    VONAGE_VOICE_FROM=14155550100  # Voice通話用のFROM番号
    ```
 
+### 安全機能（Guardrails）の環境変数
+
+AIエージェント（Gemini Enterprise / Claude 等）から利用する際の、意図しない課金・スパム送信を防ぐための設定です。すべて任意で、未設定でも動作します。
+
+| 環境変数 | デフォルト | 説明 |
+| --- | --- | --- |
+| `ALLOWED_NUMBERS` | （未設定＝制限なし） | 送信・架電を許可する宛先番号のホワイトリスト（カンマ区切り）。設定すると、これ以外の番号へのリクエストはエラーになる。表記ゆれ（`090-1234-5678` 等）は正規化して比較される。 |
+| `RATE_LIMIT_PER_HOUR` | `5` | 1時間あたりの**送信・架電件数**の上限。`send_sms` / `bulk_sms_from_csv` / `make_voice_call` に**ツールごと独立して**適用される。`0` を指定すると無効。`dry_run: true` の呼び出しは消費しない。 |
+| `BULK_MAX_ROWS` | `100` | `bulk_sms_from_csv` が一度に受け付けるCSVの最大行数。`0` を指定すると無制限。 |
+| `VONAGE_API_SIGNATURE_SECRET` | （未設定） | Status Webhook の署名検証に使う Vonage の Signature Secret。**推奨**。Vonage Dashboard の Settings → API settings で取得できる。 |
+| `VONAGE_WEBHOOK_SECRET` | （未設定） | 署名検証が使えない環境向けの代替。設定すると `x-webhook-secret` ヘッダーの一致を要求する。 |
+
+```sh
+# 検証中は自分の番号だけに送信を許可する例
+ALLOWED_NUMBERS=+819012345678,+819087654321
+RATE_LIMIT_PER_HOUR=3
+BULK_MAX_ROWS=10
+VONAGE_API_SIGNATURE_SECRET=your_signature_secret_here
+```
+
+> [!IMPORTANT]
+> **レートリミットは「ツール呼び出し回数」ではなく「送信件数」で消費されます。**
+> `bulk_sms_from_csv` は CSV の送信対象行数の分だけまとめて枠を消費し、残り枠が足りない場合は**1件も送信せず**エラーを返します。これにより、巨大なCSVを渡してレートリミットを迂回することはできません。
+
+> [!IMPORTANT]
+> `ALLOWED_NUMBERS` を設定しているのに有効な電話番号が1件も解釈できない場合（例: `ALLOWED_NUMBERS=,`）、「制限なし」ではなく**すべて拒否**として扱います。設定ミスを安全側に倒すためです。制限が不要な場合は環境変数自体を削除してください。
+
+> [!IMPORTANT]
+> `VONAGE_API_SIGNATURE_SECRET` と `VONAGE_WEBHOOK_SECRET` の**どちらも未設定の場合、Status Webhook エンドポイントは 503 を返して無効化されます**。未認証で受け付けると、誰でも任意の `message_id` の配信ステータスを偽装できてしまうためです。
+
+> [!NOTE]
+> レートリミットはオンメモリ管理のため、プロセスを再起動するとカウントはリセットされます。
+
 ### 開発用依存関係のインストール
 
 ```bash
@@ -219,29 +252,36 @@ Claude Desktopの設定ファイル `claude_desktop_config.json` に以下の設
 
 #### ツール
 
+すべてのツールは軽量なJSONを返します（Vonage APIの生レスポンスは返しません）。詳細は [ツールのレスポンス形式](#ツールのレスポンス形式) を参照してください。
+
 - **send_sms**: 単発SMS送信ツール
   - 入力:
-    - `to` (必須): 送信先の電話番号
-    - `message` (必須): 送信するメッセージ
-    - `from` (オプション): 送信元（省略時は'VonageMCP'）
+    - `to` (必須): 送信先の電話番号（E.164形式 `+819012345678` または日本の国内形式 `09012345678`）
+    - `message` (必須): 送信するメッセージ（**最大160文字**）
+    - `from` (オプション): 送信元。英数字3〜11文字（先頭は英字）かE.164形式の電話番号。省略時は'VonageMCP'。`dry_run` の時点で検証される
+    - `dry_run` (オプション): `true` で送信せず検証のみ（デフォルト: `false`）
   - 機能:
     - 日本の電話番号（0から始まる）は自動的にE.164形式に変換
-    - 送信結果とメッセージIDを返却
+    - `{"status":"success","message_id":"...","to":"+81..."}` を返却
 
 - **bulk_sms_from_csv**: CSV一括SMS送信ツール
   - 入力:
     - `csv_content` (必須): CSVファイルの内容（phone,from,messageのヘッダー付き）
+    - `dry_run` (オプション): `true` で送信せず件数のみ返却
   - 機能:
     - CSVファイルを解析して複数宛先に一括SMS送信
-    - 無効な行は自動的にスキップ
-    - 送信結果の詳細レポートを返却
+    - 無効な行・`ALLOWED_NUMBERS` 外の行・**本文が160文字を超える行**は自動的にスキップ
+    - CSVの行数は `BULK_MAX_ROWS`（デフォルト100）で制限
+    - **送信件数の分だけレートリミットを消費**し、残り枠が足りなければ1件も送信しない
+    - 送信件数と失敗の要約（先頭10件）を返却
     - API制限回避のため100ms間隔で順次送信
 
 - **make_voice_call**: 音声通話ツール
   - 入力:
-    - `to` (必須): 発信先電話番号(0ABJ形式)
-    - `message` (必須): 読み上げるメッセージ
-    - `voice` (オプション): 音声タイプ（デフォルト: 女性）
+    - `to` (必須): 発信先電話番号（E.164形式または0ABJ形式）
+    - `message` (必須): 読み上げるメッセージ（最大1000文字）
+    - `voice` (オプション): `女性` または `男性`（デフォルト: 女性）
+    - `dry_run` (オプション): `true` で発信せず検証のみ
   - 機能:
     - 指定番号に発信してメッセージを音声で読み上げ
     - 日本語音声対応（女性・男性）
@@ -250,11 +290,21 @@ Claude Desktopの設定ファイル `claude_desktop_config.json` に以下の設
 
 - **get_call_status**: 通話ステータス取得ツール
   - 入力:
-    - `callId` (必須): 取得する通話のCall ID（UUID形式）
+    - `callId` / `call_id` (いずれか必須): 取得する通話のCall ID（UUID形式）
   - 機能:
     - Vonage Voice APIから通話のステータス情報を取得
-    - status（通話ステータス）、start_time（開始時刻）、price（料金）、rate（レート）、duration（通話時間）を返却
+    - `call_status`（通話ステータス）、`start_time`、`price`、`rate`、`duration_seconds` を返却
     - 環境変数から自動的にApplication IDとPrivate Keyを読み込み
+
+- **get_sms_status**: SMS配信ステータス取得ツール
+  - 入力:
+    - `message_id` (必須): `send_sms` が返した message_id
+  - 機能:
+    - `delivery_status`（`submitted` / `delivered` / `failed` 等）を返却
+    - **Vonage Messages APIは配信ステータスを同期取得できない**ため、HTTPサーバー版の
+      Status Webhook（`POST /webhooks/message-status`）で受信した結果を参照する
+    - Webhook未設定時・stdio版では `submitted` のまま（`note` フィールドで明示される）
+    - 記録はオンメモリで24時間保持（プロセス再起動でクリア）
 
 - **generate_jwt**: JWT生成ツール
   - 入力:
@@ -266,6 +316,18 @@ Claude Desktopの設定ファイル `claude_desktop_config.json` に以下の設
     - デフォルトのACL設定を含む（Voice API用の標準パス）
     - 有効期限とサブジェクトをカスタマイズ可能
 
+#### ツールのレスポンス形式
+
+| status | 意味 | 例 |
+| --- | --- | --- |
+| `success` | 実行成功 | `{"status":"success","message_id":"abc","to":"+819012345678"}` |
+| `partial_success` | 一括送信で一部だけ成功 | `{"status":"partial_success","sent":8,"failed":2,"failures":[...]}` |
+| `dry_run_success` | 検証のみ成功（API呼び出しなし） | `{"status":"dry_run_success","message":"Ready to send","to":"+819012345678","characters":12}` |
+| `error` | 失敗（一括送信の全件失敗を含む） | `{"status":"error","reason":"無効な電話番号形式です: 123","suggestion":"番号のフォーマットを確認してください。..."}` |
+
+エラー時は必ず `reason`（原因）と `suggestion`（AIが次に取るべき行動）が含まれます。再試行が無意味なケースでは `suggestion` にその旨が明記されるため、AIエージェントの無限リトライを防げます。
+
+一括送信は結果に応じて `success` / `partial_success` / `error` を返し分けます。トップレベルの `status` だけを見て「全件送れた」と誤認しないためです。
 
 ### 4. 使用例
 
@@ -542,7 +604,13 @@ generate_jwt({
 ```sh
 vonage-mcp-server/
 ├── src/                    # TypeScriptソースコード
-│   ├── index.ts           # エントリーポイント・MCPツール定義
+│   ├── index.ts           # stdio版エントリーポイント
+│   ├── http-server.ts     # HTTP版エントリーポイント・Webhook受信
+│   ├── tools.ts           # MCPツール定義の共通レジストリ（stdio/HTTP共用）
+│   ├── guardrails.ts      # 電話番号検証・ホワイトリスト・レートリミット
+│   ├── toolResponse.ts    # 軽量JSONレスポンスの整形
+│   ├── messageStatusStore.ts # SMS配信ステータスのオンメモリ保持
+│   ├── webhookAuth.ts     # Vonage署名付きWebhookの検証
 │   ├── vonage.ts          # Vonage SMS送信機能
 │   ├── csvUtils.ts        # CSV解析・バリデーション機能
 │   ├── voiceCall.ts       # Voice通話機能・NCCO生成
@@ -559,7 +627,14 @@ vonage-mcp-server/
 │   ├── utils.test.ts      # ユーティリティのテスト
 │   ├── jwtUtils.test.ts   # JWT生成のテスト
 │   ├── callStatus.test.ts # 通話ステータス取得のテスト
+│   ├── tools.test.ts      # ツールレジストリ・ガードレール統合のテスト
+│   ├── guardrails.test.ts # ホワイトリスト・レートリミットのテスト
+│   ├── messageStatusStore.test.ts # 配信ステータス保持のテスト
+│   ├── http-server.test.ts # HTTPラッパーのテスト
 │   └── integration.test.ts # 統合テスト
+├── docs/
+│   ├── deployment.md      # デプロイ手順
+│   └── gemini_system_instruction.md # Gemini Enterprise向けSystem Instruction
 
 ### HTTPラッパー (Dify / 外部アプリ用)
 
@@ -615,8 +690,62 @@ curl -X POST http://localhost:3000/mcp-invoke \
 ```
 
 **Response:**
-MCPツールからのJSON形式の結果。
+MCPツールからのJSON形式の結果。エラーの種別に応じて以下のHTTPステータスを返します。
 
+| 状況 | HTTPステータス |
+| --- | --- |
+| 成功 / dry_run / 一部成功 | `200` |
+| 入力エラー・`ALLOWED_NUMBERS` 違反・本文長超過 | `400` |
+| ステータス記録が見つからない（`get_sms_status`） | `404` |
+| レートリミット超過 | `429`（`retry_after_seconds` を含む） |
+| Vonage API 側の送信失敗 | `200`（MCPのツール結果として返す。v1.2.1以前と同じ） |
+| サーバー内部の想定外エラー | `500` |
+
+**POST** `/mcp`
+
+MCP JSON-RPC 2.0 エンドポイント。`initialize` / `tools/list` / `tools/call` / `ping` に対応します。Gemini Enterprise などのMCPクライアントはこちらを使用してください。
+
+**POST** `/webhooks/message-status`
+
+Vonage Messages API の Status Webhook（配信結果 / DLR）の受信エンドポイントです。Vonage から呼ばれるため `x-api-key` 認証の対象外ですが、**別途Webhook認証が必須**です。
+
+受信した配信結果はオンメモリに24時間保持され、`get_sms_status` ツールから参照できます。Vonage Dashboard の Application 設定で **Status URL** に `https://<host>/webhooks/message-status` を登録してください。
+
+認証は以下の優先順位で行われます。
+
+1. `VONAGE_API_SIGNATURE_SECRET` が設定されていれば、`Authorization: Bearer <JWT>` の署名（HS256）と、ボディを束縛する `payload_hash` クレームを検証する（**推奨**）
+2. `VONAGE_WEBHOOK_SECRET` が設定されていれば、`x-webhook-secret` ヘッダーと照合する
+3. どちらも未設定なら **503 を返してエンドポイントを無効化**する
+
+| 状況 | HTTPステータス |
+| --- | --- |
+| 取り込み成功 | `200`（`ignored: false`） |
+| 再送・順序逆転で古い通知が届いた | `200`（`ignored: true`、既存の状態を維持） |
+| 認証情報なし・不正な署名・`payload_hash` 不一致 | `401` |
+| `message_uuid` / `status` が欠けたペイロード | `400` |
+| Webhook認証が未設定 | `503` |
+
+```bash
+# 共有シークレット方式の例
+curl -X POST http://localhost:3000/webhooks/message-status \
+  -H "Content-Type: application/json" \
+  -H "x-webhook-secret: $VONAGE_WEBHOOK_SECRET" \
+  -d '{"message_uuid":"abc-123","to":"819012345678","status":"delivered","channel":"sms"}'
+```
+
+**POST** `/webhooks/inbound`
+
+受信メッセージ用のスタブ（常に 200 を返す）。Vonage側の設定必須項目を満たすために用意しています。
+
+## Gemini Enterprise などのAIエージェントから利用する
+
+AIエージェントに設定すべき System Instruction（承認フロー、`dry_run` の使い方、エラー対処方針）を [`docs/gemini_system_instruction.md`](docs/gemini_system_instruction.md) にまとめています。そのまま貼り付けられる形式です。
+
+あわせて、サーバー側で [`ALLOWED_NUMBERS` と `RATE_LIMIT_PER_HOUR`](#安全機能guardrailsの環境変数) を設定することを強く推奨します。
+
+## プロジェクト構造（続き）
+
+```text
 ├── dist/                  # コンパイルされたJavaScript
 ├── package.json           # プロジェクト設定
 ├── tsconfig.json          # TypeScript設定
@@ -636,6 +765,8 @@ MCPツールからのJSON形式の結果。
 - `csv-parse` - CSVファイル解析
 - `@modelcontextprotocol/sdk` - MCP Server実装
 - `zod` - スキーマ検証
+- `zod-to-json-schema` - ZodスキーマからJSON Schemaを生成（HTTP版の `tools/list` 用）
+- `express` / `cors` - HTTPラッパー
 
 ## ライセンス
 
