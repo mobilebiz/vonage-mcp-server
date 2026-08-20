@@ -101,6 +101,8 @@ describe('HTTP MCP Wrapper', () => {
     // 認証を検証するテストだけが個別に設定する。
     delete process.env.MCP_AUTH_TOKEN;
     delete process.env.TRUST_UPSTREAM_AUTH;
+    delete process.env.ALLOWED_ORIGINS;
+    delete process.env.ALLOWED_HOSTS;
     process.env.VONAGE_APPLICATION_ID = TEST_API_KEY;
     delete process.env.RATE_LIMIT_PER_HOUR;
     // RATE_LIMIT_PER_HOUR=0 は「全拒否」の意味なので、無効化には使えない
@@ -316,6 +318,117 @@ describe('HTTP MCP Wrapper', () => {
 
       expect(res.body.error).toBeTruthy();
       expect(mockMakeVoiceCall).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('CORS', () => {
+    const EVIL = 'https://evil.example.com';
+    const OK = 'https://console.example.com';
+
+    // 開いていると、ブラウザ側がトークンを持つ構成で悪意あるページが
+    // /mcp を呼び、レスポンスまで読み取れてしまう
+    it('既定ではクロスオリジンを許可しない', async () => {
+      const res = await request(app)
+        .post('/mcp')
+        .set('Accept', MCP_ACCEPT)
+        .set('Origin', EVIL)
+        .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+
+      expect(res.headers['access-control-allow-origin']).toBeUndefined();
+    });
+
+    it('既定ではプリフライトを通さない', async () => {
+      const res = await request(app)
+        .options('/mcp')
+        .set('Origin', EVIL)
+        .set('Access-Control-Request-Method', 'POST');
+
+      expect(res.headers['access-control-allow-origin']).toBeUndefined();
+    });
+
+    it('ALLOWED_ORIGINS に載せたオリジンだけ許可する', async () => {
+      process.env.ALLOWED_ORIGINS = OK;
+
+      const allowed = await request(app)
+        .post('/mcp')
+        .set('Accept', MCP_ACCEPT)
+        .set('Origin', OK)
+        .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+      expect(allowed.headers['access-control-allow-origin']).toBe(OK);
+
+      const denied = await request(app)
+        .post('/mcp')
+        .set('Accept', MCP_ACCEPT)
+        .set('Origin', EVIL)
+        .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+      expect(denied.headers['access-control-allow-origin']).toBeUndefined();
+    });
+
+    it('複数オリジンを指定できる', async () => {
+      process.env.ALLOWED_ORIGINS = `${OK}, ${EVIL}`;
+
+      const res = await request(app)
+        .post('/mcp')
+        .set('Accept', MCP_ACCEPT)
+        .set('Origin', EVIL)
+        .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+
+      expect(res.headers['access-control-allow-origin']).toBe(EVIL);
+    });
+  });
+
+  describe('DNS rebinding 対策 (Host 検証)', () => {
+    // 攻撃者のドメインを 127.0.0.1 に解決させると、ブラウザからは同一オリジンに
+    // 見えるため CORS では防げない。Host ヘッダーで弾く。
+    it('ループバック運用では見知らぬ Host を 403 で拒否する', async () => {
+      process.env.ALLOWED_HOSTS = 'localhost,127.0.0.1';
+
+      const res = await request(app)
+        .post('/mcp')
+        .set('Accept', MCP_ACCEPT)
+        .set('Host', 'attacker.example.com')
+        .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error.message).toContain('host not allowed');
+    });
+
+    // リバースプロキシ配下では Host のポートが待ち受けポートと一致しない
+    it('ポートが違っても、ホスト名が一致すれば通す', async () => {
+      process.env.ALLOWED_HOSTS = 'localhost';
+
+      const res = await request(app)
+        .post('/mcp')
+        .set('Accept', MCP_ACCEPT)
+        .set('Host', 'localhost:8443')
+        .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('ALLOWED_HOSTS にポート付きで書かれていてもホスト名で比較する', async () => {
+      process.env.ALLOWED_HOSTS = 'mcp.example.com:3000';
+
+      const res = await request(app)
+        .post('/mcp')
+        .set('Accept', MCP_ACCEPT)
+        .set('Host', 'mcp.example.com')
+        .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('Host 検証は認証より先に効く', async () => {
+      process.env.ALLOWED_HOSTS = 'localhost';
+      process.env.MCP_AUTH_TOKEN = 'a'.repeat(32);
+
+      const res = await request(app)
+        .post('/mcp')
+        .set('Accept', MCP_ACCEPT)
+        .set('Host', 'attacker.example.com')
+        .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+
+      expect(res.status).toBe(403);
     });
   });
 

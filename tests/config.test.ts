@@ -8,6 +8,9 @@ import {
   MAX_RATE_LIMIT_PER_HOUR,
   getBulkMaxRows,
   getCapabilities,
+  extractHostname,
+  getAllowedHostnames,
+  getAllowedOrigins,
   getBindHost,
   getMcpAuthToken,
   getPort,
@@ -37,6 +40,8 @@ const MANAGED_ENV = [
   'TRUST_UPSTREAM_AUTH',
   'BIND_HOST',
   'PORT',
+  'ALLOWED_ORIGINS',
+  'ALLOWED_HOSTS',
 ];
 
 describe('config', () => {
@@ -236,6 +241,48 @@ describe('config', () => {
     it('PORT は範囲を検証する', () => {
       process.env.PORT = '70000';
       expect(() => getPort()).toThrow(ConfigError);
+    });
+  });
+
+  describe('CORS と Host の許可リスト', () => {
+    it('ALLOWED_ORIGINS の既定は「一切許可しない」', () => {
+      expect(getAllowedOrigins()).toBeNull();
+    });
+
+    it('カンマ区切りで複数指定でき、空要素は無視する', () => {
+      process.env.ALLOWED_ORIGINS = ' https://a.example.com , , https://b.example.com ';
+      expect(getAllowedOrigins()).toEqual(['https://a.example.com', 'https://b.example.com']);
+    });
+
+    it('設定したのに有効な値が無ければ起動エラー', () => {
+      process.env.ALLOWED_ORIGINS = ' , ,';
+      expect(() => getAllowedOrigins()).toThrow(ConfigError);
+    });
+
+    it('ループバック運用では localhost 系だけを許可する', () => {
+      expect(getAllowedHostnames()).toEqual(['localhost', '127.0.0.1', '::1']);
+    });
+
+    // 正しい Host は運用者のドメインで、こちらからは分からない。
+    // 推測して塞ぐと正規のリクエストまで落ちる。
+    it('外部アドレスに bind する場合は、明示されるまで Host を検証しない', () => {
+      process.env.MCP_AUTH_TOKEN = 'a'.repeat(32);
+      process.env.BIND_HOST = '0.0.0.0';
+
+      expect(getAllowedHostnames()).toBeNull();
+
+      process.env.ALLOWED_HOSTS = 'mcp.example.com';
+      expect(getAllowedHostnames()).toEqual(['mcp.example.com']);
+    });
+
+    it.each([
+      ['localhost', 'localhost'],
+      ['localhost:3000', 'localhost'],
+      ['MCP.Example.COM:8443', 'mcp.example.com'],
+      ['[::1]:3000', '::1'],
+      ['[::1]', '::1'],
+    ])('extractHostname(%s) は %s', (input, expected) => {
+      expect(extractHostname(input)).toBe(expected);
     });
   });
 

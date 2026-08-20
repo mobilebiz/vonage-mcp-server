@@ -380,6 +380,81 @@ export function getPort(): number {
   return parseIntegerEnv('PORT', { min: 1, max: 65535, defaultValue: 3000 });
 }
 
+/** カンマ区切りの環境変数を、空要素を除いた配列にする */
+function parseListEnv(name: string): string[] | null {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') {
+    return null;
+  }
+
+  const values = raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== '');
+
+  if (values.length === 0) {
+    throw new ConfigError([
+      `${name} が設定されていますが、有効な値が1件もありません。不要なら環境変数自体を削除してください。`,
+    ]);
+  }
+
+  return values;
+}
+
+/**
+ * CORS で許可するオリジン。null は「クロスオリジンを一切許可しない」。
+ *
+ * 既定で閉じる。ブラウザ上のページがトークンを持っている構成では、開いていると
+ * 悪意あるページが /mcp を呼んで**レスポンスまで読める**。MCP クライアントの
+ * 多くはブラウザではないので、開ける必要があるのは例外的なケースだけ。
+ */
+export function getAllowedOrigins(): string[] | null {
+  return parseListEnv('ALLOWED_ORIGINS');
+}
+
+/**
+ * DNS rebinding 対策で許可する Host のホスト名。null は検証しない。
+ *
+ * ループバックで待ち受ける構成では、攻撃者のドメインを 127.0.0.1 に解決させて
+ * ブラウザからローカルのサーバーを叩く手口（DNS rebinding）が成立する。
+ * このとき Host ヘッダーは攻撃者のドメインになるので、localhost 系だけを
+ * 許可しておけば防げる。
+ *
+ * ポートは比較に含めない。DNS rebinding で問題になるのは名前の解決先であって
+ * ポートではないうえ、リバースプロキシ配下では Host のポートが待ち受けポートと
+ * 一致しないのが普通だから。
+ */
+export function getAllowedHostnames(): string[] | null {
+  const configured = parseListEnv('ALLOWED_HOSTS');
+  if (configured !== null) {
+    return configured.map(extractHostname);
+  }
+
+  // ループバック以外に bind する場合、正しい Host は運用者のドメインであり
+  // こちらからは分からない。推測して塞ぐと正規のリクエストを落とすので、
+  // ALLOWED_HOSTS が明示されるまで検証しない。
+  if (!isLoopbackHost(getBindHost())) {
+    return null;
+  }
+
+  return ['localhost', '127.0.0.1', '::1'];
+}
+
+/**
+ * `host:port` 形式からホスト名だけを取り出す。IPv6 の `[::1]:3000` にも対応する。
+ */
+export function extractHostname(hostHeader: string): string {
+  const value = hostHeader.trim().toLowerCase();
+
+  if (value.startsWith('[')) {
+    const end = value.indexOf(']');
+    return end === -1 ? value : value.slice(1, end);
+  }
+
+  const colon = value.indexOf(':');
+  return colon === -1 ? value : value.slice(0, colon);
+}
+
 /**
  * 署名付き Webhook の `iat` / `exp` に許す時刻のずれ（秒）。
  *
@@ -456,6 +531,8 @@ export function validateStartupConfig(): string[] {
   collect(() => getMcpAuthToken());
   collect(() => parseBooleanEnv('TRUST_UPSTREAM_AUTH'));
   collect(() => getPort());
+  collect(() => getAllowedOrigins());
+  collect(() => parseListEnv('ALLOWED_HOSTS'));
   collect(() => getAllowedCountryCodes());
 
   // capability と依存する資格情報の突き合わせ。
@@ -508,6 +585,13 @@ export function validateStartupConfig(): string[] {
 
   if (problems.length > 0) {
     throw new ConfigError(problems);
+  }
+
+  if (getAllowedOrigins() !== null) {
+    warnings.push(
+      `ALLOWED_ORIGINS が設定されています（${getAllowedOrigins()!.join(', ')}）。` +
+        'これらのオリジンのブラウザページから /mcp を呼び出せます。意図した設定か確認してください。'
+    );
   }
 
   if (parseBooleanEnv('TRUST_UPSTREAM_AUTH')) {

@@ -9,6 +9,9 @@ import { ingestStatusWebhook } from './messageStatusStore.js';
 import { authenticateWebhook, isWebhookAuthConfigured, safeEqual } from './webhookAuth.js';
 import {
   applyStartupConfig,
+  extractHostname,
+  getAllowedHostnames,
+  getAllowedOrigins,
   getBindHost,
   getMcpAuthToken,
   getPort,
@@ -32,8 +35,26 @@ if (isMainModule) {
 
 export const app = express();
 
-// ミドルウェアの設定
-app.use(cors());
+/**
+ * CORS は既定で閉じる。
+ *
+ * 以前は `app.use(cors())` で全オリジンを許可していた。Bearer トークン認証が
+ * あっても、ブラウザ側がトークンを持っている構成（ブラウザ拡張やWeb版の
+ * MCPクライアント）では、悪意あるページが /mcp を呼んで**レスポンスまで
+ * 読み取れる**。generate_jwt が有効なら、生成したトークンの窃取に直結する。
+ *
+ * MCP クライアントの多くはブラウザではないので、開ける必要があるのは
+ * 例外的なケースだけ。必要な運用者だけが ALLOWED_ORIGINS で明示する。
+ */
+app.use((req, res, next) => {
+  const origins = getAllowedOrigins();
+  if (origins === null) {
+    next();
+    return;
+  }
+
+  cors({ origin: origins, credentials: false })(req, res, next);
+});
 // Webhookの署名検証（payload_hash）に生のボディが必要なため、パース時に保持しておく
 app.use(
   express.json({
@@ -86,7 +107,43 @@ function requireMcpAuth(
   next();
 }
 
-app.use('/mcp', requireMcpAuth);
+/**
+ * DNS rebinding 対策の Host 検証。
+ *
+ * ループバック運用では、攻撃者のドメインを 127.0.0.1 に解決させることで、
+ * ブラウザから同一オリジン扱いでローカルのサーバーを叩ける。CORS では防げない
+ * （ブラウザから見て同一オリジンになるため）。このとき Host ヘッダーには
+ * 攻撃者のドメインが入るので、そこで弾く。
+ *
+ * SDK の enableDnsRebindingProtection は Host をポート込みで比較するため使わない。
+ * リバースプロキシ配下では Host のポートが待ち受けポートと一致しないのが普通で、
+ * 正規のリクエストまで落ちる。
+ */
+function requireAllowedHost(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+): void {
+  const allowed = getAllowedHostnames();
+  if (allowed === null) {
+    next();
+    return;
+  }
+
+  const header = req.headers.host;
+  if (typeof header !== 'string' || !allowed.includes(extractHostname(header))) {
+    res.status(403).json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: `Forbidden: host not allowed (${header ?? 'missing Host'})` },
+      id: null,
+    });
+    return;
+  }
+
+  next();
+}
+
+app.use('/mcp', requireAllowedHost, requireMcpAuth);
 
 /**
  * ヘルスチェック用エンドポイント
