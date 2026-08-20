@@ -141,12 +141,17 @@ describe('tools registry', () => {
   });
 
   describe('send_sms', () => {
-    it('成功時は message_id と to だけを返す', async () => {
+    it('成功時は軽量なペイロードを返す', async () => {
       mockSendSMS.mockResolvedValue({ success: true, messageId: 'msg-123' });
 
       const payload = await invoke('send_sms', { to: '09012345678', message: 'hello' });
 
-      expect(payload).toEqual({ status: 'success', message_id: 'msg-123', to: '+819012345678' });
+      expect(payload).toEqual({
+        status: 'success',
+        message_id: 'msg-123',
+        to: '+819012345678',
+        segments: 1,
+      });
       expect(mockSendSMS).toHaveBeenCalledWith({
         to: '+819012345678',
         message: 'hello',
@@ -185,6 +190,62 @@ describe('tools registry', () => {
         segments: 1,
       });
       expect(mockSendSMS).not.toHaveBeenCalled();
+    });
+
+    // 日本のネットワークは URL を含む SMS を配信しないことがある。
+    // API は成功を返すので、エージェントは失敗を検知できない。
+    describe('URL を含む本文の配信不確実性', () => {
+      it('日本宛では dry_run と成功レスポンスに注意書きが付く', async () => {
+        mockSendSMS.mockResolvedValue({ success: true, messageId: 'm' });
+
+        const preview = await invoke('send_sms', {
+          to: '09012345678',
+          message: '詳細は https://example.com をご覧ください',
+          dry_run: true,
+        });
+        expect(preview.delivery_warning).toContain('配信されないことがあります');
+
+        const sent = await invoke('send_sms', {
+          to: '09012345678',
+          message: '詳細は https://example.com をご覧ください',
+        });
+        expect(sent.status).toBe('success');
+        expect(sent.delivery_warning).toContain('get_sms_status');
+      });
+
+      it('URL が無ければ注意書きは付かない', async () => {
+        mockSendSMS.mockResolvedValue({ success: true, messageId: 'm' });
+
+        const payload = await invoke('send_sms', { to: '09012345678', message: 'お知らせです' });
+
+        expect(payload.delivery_warning).toBeUndefined();
+      });
+
+      // 制限は日本のネットワーク固有のもの
+      it('日本以外の宛先には付かない', async () => {
+        process.env.ALLOWED_COUNTRY_CODES = '81,1';
+        mockSendSMS.mockResolvedValue({ success: true, messageId: 'm' });
+
+        const payload = await invoke('send_sms', {
+          to: '+12125551234',
+          message: 'See https://example.com',
+        });
+
+        expect(payload.delivery_warning).toBeUndefined();
+      });
+
+      // ブロックはしない。正当な用途があり、拒否基準も非公開のため
+      it('URL があっても送信自体は止めない', async () => {
+        mockSendSMS.mockResolvedValue({ success: true, messageId: 'm' });
+
+        const payload = await invoke('send_sms', {
+          to: '09012345678',
+          message: 'https://example.com',
+        });
+
+        expect(payload.status).toBe('success');
+        expect(mockSendSMS).toHaveBeenCalled();
+      });
     });
 
     it('ALLOWED_NUMBERS 外の番号はブロックされる', async () => {

@@ -23,8 +23,10 @@ import {
   PHONE_INPUT_PATTERN,
   SMS_INPUT_MAX_LENGTH,
   VOICE_MESSAGE_MAX_LENGTH,
+  JP_URL_DELIVERY_WARNING,
   buildRateLimitError,
   checkDestination,
+  containsUrl,
   isEmergencyNumber,
   getBulkMaxRows,
   toolRateLimiter,
@@ -212,7 +214,11 @@ const toolImplementations: ToolImplementation[] = [
     capability: 'ENABLE_SMS',
     title: 'SMS送信ツール',
     description:
-      'VonageのMessages APIでSMSを1件送信する。送信は課金対象のため、実行前に必ず dry_run: true で検証し、宛先と本文をユーザーに提示して承認を得ること。日本の国内形式（0始まり）の番号は自動的にE.164形式へ変換される。',
+      'VonageのMessages APIでSMSを1件送信する。送信は課金対象のため、実行前に必ず dry_run: true で検証し、宛先と本文をユーザーに提示して承認を得ること。' +
+      '日本の国内形式（0始まり）の番号は自動的にE.164形式へ変換される。' +
+      '**成功レスポンスは「Vonageが受理した」ことを意味するだけで、配信の保証ではない。**' +
+      'とくに日本宛では、URLを含むメッセージがフィッシング対策で配信されないことがある（拒否基準は非公開）。' +
+      '「送信しました」と断定せず、配信結果は get_sms_status で確認するようユーザーに案内すること。',
     schema: {
       to: toField,
       message: z
@@ -229,7 +235,8 @@ const toolImplementations: ToolImplementation[] = [
         .string()
         .optional()
         .describe(
-          '送信元表示名。英数字3〜11文字（先頭は英字、例: VonageMCP）か、E.164形式の電話番号。省略時は VonageMCP。'
+          '送信元表示名。英数字1〜11文字（A-Z a-z 0-9、例: VonageMCP）。省略時は VonageMCP。' +
+            '日本宛では電話番号や INFO / SMS / NOTICE のような汎用語は使用できない。'
         ),
       dry_run: dryRunField,
     },
@@ -254,6 +261,13 @@ const toolImplementations: ToolImplementation[] = [
         return segments.outcome;
       }
 
+      // 日本のネットワークは URL を含む SMS を配信しないことがある。
+      // ブロックはせず、届かない可能性をユーザーに伝えられるようにする。
+      const urlWarning =
+        guarded.normalized.startsWith('+81') && containsUrl(message)
+          ? { delivery_warning: JP_URL_DELIVERY_WARNING }
+          : {};
+
       if (dry_run) {
         return dryRunOutcome({
           tool: 'send_sms',
@@ -263,6 +277,7 @@ const toolImplementations: ToolImplementation[] = [
           // 課金はセグメント単位。承認の材料になるのは文字数ではなくこちら。
           encoding: segments.estimate.encoding,
           segments: segments.estimate.segments,
+          ...urlWarning,
         });
       }
 
@@ -289,7 +304,13 @@ const toolImplementations: ToolImplementation[] = [
         recordSubmitted(result.messageId, guarded.normalized, from ?? 'VonageMCP');
       }
 
-      return successOutcome({ message_id: result.messageId, to: guarded.normalized });
+      // 送信APIの成功は「Vonageが受理した」ことしか意味しない。配信保証ではない。
+      return successOutcome({
+        message_id: result.messageId,
+        to: guarded.normalized,
+        segments: segments.estimate.segments,
+        ...urlWarning,
+      });
     },
   },
 

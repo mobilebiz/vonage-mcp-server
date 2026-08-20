@@ -201,6 +201,34 @@ export function checkAllowedNumber(normalizedE164: string): AllowListResult {
 }
 
 /**
+ * 本文に URL らしき文字列が含まれるかを判定する。
+ *
+ * 日本のネットワークは、フィッシング SMS 対策として **URL を含むメッセージを
+ * 配信しないことがある**。拒否基準は公開されていない。厄介なのは
+ * **API が成功を返すのに実際には届かない**点で、エージェントは失敗を検知できず
+ * 「送信できました」と報告してしまう。
+ *
+ * ブロックはしない。正当な用途もあるうえ、拒否基準が非公開である以上
+ * こちらで判定しきれないため。代わりに、届かない可能性があることを
+ * レスポンスに添えて、エージェントがユーザーに伝えられるようにする。
+ *
+ * 誤検知しても害は「余計な注意書きが付く」だけなので、広めに拾う。
+ */
+const URL_LIKE_PATTERN =
+  /(https?:\/\/|www\.|[a-z0-9][a-z0-9-]*\.(?:com|net|org|jp|io|me|ly|link|info|biz|app|dev|co)\b)/i;
+
+export function containsUrl(message: string): boolean {
+  return URL_LIKE_PATTERN.test(message);
+}
+
+/** 日本宛で URL を含む本文に添える注意書き */
+export const JP_URL_DELIVERY_WARNING =
+  '本文にURLが含まれています。日本のネットワークではフィッシング対策として、' +
+  'URLを含むSMSが配信されないことがあります（拒否基準は非公開）。' +
+  '送信APIが成功を返しても配信されたとは限らないため、get_sms_status で配信結果を確認し、' +
+  '重要な連絡の場合は別の手段も併用するようユーザーに伝えてください。';
+
+/**
  * 常時ブロックする緊急通報番号。環境変数では緩められない。
  *
  * E.164 の桁数検証で既に弾かれるため現時点では冗長だが、多層防御として明示的に

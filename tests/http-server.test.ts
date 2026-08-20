@@ -238,6 +238,7 @@ describe('HTTP MCP Wrapper', () => {
         status: 'success',
         message_id: 'msg-123',
         to: '+819012345678',
+        segments: 1,
       });
       expect(mockSendSMS).toHaveBeenCalledWith({
         to: '+819012345678',
