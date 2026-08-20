@@ -25,19 +25,39 @@ vi.mock('../src/voiceCall.js', async () => {
 import { app } from '../src/http-server.js';
 import { toolRateLimiter } from '../src/guardrails.js';
 import { clearMessageStatusStore, getMessageStatus } from '../src/messageStatusStore.js';
+import { clearWebhookReplayCache } from '../src/webhookAuth.js';
+
+/** jti はリプレイ検出の対象なので、テストごとに必ず別の値を使う */
+let jtiCounter = 0;
 
 /**
- * Vonageの署名付きWebhookと同じ形式のJWT（HS256 + payload_hash）を生成する。
+ * Vonageの署名付きWebhookと同じ形式のJWT（HS256 + payload_hash + iat + jti）を生成する。
  * jsonwebtoken を直接使わず、依存を増やさないため crypto で組み立てる。
+ *
+ * claims で個別の claim を上書き・削除できる（undefined を渡すとその claim を落とす）。
  */
-function signWebhookJwt(secret: string, body: unknown): string {
+function signWebhookJwt(
+  secret: string,
+  body: unknown,
+  claims: Record<string, unknown> = {}
+): string {
   const b64 = (obj: unknown) => Buffer.from(JSON.stringify(obj)).toString('base64url');
   const header = b64({ alg: 'HS256', typ: 'JWT' });
-  const payload = b64({
+
+  const defaults: Record<string, unknown> = {
     iat: Math.floor(Date.now() / 1000),
-    jti: 'test-jti',
+    jti: `test-jti-${++jtiCounter}`,
     payload_hash: createHash('sha256').update(JSON.stringify(body)).digest('hex'),
-  });
+  };
+
+  const merged: Record<string, unknown> = { ...defaults, ...claims };
+  for (const [key, value] of Object.entries(merged)) {
+    if (value === undefined) {
+      delete merged[key];
+    }
+  }
+
+  const payload = b64(merged);
   const signature = createHmac('sha256', secret).update(`${header}.${payload}`).digest('base64url');
   return `${header}.${payload}.${signature}`;
 }
@@ -54,6 +74,8 @@ describe('HTTP MCP Wrapper', () => {
     vi.clearAllMocks();
     toolRateLimiter.reset();
     clearMessageStatusStore();
+    clearWebhookReplayCache();
+    delete process.env.WEBHOOK_MAX_AGE_SECONDS;
     process.env.VONAGE_APPLICATION_ID = TEST_API_KEY;
     delete process.env.RATE_LIMIT_PER_HOUR;
     // RATE_LIMIT_PER_HOUR=0 は「全拒否」の意味なので、無効化には使えない
@@ -485,6 +507,123 @@ describe('HTTP MCP Wrapper', () => {
 
         expect(res.status).toBe(401);
         expect(getMessageStatus('msg-spoof')).toBeNull();
+      });
+
+      // 「claim が無ければ検証をスキップ」だと、攻撃者は claim を外すだけで
+      // 検証そのものを無効化できる
+      it.each(['payload_hash', 'iat', 'jti'])('%s claim が欠けていれば 401', async (claim) => {
+        const body = { message_uuid: `msg-no-${claim}`, status: 'delivered' };
+
+        const res = await request(app)
+          .post('/webhooks/message-status')
+          .set('Authorization', `Bearer ${signWebhookJwt(SECRET, body, { [claim]: undefined })}`)
+          .send(body);
+
+        expect(res.status).toBe(401);
+        expect(res.body.error).toContain(claim);
+        expect(getMessageStatus(body.message_uuid)).toBeNull();
+      });
+
+      it('古いJWTは 401（一度漏れた署名を無期限に使い回せない）', async () => {
+        const body = { message_uuid: 'msg-old', status: 'delivered' };
+        const oldIat = Math.floor(Date.now() / 1000) - 3600;
+
+        const res = await request(app)
+          .post('/webhooks/message-status')
+          .set('Authorization', `Bearer ${signWebhookJwt(SECRET, body, { iat: oldIat })}`)
+          .send(body);
+
+        expect(res.status).toBe(401);
+        expect(getMessageStatus('msg-old')).toBeNull();
+      });
+
+      // 時計を進めたJWTで有効期間を伸ばされないこと
+      it('未来のJWTも 401', async () => {
+        const body = { message_uuid: 'msg-future', status: 'delivered' };
+        const futureIat = Math.floor(Date.now() / 1000) + 3600;
+
+        const res = await request(app)
+          .post('/webhooks/message-status')
+          .set('Authorization', `Bearer ${signWebhookJwt(SECRET, body, { iat: futureIat })}`)
+          .send(body);
+
+        expect(res.status).toBe(401);
+      });
+
+      it('exp を過ぎたJWTは 401', async () => {
+        const body = { message_uuid: 'msg-exp', status: 'delivered' };
+        const exp = Math.floor(Date.now() / 1000) - 10;
+
+        const res = await request(app)
+          .post('/webhooks/message-status')
+          .set('Authorization', `Bearer ${signWebhookJwt(SECRET, body, { exp })}`)
+          .send(body);
+
+        expect(res.status).toBe(401);
+      });
+
+      it('同じJWTの再送は 401（リプレイ検出）', async () => {
+        const body = { message_uuid: 'msg-replay', status: 'delivered' };
+        const token = signWebhookJwt(SECRET, body);
+
+        const first = await request(app)
+          .post('/webhooks/message-status')
+          .set('Authorization', `Bearer ${token}`)
+          .send(body);
+        expect(first.status).toBe(200);
+
+        const second = await request(app)
+          .post('/webhooks/message-status')
+          .set('Authorization', `Bearer ${token}`)
+          .send(body);
+
+        expect(second.status).toBe(401);
+        expect(second.body.error).toContain('replay');
+      });
+
+      it('WEBHOOK_MAX_AGE_SECONDS で許容幅を広げられる', async () => {
+        process.env.WEBHOOK_MAX_AGE_SECONDS = '3600';
+        const body = { message_uuid: 'msg-window', status: 'delivered' };
+        const oldIat = Math.floor(Date.now() / 1000) - 1800;
+
+        const res = await request(app)
+          .post('/webhooks/message-status')
+          .set('Authorization', `Bearer ${signWebhookJwt(SECRET, body, { iat: oldIat })}`)
+          .send(body);
+
+        expect(res.status).toBe(200);
+      });
+
+      // Authorization ヘッダーを外すだけで弱い方式を選べてしまってはいけない
+      describe('共有シークレットへのフォールバックをしない', () => {
+        beforeEach(() => {
+          process.env.VONAGE_WEBHOOK_SECRET = 'test-webhook-secret';
+        });
+
+        it('署名が不正なら、正しい共有シークレットを添えても 401', async () => {
+          const body = { message_uuid: 'msg-downgrade1', status: 'delivered' };
+
+          const res = await request(app)
+            .post('/webhooks/message-status')
+            .set('Authorization', `Bearer ${signWebhookJwt('b'.repeat(32), body)}`)
+            .set('x-webhook-secret', 'test-webhook-secret')
+            .send(body);
+
+          expect(res.status).toBe(401);
+          expect(getMessageStatus('msg-downgrade1')).toBeNull();
+        });
+
+        it('Authorization を省いて共有シークレットだけ送っても 401', async () => {
+          const body = { message_uuid: 'msg-downgrade2', status: 'delivered' };
+
+          const res = await request(app)
+            .post('/webhooks/message-status')
+            .set('x-webhook-secret', 'test-webhook-secret')
+            .send(body);
+
+          expect(res.status).toBe(401);
+          expect(getMessageStatus('msg-downgrade2')).toBeNull();
+        });
       });
     });
 

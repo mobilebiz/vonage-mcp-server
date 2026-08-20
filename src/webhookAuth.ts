@@ -7,15 +7,23 @@
  *
  * 優先順位:
  *   1. VONAGE_API_SIGNATURE_SECRET が設定されていれば、Authorization ヘッダーの
- *      署名付きJWT を検証する（Vonage推奨）
- *   2. VONAGE_WEBHOOK_SECRET が設定されていれば、x-webhook-secret ヘッダーと照合する
+ *      署名付きJWT を検証する（Vonage推奨）。この場合、共有シークレットには
+ *      **フォールバックしない** — 弱い方式への降格を攻撃者に選ばせないため
+ *   2. VONAGE_API_SIGNATURE_SECRET が未設定で VONAGE_WEBHOOK_SECRET が設定されて
+ *      いれば、x-webhook-secret ヘッダーと照合する
  *   3. どちらも未設定なら受理しない（fail-closed）
+ *
+ * 署名付きJWTでは、署名の一致だけでなく payload_hash・iat/exp・jti をすべて
+ * 検証する。署名だけを見ていると、一度漏れた有効なJWTを**無期限に、任意の
+ * ボディと組み合わせて**再利用できてしまう。
  *
  * @see https://developer.vonage.com/en/getting-started/concepts/webhooks#validating-signed-webhooks
  */
 
 import { createHash, timingSafeEqual } from 'crypto';
 import { verifySignature } from '@vonage/jwt';
+
+import { getWebhookMaxAgeSeconds } from './config.js';
 
 /** 認証結果 */
 export interface WebhookAuthResult {
@@ -64,25 +72,114 @@ function decodeClaims(token: string): Record<string, unknown> | null {
 }
 
 /**
- * Vonageの署名付きWebhookに含まれる payload_hash を検証する。
+ * 一度受理した jti を記録してリプレイを防ぐ。
  *
- * payload_hash はリクエストボディの SHA-256 ハッシュで、これを検証しないと
- * 有効な署名を再利用して別のボディを送り込める（リプレイ・改ざん）。
- *
- * @returns 検証結果。payload_hash が無い、または rawBody が取得できない場合は true（検証をスキップ）
+ * 有効期間（iat の許容幅）を過ぎたものは捨てる。それ以降は iat の検証で
+ * 弾かれるため、覚えておく必要がない。
  */
-function verifyPayloadHash(claims: Record<string, unknown>, rawBody?: Buffer): boolean {
-  const expected = claims['payload_hash'];
-  if (typeof expected !== 'string' || expected === '') {
-    return true; // Vonage側が付与していない場合はスキップ
+const seenJti = new Map<string, number>();
+
+/** jti を覚えておく上限。異常なトラフィックでメモリを食い潰さないための歯止め */
+const MAX_SEEN_JTI = 10_000;
+
+/**
+ * jti が未使用なら記録して true を返す。使用済みなら false。
+ *
+ * すべての検証を通過した後に呼ぶこと。先に呼ぶと、検証に失敗したリクエストが
+ * jti を消費し、正規の再送を拒否してしまう。
+ */
+function consumeJti(jti: string, now: number, maxAgeMs: number): boolean {
+  for (const [key, recordedAt] of seenJti) {
+    if (now - recordedAt > maxAgeMs) {
+      seenJti.delete(key);
+    } else {
+      // Map は挿入順を保つので、期限内のものに当たったらそれ以降は消す必要がない
+      break;
+    }
+  }
+
+  if (seenJti.has(jti)) {
+    return false;
+  }
+
+  if (seenJti.size >= MAX_SEEN_JTI) {
+    const oldest = seenJti.keys().next();
+    if (!oldest.done) {
+      seenJti.delete(oldest.value);
+    }
+  }
+
+  seenJti.set(jti, now);
+  return true;
+}
+
+/** テスト用: リプレイ検出のキャッシュを消す */
+export function clearWebhookReplayCache(): void {
+  seenJti.clear();
+}
+
+/**
+ * 署名検証を通過したJWTのクレームを検証する。
+ *
+ * 署名が正しいことは「Vonageが一度発行した」ことしか意味しない。それが
+ * **このリクエストのために、いま**発行されたものかは、以下で確かめる必要がある。
+ *
+ * @returns 問題があれば理由、無ければ null
+ */
+function verifyClaims(
+  claims: Record<string, unknown>,
+  rawBody: Buffer | undefined,
+  now: number
+): string | null {
+  // --- payload_hash: このボディに対する署名か ---
+  //
+  // 欠落を許すと、有効な署名を任意のボディと組み合わせて再利用できる。
+  // 「Vonage が付けていなければスキップ」は、攻撃者が claim を外した
+  // JWT を作れば検証を無効化できるということでもある。
+  const expectedHash = claims['payload_hash'];
+  if (typeof expectedHash !== 'string' || expectedHash === '') {
+    return 'Webhook JWT is missing the payload_hash claim';
   }
 
   if (!rawBody) {
-    return true; // 生ボディを取得できない構成ではスキップ
+    return 'Raw request body is unavailable, cannot verify payload_hash';
   }
 
-  const actual = createHash('sha256').update(rawBody).digest('hex');
-  return safeEqual(actual.toLowerCase(), expected.toLowerCase());
+  const actualHash = createHash('sha256').update(rawBody).digest('hex');
+  if (!safeEqual(actualHash.toLowerCase(), expectedHash.toLowerCase())) {
+    return 'Webhook payload hash mismatch';
+  }
+
+  // --- iat / exp: いま発行されたものか ---
+  const maxAgeSeconds = getWebhookMaxAgeSeconds();
+  const nowSeconds = Math.floor(now / 1000);
+
+  const iat = claims['iat'];
+  if (typeof iat !== 'number' || !Number.isFinite(iat)) {
+    return 'Webhook JWT is missing the iat claim';
+  }
+
+  // 未来方向のずれも見る。時計を進めたJWTで有効期間を伸ばされないため。
+  if (Math.abs(nowSeconds - iat) > maxAgeSeconds) {
+    return `Webhook JWT timestamp is outside the allowed window of ${maxAgeSeconds}s`;
+  }
+
+  const exp = claims['exp'];
+  if (typeof exp === 'number' && Number.isFinite(exp) && nowSeconds > exp) {
+    return 'Webhook JWT has expired';
+  }
+
+  // --- jti: 同じJWTの使い回しでないか ---
+  const jti = claims['jti'];
+  if (typeof jti !== 'string' || jti === '') {
+    return 'Webhook JWT is missing the jti claim';
+  }
+
+  if (!consumeJti(jti, now, maxAgeSeconds * 1000)) {
+    return 'Webhook JWT has already been used (replay detected)';
+  }
+
+  return null;
 }
 
 /**
@@ -93,7 +190,8 @@ function verifyPayloadHash(claims: Record<string, unknown>, rawBody?: Buffer): b
  */
 export function authenticateWebhook(
   headers: Record<string, string | string[] | undefined>,
-  rawBody?: Buffer
+  rawBody?: Buffer,
+  now: number = Date.now()
 ): WebhookAuthResult {
   const signatureSecret = process.env.VONAGE_API_SIGNATURE_SECRET;
   const sharedSecret = process.env.VONAGE_WEBHOOK_SECRET;
@@ -125,19 +223,24 @@ export function authenticateWebhook(
       valid = false;
     }
 
-    if (valid) {
-      const claims = decodeClaims(token);
-      if (claims && !verifyPayloadHash(claims, rawBody)) {
-        // 署名は正しいがボディが一致しない＝有効な署名の再利用（リプレイ・改ざん）
-        return { authorized: false, status: 401, reason: 'Webhook payload hash mismatch' };
-      }
-      return { authorized: true, method: 'signature' };
-    }
-
-    // 署名検証に失敗しても、共有シークレットが設定されていればそちらで再判定する
-    if (!sharedSecret) {
+    if (!valid) {
       return { authorized: false, status: 401, reason: 'Invalid webhook signature' };
     }
+
+    const claims = decodeClaims(token);
+    if (!claims) {
+      return { authorized: false, status: 401, reason: 'Webhook JWT claims could not be decoded' };
+    }
+
+    const problem = verifyClaims(claims, rawBody, now);
+    if (problem) {
+      return { authorized: false, status: 401, reason: problem };
+    }
+
+    // ここを抜けたら必ず return する。署名方式を設定した場合、共有シークレットには
+    // フォールバックしない。フォールバックすると、攻撃者は Authorization ヘッダーを
+    // 外すか壊すだけで弱いほうの方式を選べてしまう（ダウングレード攻撃）。
+    return { authorized: true, method: 'signature' };
   }
 
   if (sharedSecret) {

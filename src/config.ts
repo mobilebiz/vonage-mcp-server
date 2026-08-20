@@ -72,6 +72,9 @@ export const RATE_LIMIT_ENV_VARS: Record<RateLimitBucket, string> = {
   voice: 'VOICE_RATE_LIMIT_PER_HOUR',
 };
 
+/** 署名付き Webhook を受け付ける時刻のずれの許容幅（秒） */
+export const DEFAULT_WEBHOOK_MAX_AGE_SECONDS = 300;
+
 /** ALLOWED_COUNTRY_CODES の既定値。このプロジェクトは日本国内利用を前提とする */
 export const DEFAULT_ALLOWED_COUNTRY_CODES = ['81'];
 
@@ -301,6 +304,19 @@ export function getAllowedCountryCodes(): Set<string> | null {
 }
 
 /**
+ * 署名付き Webhook の `iat` / `exp` に許す時刻のずれ（秒）。
+ *
+ * 短くするほどリプレイ可能な時間窓が縮むが、サーバー間の時刻ずれに弱くなる。
+ */
+export function getWebhookMaxAgeSeconds(): number {
+  return parseIntegerEnv('WEBHOOK_MAX_AGE_SECONDS', {
+    min: 1,
+    max: 3600,
+    defaultValue: DEFAULT_WEBHOOK_MAX_AGE_SECONDS,
+  });
+}
+
+/**
  * プレミアム番号（0990 など）への送信・架電を許可するか。既定は禁止。
  */
 export function arePremiumNumbersAllowed(): boolean {
@@ -359,6 +375,7 @@ export function validateStartupConfig(): string[] {
   collect(() => getChannelRateLimit('sms'));
   collect(() => getChannelRateLimit('voice'));
   collect(() => parseBooleanEnv('ALLOW_PREMIUM_NUMBERS'));
+  collect(() => getWebhookMaxAgeSeconds());
   collect(() => getAllowedCountryCodes());
 
   // capability と依存する資格情報の突き合わせ。

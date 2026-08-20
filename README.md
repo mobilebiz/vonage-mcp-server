@@ -101,7 +101,8 @@ AIエージェント（Gemini Enterprise / Claude 等）から利用する際の
 | `VOICE_RATE_LIMIT_PER_HOUR` | （未設定＝`RATE_LIMIT_PER_HOUR` に委ねる） | 架電だけをさらに絞りたい場合の上限。 |
 | `DISABLE_RATE_LIMIT` | `false` | `true` にするとレートリミットを完全に無効化する。**危険な設定**であり、起動のたびに警告が出る。本番環境では使わないこと。 |
 | `VONAGE_API_SIGNATURE_SECRET` | （未設定） | Status Webhook の署名検証に使う Vonage の Signature Secret。**推奨**。Vonage Dashboard の Settings → API settings で取得できる。 |
-| `VONAGE_WEBHOOK_SECRET` | （未設定） | 署名検証が使えない環境向けの代替。設定すると `x-webhook-secret` ヘッダーの一致を要求する。 |
+| `VONAGE_WEBHOOK_SECRET` | （未設定） | 署名検証が使えない環境向けの代替。設定すると `x-webhook-secret` ヘッダーの一致を要求する。`VONAGE_API_SIGNATURE_SECRET` が設定されている場合は使われない。 |
+| `WEBHOOK_MAX_AGE_SECONDS` | `300` | 署名付き Webhook の `iat` / `exp` に許す時刻のずれ（秒、`1`〜`3600`）。短いほどリプレイ可能な時間窓が縮む。 |
 
 ```sh
 # 検証中は自分の番号だけに送信を許可する例
@@ -187,6 +188,17 @@ SMS の `from` には Vonage 公式ルールが適用されます。**英数字1
 
 > [!IMPORTANT]
 > `VONAGE_API_SIGNATURE_SECRET` と `VONAGE_WEBHOOK_SECRET` の**どちらも未設定の場合、Status Webhook エンドポイントは 503 を返して無効化されます**。未認証で受け付けると、誰でも任意の `message_id` の配信ステータスを偽装できてしまうためです。
+
+> [!IMPORTANT]
+> **署名付き Webhook では、署名の一致だけでなく `payload_hash` / `iat` / `jti` をすべて検証し、いずれかが欠けていれば 401 で拒否します。**
+> 署名が正しいことは「Vonage が一度発行した」ことしか意味しません。claim が無ければ検証をスキップする実装だと、攻撃者は claim を外した JWT を作るだけで検証を無効化できます。有効な JWT が一度でもログやプロキシから漏れた場合に、**無期限に、任意のボディと組み合わせて**再利用されるのを防ぐための措置です。
+> - `payload_hash`: このボディに対して発行された署名か
+> - `iat` / `exp`: `WEBHOOK_MAX_AGE_SECONDS` 以内に発行されたものか（未来方向のずれも拒否）
+> - `jti`: 同じ JWT の使い回しでないか（受理済みの `jti` は許容時間内は記憶される）
+
+> [!WARNING]
+> **`VONAGE_API_SIGNATURE_SECRET` を設定した場合、共有シークレット認証にはフォールバックしません。**
+> 両方を設定していても、署名検証に失敗したリクエストは `x-webhook-secret` が正しくても 401 になります。フォールバックすると、攻撃者は `Authorization` ヘッダーを外すか壊すだけで弱いほうの方式を選べてしまうためです（ダウングレード攻撃）。
 
 > [!NOTE]
 > レートリミットはオンメモリ管理のため、プロセスを再起動するとカウントはリセットされます。
