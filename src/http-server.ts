@@ -2,10 +2,9 @@ import express from 'express';
 import cors from 'cors';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 
-import { enabledToolDefinitions, listTools, runTool } from './tools.js';
-import { toMcpResult, unexpectedErrorOutcome } from './toolResponse.js';
+import { SERVER_VERSION, createMcpServer, enabledToolNames } from './mcpServer.js';
 import { ingestStatusWebhook } from './messageStatusStore.js';
 import { authenticateWebhook, isWebhookAuthConfigured, safeEqual } from './webhookAuth.js';
 import {
@@ -33,8 +32,6 @@ if (isMainModule) {
 
 export const app = express();
 
-const SERVER_VERSION = '1.3.0';
-
 // ミドルウェアの設定
 app.use(cors());
 // Webhookの署名検証（payload_hash）に生のボディが必要なため、パース時に保持しておく
@@ -45,31 +42,6 @@ app.use(
     },
   })
 );
-
-// Create MCP server instance
-const mcpServer = new McpServer({
-  name: 'vonage-mcp-server',
-  version: SERVER_VERSION
-});
-
-// 共通レジストリから、有効になっているツールだけを登録する（stdio版と同一の判定）。
-// 実行は必ず runTool() を経由させる (VONAGE_MCP-7)。
-for (const tool of enabledToolDefinitions()) {
-  mcpServer.registerTool(
-    tool.name,
-    {
-      title: tool.title,
-      description: tool.description,
-      inputSchema: tool.schema
-    },
-    async (args: any) => {
-      const outcome = await runTool(tool.name, args).catch((error) =>
-        unexpectedErrorOutcome(tool.name, error)
-      );
-      return toMcpResult(outcome) as any;
-    }
-  );
-}
 
 /**
  * MCP エンドポイントの認証ミドルウェア。
@@ -122,7 +94,9 @@ app.use('/mcp', requireMcpAuth);
  * 認証不要
  */
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', connected: true });
+  // version を含めるのは、デプロイしたつもりのものが動いているかを
+  // 認証なしで確かめられるようにするため。
+  res.json({ status: 'ok', connected: true, version: SERVER_VERSION });
 });
 
 /**
@@ -172,91 +146,54 @@ app.post('/webhooks/inbound', (_req, res) => {
 });
 
 /**
- * MCP protocol endpoint
- * POST /mcp
- * Handles MCP JSON-RPC requests with authentication
+ * MCP Streamable HTTP エンドポイント
+ * ALL /mcp
+ *
+ * POST (JSON-RPC) / GET (SSE) / DELETE (セッション終了) を MCP SDK の
+ * StreamableHTTPServerTransport がすべて処理する。以前は JSON-RPC を手書きし、
+ * initialize / tools/list / tools/call / ping にだけ応答していた。仕様の
+ * 取りこぼしを自前で追いかけないために、トランスポートは SDK に任せる。
+ *
+ * ## ステートレスにしている理由
+ *
+ * リクエストごとにサーバーとトランスポートを作り、セッションIDを発行しない。
+ * セッションを持つとその状態がプロセスのメモリに載るため、Cloud Run のように
+ * 複数レプリカへ分散する環境では**同じセッションが別のレプリカに届いた時点で
+ * 壊れる**。スティッキーセッションを前提にすると動く基盤が減る。
+ *
+ * このサーバーのツールはどれも1リクエストで完結し、サーバー起点の通知を
+ * 送らないので、セッションを持つ理由がない。
+ *
+ * `enableJsonResponse` を有効にしているのも同じ理由で、POST の応答を SSE では
+ * なく通常の JSON で返す。SSE はプロキシやゲートウェイにバッファされることが
+ * あり、環境依存の不具合を持ち込みやすい。仕様上どちらで返してもよい。
  */
-app.post('/mcp', async (req, res) => {
-  // 認証は app.use('/mcp', requireMcpAuth) で済んでいる
+app.all('/mcp', async (req, res) => {
+  const server = createMcpServer();
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
+
+  // リクエストが終わったら必ず片付ける。残すとレプリカあたりの
+  // トランスポートが際限なく増える。
+  res.on('close', () => {
+    void transport.close();
+    void server.close();
+  });
+
   try {
-    const { jsonrpc, id, method, params } = req.body;
-
-    // Validate JSON-RPC 2.0 format
-    if (jsonrpc !== '2.0') {
-      res.status(400).json({
-        jsonrpc: '2.0',
-        error: {
-          code: -32600,
-          message: 'Invalid Request: jsonrpc must be "2.0"'
-        },
-        id: id ?? null
-      });
-      return;
-    }
-
-    // Handle MCP methods
-    let result: any;
-
-    switch (method) {
-      case 'initialize':
-        result = {
-          protocolVersion: '2024-11-05',
-          capabilities: {
-            tools: {}
-          },
-          serverInfo: {
-            name: 'vonage-mcp-server',
-            version: SERVER_VERSION
-          }
-        };
-        break;
-
-      case 'tools/list':
-        // リクエストごとに評価する。無効な capability のツールは含まれない。
-        result = { tools: listTools() };
-        break;
-
-      case 'tools/call': {
-        const { name, arguments: args } = params ?? {};
-        const outcome = await runTool(name, args);
-        result = toMcpResult(outcome);
-        break;
-      }
-
-      case 'ping':
-        result = {};
-        break;
-
-      default:
-        res.json({
-          jsonrpc: '2.0',
-          error: {
-            code: -32601,
-            message: `Method not found: ${method}`
-          },
-          id: id ?? null
-        });
-        return;
-    }
-
-    // Return successful response
-    res.json({
-      jsonrpc: '2.0',
-      result,
-      id: id ?? null
-    });
-
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
   } catch (error: any) {
     console.error('MCP endpoint error:', error);
-    res.status(500).json({
-      jsonrpc: '2.0',
-      error: {
-        code: -32603,
-        message: 'Internal server error',
-        data: error.message
-      },
-      id: null
-    });
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: '2.0',
+        error: { code: -32603, message: 'Internal server error', data: error?.message },
+        id: null,
+      });
+    }
   }
 });
 
@@ -278,7 +215,8 @@ if (isMainModule) {
   const port = getPort();
 
   const server = app.listen(port, host, () => {
-    console.log(`HTTP MCP Wrapper listening on ${host}:${port}`);
+    console.log(`Vonage MCP Server (Streamable HTTP) listening on ${host}:${port}`);
+    console.log(`有効なツール: ${enabledToolNames().join(', ') || '(なし)'}`);
     if (isLoopbackHost(host)) {
       console.warn(
         '[WARN] ループバックアドレスで待ち受けています。外部からは接続できません。' +

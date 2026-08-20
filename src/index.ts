@@ -1,8 +1,5 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { enabledToolDefinitions, runTool } from "./tools.js";
-import { toMcpResult, unexpectedErrorOutcome } from "./toolResponse.js";
+import { createMcpServer, enabledToolNames } from "./mcpServer.js";
 import { applyStartupConfig } from "./config.js";
 
 // dotenvを使用せず、直接Node.jsの--env-fileオプションを使用して環境変数を読み込むことを推奨
@@ -45,45 +42,14 @@ function debugLog(message: string, data?: any) {
 // ツールを1つでも公開する前に実行する。
 applyStartupConfig();
 
-// Create an MCP server
-const server = new McpServer({
-  name: "vonage-mcp-server",
-  version: "1.3.0"
+// 有効な capability のツールだけを登録したサーバーを生成する。
+// 生成ロジックは Streamable HTTP 版と共有している (src/mcpServer.ts)。
+const server = createMcpServer({
+  onCall: (name, args) => debugLog(`${name} が呼び出されました`, args),
+  onResult: (name, outcome) => debugLog(`${name} の結果`, outcome.payload),
 });
 
-// 共通レジストリ (src/tools.ts) から、有効になっているツールだけを登録する。
-// 実行は必ず runTool() を経由させる。以前はここで tool.handler() を直接呼んで
-// おり、capability の判定を stdio 経由で丸ごと迂回できた (VONAGE_MCP-7)。
-const enabledTools = enabledToolDefinitions();
-debugLog(`有効なツール: ${enabledTools.map((t) => t.name).join(', ') || '(なし)'}`);
-
-for (const tool of enabledTools) {
-  server.registerTool(
-    tool.name,
-    {
-      title: tool.title,
-      description: tool.description,
-      inputSchema: tool.schema
-    },
-    async (args: any) => {
-      debugLog(`${tool.name} が呼び出されました`, args);
-      const outcome = await runTool(tool.name, args).catch((error) =>
-        unexpectedErrorOutcome(tool.name, error)
-      );
-      debugLog(`${tool.name} の結果`, outcome.payload);
-      return toMcpResult(outcome) as any;
-    }
-  );
-}
-
-// capability が全 OFF だと registerTool が1度も呼ばれず、SDK は tools capability
-// 自体を宣言しない。その結果 tools/list が "Method not found" で失敗する。
-// 既定は全 OFF なので、これは初回起動でいちばん起きやすい状態であり、
-// 「ツールが0件」と正しく伝えるために空の一覧ハンドラを自前で登録する。
-if (enabledTools.length === 0) {
-  server.server.registerCapabilities({ tools: { listChanged: true } });
-  server.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: [] }));
-}
+debugLog(`有効なツール: ${enabledToolNames().join(', ') || '(なし)'}`);
 
 // Start receiving messages on stdin and sending messages on stdout
 const transport = new StdioServerTransport();

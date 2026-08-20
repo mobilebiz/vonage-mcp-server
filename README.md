@@ -813,11 +813,36 @@ gcloud run deploy vonage-mcp-server \
 | `POST /mcp` | Bearer トークン（`/mcp` 配下は**全 HTTP メソッド**が対象） |
 | `POST /webhooks/*` | Vonage の署名検証 |
 
-**POST** `/mcp`
+**ALL** `/mcp`
 
-MCP JSON-RPC 2.0 エンドポイント。`initialize` / `tools/list` / `tools/call` / `ping` に対応します。MCP クライアントはこちらを使用してください。
+MCP の **Streamable HTTP** エンドポイントです。POST (JSON-RPC) / GET (SSE) / DELETE (セッション終了) を MCP SDK の `StreamableHTTPServerTransport` が処理します。手書きの JSON-RPC 実装ではないので、仕様の追加に追従できます。
 
-ツールの実行エラー（入力エラー・ガードレール違反・レートリミット超過など）は、HTTP エラーではなく **`result` の `isError: true`** として返ります。MCP の仕様どおりの挙動です。原因は `reason`、次に取るべき行動は `suggestion` に入ります。
+仕様どおり、クライアントは POST に `Accept: application/json, text/event-stream` を付ける必要があります（欠けていると `406` になります）。
+
+```bash
+curl -X POST http://localhost:3000/mcp \
+  -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+> [!NOTE]
+> **セッションを持たないステートレス構成です。** リクエストごとにサーバーとトランスポートを生成し、`Mcp-Session-Id` を発行しません。
+> セッションを持つとその状態がプロセスのメモリに載るため、Cloud Run のように複数レプリカへ分散する環境では、同じセッションが別のレプリカに届いた時点で壊れます。スティッキーセッションを前提にすると、動く基盤が減ります。このサーバーのツールはどれも1リクエストで完結し、サーバー起点の通知も送らないため、セッションを持つ理由がありません。
+> 同じ理由で POST の応答は SSE ではなく通常の JSON で返します（仕様上どちらでも構いません）。SSE はプロキシやゲートウェイにバッファされることがあり、環境依存の不具合を持ち込みやすいためです。
+
+エラーは2種類に分かれます。
+
+| 種類 | 返り方 | 例 |
+| --- | --- | --- |
+| スキーマ違反 | JSON-RPC エラー (`-32602`) | 電話番号の形式が `inputSchema` に合わない |
+| ガードレール違反・実行時エラー | `result` の `isError: true` | `ALLOWED_NUMBERS` 外の宛先、レートリミット超過、Vonage API の失敗 |
+
+前者は MCP SDK が `inputSchema` で検証して弾くため、ハンドラに到達しません（エラーメッセージにはスキーマに書いた説明がそのまま入ります）。後者は原因が `reason`、次に取るべき行動が `suggestion` に入ります。
+
+> [!NOTE]
+> 無効化されているツール（capability トグルが OFF）は登録されないため、`tools/call` では「存在しないツール」として扱われます。`tools/list` に出さない以上、これが MCP としての正しい表現です。どの環境変数を設定すべきかは起動ログと本 README を参照してください。
 
 > [!WARNING]
 > **v1.3.0 の破壊的変更: `POST /mcp-invoke` と `GET /mcp-tools` を削除しました。**

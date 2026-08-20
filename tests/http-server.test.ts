@@ -67,9 +67,16 @@ function resultPayload(res: request.Response): any {
   return JSON.parse(res.body.result.content[0].text);
 }
 
+/**
+ * Streamable HTTP が POST に要求する Accept ヘッダー。
+ * 仕様上クライアントは application/json と text/event-stream の両方を
+ * 受け入れると宣言する必要があり、欠けていると 406 になる。
+ */
+const MCP_ACCEPT = 'application/json, text/event-stream';
+
 /** /mcp に JSON-RPC リクエストを投げる（認証トークンが設定されていれば添える） */
 function callMcp(body: Record<string, unknown>): request.Test {
-  const req = request(app).post('/mcp');
+  const req = request(app).post('/mcp').set('Accept', MCP_ACCEPT);
   if (process.env.MCP_AUTH_TOKEN) {
     req.set('Authorization', `Bearer ${process.env.MCP_AUTH_TOKEN}`);
   }
@@ -114,14 +121,14 @@ describe('HTTP MCP Wrapper', () => {
   it('GET /health は connected: true を返すべき（認証不要）', async () => {
     const res = await request(app).get('/health');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: 'ok', connected: true });
+    expect(res.body).toMatchObject({ status: 'ok', connected: true });
+    expect(res.body.version).toBeTruthy();
   });
 
   it('POST /mcp は JSON-RPC 2.0 以外を 400 で拒否する', async () => {
     const res = await callMcp({ jsonrpc: '1.0', id: 1, method: 'ping' });
 
     expect(res.status).toBe(400);
-    expect(res.body.error.code).toBe(-32600);
   });
 
   describe('Bearer トークン認証', () => {
@@ -132,7 +139,10 @@ describe('HTTP MCP Wrapper', () => {
     });
 
     it('トークンが無ければ 401', async () => {
-      const res = await request(app).post('/mcp').send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+      const res = await request(app)
+        .post('/mcp')
+        .set('Accept', MCP_ACCEPT)
+        .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
 
       expect(res.status).toBe(401);
       expect(res.body.error.message).toContain('bearer token');
@@ -141,6 +151,7 @@ describe('HTTP MCP Wrapper', () => {
     it('トークンが違えば 401', async () => {
       const res = await request(app)
         .post('/mcp')
+        .set('Accept', MCP_ACCEPT)
         .set('Authorization', `Bearer ${'b'.repeat(32)}`)
         .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
 
@@ -150,6 +161,7 @@ describe('HTTP MCP Wrapper', () => {
     it('正しいトークンなら通る', async () => {
       const res = await request(app)
         .post('/mcp')
+        .set('Accept', MCP_ACCEPT)
         .set('Authorization', `Bearer ${TOKEN}`)
         .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
 
@@ -160,6 +172,7 @@ describe('HTTP MCP Wrapper', () => {
     it('Application ID を X-API-KEY に入れても通らない', async () => {
       const res = await request(app)
         .post('/mcp')
+        .set('Accept', MCP_ACCEPT)
         .set('X-API-KEY', TEST_API_KEY)
         .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
 
@@ -175,7 +188,10 @@ describe('HTTP MCP Wrapper', () => {
     it('TRUST_UPSTREAM_AUTH=true なら自前では認証しない', async () => {
       process.env.TRUST_UPSTREAM_AUTH = 'true';
 
-      const res = await request(app).post('/mcp').send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+      const res = await request(app)
+        .post('/mcp')
+        .set('Accept', MCP_ACCEPT)
+        .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
 
       expect(res.status).toBe(200);
     });
@@ -225,10 +241,24 @@ describe('HTTP MCP Wrapper', () => {
       });
     });
 
-    it('無効な電話番号は送信せずエラーを返す', async () => {
+    // スキーマ違反は SDK が inputSchema で弾くため、ハンドラに届く前に
+    // JSON-RPC エラーになる。エラーメッセージにはスキーマに書いた
+    // 日本語の説明がそのまま入る。
+    it('スキーマに反する電話番号は送信せず JSON-RPC エラーになる', async () => {
       const res = await callTool('send_sms', { to: 'invalid', message: 'Hello' });
 
-      expect(resultPayload(res).status).toBe('error');
+      expect(res.body.error.code).toBe(-32602);
+      expect(res.body.error.message).toContain('E.164');
+      expect(mockSendSMS).not.toHaveBeenCalled();
+    });
+
+    // 形式は正しいがガードレールで落ちるものはハンドラまで届くので、
+    // reason + suggestion 形式のペイロードが返る
+    it('スキーマは通るがガードレールで落ちる入力は result として返る', async () => {
+      const res = await callTool('send_sms', { to: '0990123456', message: 'Hello' });
+
+      expect(res.body.result.isError).toBe(true);
+      expect(resultPayload(res).reason).toContain('高額課金');
       expect(resultPayload(res).suggestion).toBeTruthy();
       expect(mockSendSMS).not.toHaveBeenCalled();
     });
@@ -275,55 +305,103 @@ describe('HTTP MCP Wrapper', () => {
       expect(names).toContain('send_sms');
     });
 
+    // 無効なツールは registerTool されないので、MCP 上は「存在しないツール」
+    // として扱われる。tools/list に出さない以上これが正しい表現であり、
+    // capability 名を含む詳しい案内は runTool のレベルで返す（tools.test.ts）。
     it('tools/call でも無効なツールは実行されない', async () => {
       delete process.env.ENABLE_VOICE;
       mockMakeVoiceCall.mockResolvedValue({ success: true, callId: 'c' });
 
       const res = await callTool('make_voice_call', { to: '09012345678', message: 'テスト' });
 
-      expect(res.body.result.isError).toBe(true);
-      expect(resultPayload(res).required_capability).toBe('ENABLE_VOICE');
+      expect(res.body.error).toBeTruthy();
       expect(mockMakeVoiceCall).not.toHaveBeenCalled();
     });
   });
 
-  describe('POST /mcp (JSON-RPC)', () => {
-    it('tools/list は全ツールを返すべき', async () => {
-      const res = await request(app)
-        .post('/mcp')
-        .set('X-API-KEY', TEST_API_KEY)
-        .send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+  describe('Streamable HTTP transport', () => {
+    it('initialize はプロトコルバージョンとサーバー情報を返す', async () => {
+      const res = await callMcp({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2024-11-05',
+          capabilities: {},
+          clientInfo: { name: 'test', version: '1.0.0' },
+        },
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body.result.serverInfo.name).toBe('vonage-mcp-server');
+      expect(res.body.result.protocolVersion).toBeTruthy();
+    });
+
+    // ステートフルにするとレプリカ間でセッションが壊れる。
+    // セッションIDを発行しないことを固定しておく。
+    it('ステートレス動作: セッションIDを発行しない', async () => {
+      const res = await callMcp({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 't', version: '1' } },
+      });
+
+      expect(res.headers['mcp-session-id']).toBeUndefined();
+    });
+
+    // セッションが無いので、initialize を経ずに tools/list を呼べる
+    it('initialize 無しでも tools/list に応答する', async () => {
+      const res = await callMcp({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
 
       expect(res.status).toBe(200);
       expect(res.body.result.tools.length).toBe(6);
     });
 
-    it('tools/call は send_sms を実行すべき', async () => {
-      mockSendSMS.mockResolvedValue({ success: true, messageId: 'msg-123' });
-
-      const res = await request(app)
-        .post('/mcp')
-        .set('X-API-KEY', TEST_API_KEY)
-        .send({
-          jsonrpc: '2.0',
-          id: 2,
-          method: 'tools/call',
-          params: { name: 'send_sms', arguments: { to: '09012345678', message: 'Hello' } },
-        });
+    it('ping に応答する', async () => {
+      const res = await callMcp({ jsonrpc: '2.0', id: 1, method: 'ping' });
 
       expect(res.status).toBe(200);
-      expect(JSON.parse(res.body.result.content[0].text)).toMatchObject({ status: 'success' });
+      expect(res.body.result).toEqual({});
     });
 
-    it('tools/call は未知のツールでエラーペイロードを返すべき', async () => {
-      const res = await request(app)
-        .post('/mcp')
-        .set('X-API-KEY', TEST_API_KEY)
-        .send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'nope', arguments: {} } });
+    it('tools/call は send_sms を実行する', async () => {
+      mockSendSMS.mockResolvedValue({ success: true, messageId: 'msg-123' });
+
+      const res = await callTool('send_sms', { to: '09012345678', message: 'Hello' });
 
       expect(res.status).toBe(200);
-      expect(res.body.result.isError).toBe(true);
-      expect(JSON.parse(res.body.result.content[0].text).status).toBe('error');
+      expect(resultPayload(res)).toMatchObject({ status: 'success' });
+    });
+
+    it('tools/call は未知のツールで JSON-RPC エラーを返す', async () => {
+      const res = await callTool('nope', {});
+
+      expect(res.body.error).toBeTruthy();
+      expect(res.body.error.message).toContain('nope');
+    });
+
+    it('未知のメソッドは JSON-RPC のエラーを返す', async () => {
+      const res = await callMcp({ jsonrpc: '2.0', id: 1, method: 'no/such/method' });
+
+      expect(res.body.error.code).toBe(-32601);
+    });
+
+    // 仕様上クライアントは両方を受け入れると宣言する必要がある
+    it('Accept ヘッダーが不足していれば 406', async () => {
+      const res = await request(app)
+        .post('/mcp')
+        .set('Accept', 'application/json')
+        .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+
+      expect(res.status).toBe(406);
+    });
+
+    it('PUT / PATCH は 405', async () => {
+      for (const method of ['put', 'patch'] as const) {
+        const res = await request(app)[method]('/mcp').set('Accept', MCP_ACCEPT);
+        expect(res.status, `${method} は 405 であるべき`).toBe(405);
+      }
     });
   });
 
@@ -332,8 +410,10 @@ describe('HTTP MCP Wrapper', () => {
   // JSON-RPC としての振る舞い — ツールのエラーは HTTP 200 の result として
   // 返る — を確認する。
   describe('ツールのエラーは JSON-RPC の result として返る', () => {
-    it('入力エラーでも HTTP は 200 で isError が立つ', async () => {
-      const res = await callTool('send_sms', { to: 'abc', message: 'Hello' });
+    it('ガードレール違反は HTTP 200 で isError が立つ', async () => {
+      process.env.ALLOWED_NUMBERS = '+819087654321';
+
+      const res = await callTool('send_sms', { to: '09012345678', message: 'Hello' });
 
       expect(res.status).toBe(200);
       expect(res.body.result.isError).toBe(true);
