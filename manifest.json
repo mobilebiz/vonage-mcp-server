@@ -17,6 +17,7 @@
   "homepage": "https://github.com/mobilebiz/vonage-mcp-server",
   "documentation": "https://github.com/mobilebiz/vonage-mcp-server/blob/main/README.md",
   "support": "https://github.com/mobilebiz/vonage-mcp-server/issues",
+  "license": "Apache-2.0",
   "server": {
     "type": "node",
     "entry_point": "dist/index.js",
