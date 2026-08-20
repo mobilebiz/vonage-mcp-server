@@ -65,20 +65,25 @@ export const VOICE_MESSAGE_MAX_LENGTH = 1000;
 /**
  * 電話番号をE.164形式（+付き）に正規化する。
  * 日本の国内形式（0始まり）は +81 に変換される。
+ *
+ * **`+` も先頭 `0` も無い番号には `+` を補わない。** 以前は補っていたが、
+ * それは「この数字列は国番号から始まる」という推測であり、外すと宛先の国が
+ * 変わる。たとえば米国の国内表記 `2125551234` に `+` を補うと `+212` =
+ * モロッコ宛になる。**まったく別の国に SMS が飛ぶ**。
+ *
+ * 入力スキーマ (`PHONE_INPUT_PATTERN`) も同じ形を弾いており、
+ * ここで受理していたのは両者の不整合でもあった (Codex L-1)。
+ * 判断できない入力は正規化せずに返し、呼び出し側の検証で落とす。
  */
 export function normalizeToE164(phoneNumber: string): string {
-  let normalized = (phoneNumber ?? '').replace(/[\s\-]/g, '');
+  const cleaned = (phoneNumber ?? '').replace(/[\s\-]/g, '');
 
   // 日本の番号（0始まり）は先頭の0を +81 に置き換える
-  if (normalized.startsWith('0')) {
-    normalized = '+81' + normalized.substring(1);
+  if (cleaned.startsWith('0')) {
+    return '+81' + cleaned.substring(1);
   }
 
-  if (normalized.startsWith('+')) {
-    return normalized;
-  }
-
-  return '+' + normalized;
+  return cleaned;
 }
 
 /** 電話番号の検証結果 */

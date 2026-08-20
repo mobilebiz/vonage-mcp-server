@@ -41,8 +41,39 @@ describe('guardrails', () => {
       expect(normalizeToE164('+81 90 1234 5678')).toBe('+819012345678');
     });
 
-    it('+ が無い国際番号には + を付ける', () => {
-      expect(normalizeToE164('819012345678')).toBe('+819012345678');
+    // 以前は + を補っていたが、それは「この数字列は国番号から始まる」という推測。
+    // 米国の国内表記 2125551234 に + を補うと +212 = モロッコ宛になり、
+    // まったく別の国に SMS が飛ぶ (Codex L-1)。
+    it('+ も先頭 0 も無い番号には + を補わない', () => {
+      expect(normalizeToE164('819012345678')).toBe('819012345678');
+      expect(normalizeToE164('2125551234')).toBe('2125551234');
+    });
+
+    it('+ を補わなかった番号は検証で弾かれる', () => {
+      const result = validateAndNormalizePhoneNumber('819012345678');
+      expect(result.valid).toBe(false);
+      expect(result.suggestion).toContain('E.164');
+    });
+
+    // スキーマ (PHONE_INPUT_PATTERN) と正規化器の挙動が一致していること
+    it('入力スキーマと正規化器の判定が一致する', () => {
+      const pattern = new RegExp(PHONE_INPUT_PATTERN);
+
+      for (const input of ['819012345678', '2125551234']) {
+        expect(pattern.test(input), `${input} はスキーマで弾かれるべき`).toBe(false);
+        expect(
+          validateAndNormalizePhoneNumber(input).valid,
+          `${input} は正規化後の検証でも弾かれるべき`
+        ).toBe(false);
+      }
+
+      for (const input of ['09012345678', '+819012345678']) {
+        expect(pattern.test(input), `${input} はスキーマを通るべき`).toBe(true);
+        expect(
+          validateAndNormalizePhoneNumber(input).valid,
+          `${input} は正規化後の検証も通るべき`
+        ).toBe(true);
+      }
     });
   });
 

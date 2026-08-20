@@ -554,6 +554,19 @@ describe('tools registry', () => {
   describe('bulk_sms_from_csv', () => {
     const csv = 'phone,from,message\n09012345678,VonageMCP,hello\n09087654321,VonageMCP,hello2\n';
 
+    // CSV 経路だけ + 無しの国際番号を受理していた不整合 (Codex L-1)。
+    // 2125551234 に + を補うと +212 = モロッコ宛になる
+    it('+ も先頭 0 も無い番号の行は無効として扱う', async () => {
+      const payload = await invoke('bulk_sms_from_csv', {
+        csv_content: 'phone,from,message\n2125551234,VonageMCP,hi\n',
+        dry_run: true,
+      });
+
+      expect(payload.status).toBe('error');
+      expect(payload.invalid_rows).toBe(1);
+      expect(mockSendBulkSMS).not.toHaveBeenCalled();
+    });
+
     it('セグメント上限を超える行は送信されない（単発と同じ制限を適用）', async () => {
       const long = 'あ'.repeat(250);
       mockSendBulkSMS.mockResolvedValue({
@@ -725,7 +738,7 @@ describe('tools registry', () => {
   });
 
   describe('get_call_status', () => {
-    it('callId でも call_id でも取得できる', async () => {
+    it('call_id で取得できる', async () => {
       mockGetCallStatus.mockResolvedValue({
         success: true,
         status: 'completed',
@@ -735,11 +748,18 @@ describe('tools registry', () => {
         startTime: '2026-08-04T10:00:00.000Z',
       });
 
-      const byCamel = await invoke('get_call_status', { callId: 'call-1' });
-      const bySnake = await invoke('get_call_status', { call_id: 'call-1' });
+      const payload = await invoke('get_call_status', { call_id: 'call-1' });
 
-      expect(byCamel).toMatchObject({ status: 'success', call_id: 'call-1', call_status: 'completed' });
-      expect(bySnake).toMatchObject({ status: 'success', call_status: 'completed' });
+      expect(payload).toMatchObject({ status: 'success', call_id: 'call-1', call_status: 'completed' });
+    });
+
+    // 以前は callId / call_id の両方が optional で required が空になり、
+    // AI が {} を送れてしまっていた (Codex L-2)
+    it('call_id はスキーマ上も必須になっている', () => {
+      const schema = listTools().find((t) => t.name === 'get_call_status')!.inputSchema as any;
+
+      expect(schema.required).toEqual(['call_id']);
+      expect(schema.properties.callId).toBeUndefined();
     });
 
     it('IDが無い場合はエラーを返す', async () => {

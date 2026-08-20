@@ -539,17 +539,16 @@ const toolImplementations: ToolImplementation[] = [
     description:
       'Vonage Voice APIで通話のステータス（completed / busy / failed など）と料金・通話時間を取得する。make_voice_call が返した call_id を指定すること。',
     schema: {
-      callId: z.string().optional().describe('取得する通話のCall ID（UUID形式）。call_id と同義。'),
-      call_id: z.string().optional().describe('取得する通話のCall ID（UUID形式）。callId の別名。'),
+      // 以前は callId と call_id の両方を optional にしていたため、生成される
+      // JSON Schema の required が空になり、AI が {} を送れてしまっていた
+      // （ハンドラに入って初めて失敗する）。名前を1つに絞って必須にする。
+      call_id: z
+        .string()
+        .min(1)
+        .describe('取得する通話のCall ID（UUID形式）。make_voice_call のレスポンスに含まれる。'),
     },
-    handler: async ({ callId, call_id }) => {
-      const id = callId ?? call_id;
-      if (!id) {
-        return errorOutcome(
-          'Call IDが指定されていません。',
-          'make_voice_call の戻り値に含まれる call_id を callId パラメータに指定して再試行してください。'
-        );
-      }
+    handler: async ({ call_id }) => {
+      const id = call_id;
 
       const result = await getCallStatus({ callId: id });
 

@@ -476,7 +476,7 @@ Claude Desktopの設定ファイル `claude_desktop_config.json` に以下の設
 
 - **get_call_status**: 通話ステータス取得ツール
   - 入力:
-    - `callId` / `call_id` (いずれか必須): 取得する通話のCall ID（UUID形式）
+    - `call_id` (必須): 取得する通話のCall ID（UUID形式）
   - 機能:
     - Vonage Voice APIから通話のステータス情報を取得
     - `call_status`（通話ステータス）、`start_time`、`price`、`rate`、`duration_seconds` を返却
@@ -651,7 +651,7 @@ Vonage Voice APIを使用して、過去の通話のステータス情報を取�
 
 | パラメータ | 型 | 説明 |
 |------------|------|------|
-| callId | string | 取得する通話のCall ID（UUID形式） |
+| call_id | string | 取得する通話のCall ID（UUID形式）。必須 |
 
 ### 返却される情報
 
@@ -666,7 +666,7 @@ Vonage Voice APIを使用して、過去の通話のステータス情報を取�
 ```javascript
 // Call IDを指定して通話ステータスを取得
 get_call_status({
-  callId: "ca6b7710-3423-4c8d-b630-7b981ec4b2c2"
+  call_id: "ca6b7710-3423-4c8d-b630-7b981ec4b2c2"
 })
 
 // 結果例:
