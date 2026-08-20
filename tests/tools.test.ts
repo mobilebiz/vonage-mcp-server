@@ -39,6 +39,8 @@ describe('tools registry', () => {
     toolRateLimiter.reset();
     clearMessageStatusStore();
     delete process.env.ALLOWED_NUMBERS;
+    delete process.env.ALLOWED_COUNTRY_CODES;
+    delete process.env.ALLOW_PREMIUM_NUMBERS;
     delete process.env.BULK_MAX_ROWS;
     delete process.env.RATE_LIMIT_PER_HOUR;
     // RATE_LIMIT_PER_HOUR=0 は「全拒否」の意味なので、無効化には使えない
@@ -591,6 +593,76 @@ describe('tools registry', () => {
 
       expect(payload.status).toBe('error');
       expect(payload.reason).toContain('boom');
+    });
+  });
+
+  describe('宛先ガードレール', () => {
+    it.each(['110', '119', '118'])('緊急番号 %s は送信もAPI呼び出しもしない', async (number) => {
+      const payload = await invoke('send_sms', { to: number, message: 'test' });
+
+      expect(payload.status).toBe('error');
+      expect(payload.reason).toContain('緊急通報番号');
+      expect(mockSendSMS).not.toHaveBeenCalled();
+    });
+
+    it('緊急番号は make_voice_call でもブロックされる', async () => {
+      const payload = await invoke('make_voice_call', { to: '110', message: 'test' });
+
+      expect(payload.status).toBe('error');
+      expect(payload.reason).toContain('緊急通報番号');
+      expect(mockMakeVoiceCall).not.toHaveBeenCalled();
+    });
+
+    it('高額課金番号 0990 は既定でブロックされる', async () => {
+      const payload = await invoke('send_sms', { to: '0990123456', message: 'test' });
+
+      expect(payload.status).toBe('error');
+      expect(payload.reason).toContain('高額課金');
+      expect(mockSendSMS).not.toHaveBeenCalled();
+    });
+
+    it('海外宛は既定でブロックされる', async () => {
+      const payload = await invoke('send_sms', { to: '+12125551234', message: 'test' });
+
+      expect(payload.status).toBe('error');
+      expect(payload.reason).toContain('国番号 +1');
+      expect(mockSendSMS).not.toHaveBeenCalled();
+    });
+
+    it('ALLOWED_COUNTRY_CODES に追加すれば海外宛も送信できる', async () => {
+      process.env.ALLOWED_COUNTRY_CODES = '81,1';
+      mockSendSMS.mockResolvedValue({ success: true, messageId: 'm' });
+
+      const payload = await invoke('send_sms', { to: '+12125551234', message: 'test' });
+
+      expect(payload.status).toBe('success');
+    });
+
+    // dry_run が「送れる」と言ったのに本実行で弾かれる状況を作らない
+    it('dry_run の時点でブロックされる', async () => {
+      const payload = await invoke('send_sms', { to: '+12125551234', message: 'test', dry_run: true });
+
+      expect(payload.status).toBe('error');
+      expect(payload.reason).toContain('国番号');
+    });
+
+    it('bulk でもブロックされた行は送信対象から除かれる', async () => {
+      mockSendBulkSMS.mockResolvedValue({
+        totalRequests: 1,
+        successCount: 1,
+        failureCount: 0,
+        results: [{ to: '+819012345678', success: true, messageId: 'm1' }],
+      });
+
+      const payload = await invoke('bulk_sms_from_csv', {
+        csv_content:
+          'phone,from,message\n09012345678,VonageMCP,hi\n0990123456,VonageMCP,hi\n+12125551234,VonageMCP,hi\n',
+      });
+
+      expect(payload.blocked_rows).toBe(2);
+      expect(mockSendBulkSMS).toHaveBeenCalledWith([
+        { to: '+819012345678', message: 'hi', from: 'VonageMCP' },
+      ]);
     });
   });
 

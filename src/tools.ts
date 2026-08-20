@@ -19,7 +19,8 @@ import {
   SMS_MAX_LENGTH,
   VOICE_MESSAGE_MAX_LENGTH,
   buildRateLimitError,
-  checkAllowedNumber,
+  checkDestination,
+  isEmergencyNumber,
   getBulkMaxRows,
   toolRateLimiter,
   validateAndNormalizePhoneNumber,
@@ -80,18 +81,25 @@ interface ToolImplementation extends ToolDefinition {
 }
 
 /**
- * 電話番号の検証 → ホワイトリスト判定 をまとめて行う。
+ * 電話番号の検証 → 宛先ガードレール判定 をまとめて行う。
  * 問題があればエラーの ToolOutcome を、問題なければ正規化済み番号を返す。
  */
 function guardDestination(to: string): { outcome: ToolOutcome } | { normalized: string } {
+  // 緊急番号は形式検証より先に見る。110 は桁数が足りず「無効な電話番号形式です」
+  // で弾かれてしまい、エージェントが表記を直して再試行し続けるため。
+  if (isEmergencyNumber(to)) {
+    const blocked = checkDestination(to, to);
+    return { outcome: errorOutcome(blocked.reason!, blocked.suggestion!) };
+  }
+
   const validation = validateAndNormalizePhoneNumber(to);
   if (!validation.valid) {
     return { outcome: errorOutcome(validation.reason!, validation.suggestion!) };
   }
 
-  const allowList = checkAllowedNumber(validation.normalized);
-  if (!allowList.allowed) {
-    return { outcome: errorOutcome(allowList.reason!, allowList.suggestion!) };
+  const destination = checkDestination(to, validation.normalized);
+  if (!destination.allowed) {
+    return { outcome: errorOutcome(destination.reason!, destination.suggestion!) };
   }
 
   return { normalized: validation.normalized };

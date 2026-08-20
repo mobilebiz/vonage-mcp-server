@@ -77,10 +77,19 @@ describe('guardrails', () => {
     });
 
     it('明らかに不正な入力を弾く', () => {
-      expect(pattern.test('123')).toBe(false);
       expect(pattern.test('abc')).toBe(false);
       expect(pattern.test('')).toBe(false);
       expect(pattern.test('+')).toBe(false);
+      expect(pattern.test('12')).toBe(false);
+      expect(pattern.test('1234')).toBe(false);
+    });
+
+    // スキーマで弾くとエラーが「引数が不正です」になり、エージェントが
+    // 表記を直して再試行し続ける。ハンドラ側で具体的な理由を返したい。
+    it('3桁の短縮番号は通し、ハンドラ側で理由を付けて拒否させる', () => {
+      expect(pattern.test('110')).toBe(true);
+      expect(pattern.test('119')).toBe(true);
+      expect(pattern.test('123')).toBe(true);
     });
   });
 

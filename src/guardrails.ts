@@ -11,7 +11,8 @@
  * 環境変数のパースは src/config.ts に集約されている（VONAGE_MCP-18）。
  */
 
-import { getRateLimitPerHour } from './config.js';
+import { arePremiumNumbersAllowed, getAllowedCountryCodes, getRateLimitPerHour } from './config.js';
+import { getCallingCode } from './callingCodes.js';
 
 // 既存の import 元を変えずに済むよう、設定系のシンボルはここからも再公開する。
 export {
@@ -31,8 +32,13 @@ export const E164_DIALABLE_PATTERN = /^\+[1-9]\d{9,14}$/;
  * ツールの入力スキーマ（JSON Schema / Zod）に埋め込む電話番号パターン。
  * E.164形式に加えて、日本の国内形式（0始まり）とハイフン・空白区切りを許容する。
  * 実際の厳格な検証はハンドラ内で正規化した後に E164_DIALABLE_PATTERN で行う。
+ *
+ * 3桁の短縮番号（110 / 119 / 118 など）を**あえて通す**のは、スキーマで弾くと
+ * エラーが「引数が不正です」になり、エージェントが表記を直して再試行し続けるため。
+ * ハンドラ側で「緊急通報番号なので常にブロックされる」という具体的な理由と
+ * 「再試行しても変わらない」という指示を返したい（VONAGE_MCP-8）。
  */
-export const PHONE_INPUT_PATTERN = '^(?:\\+[1-9][0-9\\s-]{6,20}|0[0-9\\s-]{8,20})$';
+export const PHONE_INPUT_PATTERN = '^(?:\\+[1-9][0-9\\s-]{6,20}|0[0-9\\s-]{8,20}|[1-9][0-9]{2})$';
 
 /** send_sms の本文長上限（SMSの1通あたりの上限に合わせる） */
 export const SMS_MAX_LENGTH = 160;
@@ -176,6 +182,140 @@ export function checkAllowedNumber(normalizedE164: string): AllowListResult {
     suggestion:
       'この番号への送信・架電は環境変数 ALLOWED_NUMBERS で禁止されています。別の番号を指定するか、管理者に許可番号の追加を依頼してください。再試行しても結果は変わりません。',
   };
+}
+
+/**
+ * 常時ブロックする緊急通報番号。環境変数では緩められない。
+ *
+ * E.164 の桁数検証で既に弾かれるため現時点では冗長だが、多層防御として明示的に
+ * 残す。桁数検証が将来緩められた瞬間に効かなくなる類の防御であり、
+ * 「気づかないうちに外れていた」が最も起きやすい場所のため。
+ */
+export const EMERGENCY_NUMBERS: readonly string[] = ['110', '119', '118'];
+
+/**
+ * 日本の高額課金番号のプレフィックス（国内表記）。
+ * ALLOW_PREMIUM_NUMBERS=true で解除できる。
+ */
+export const JP_PREMIUM_PREFIXES: ReadonlyArray<{ prefix: string; label: string }> = [
+  { prefix: '0990', label: '情報料代理徴収サービス' },
+  { prefix: '0570', label: 'ナビダイヤル' },
+  { prefix: '0180', label: 'テレドーム・テレゴング' },
+];
+
+/**
+ * 緊急通報番号かどうかを判定する。
+ *
+ * 番号全体との**完全一致**で判定する。前方・後方一致で見ると、末尾が 119 の
+ * 通常の番号（例: +819012345119）まで誤ってブロックしてしまう。
+ */
+export function isEmergencyNumber(input: string): boolean {
+  const digits = (input ?? '')
+    .replace(/[\s\-()]/g, '')
+    .replace(/^\+81/, '')
+    .replace(/^\+/, '');
+
+  return EMERGENCY_NUMBERS.includes(digits);
+}
+
+/** 日本の番号なら国内表記（0始まり）を返す。日本以外は null */
+function toJapaneseNationalNumber(normalizedE164: string): string | null {
+  return normalizedE164.startsWith('+81') ? '0' + normalizedE164.slice(3) : null;
+}
+
+/**
+ * 高額課金番号（0990 など）への送信・架電を判定する。
+ */
+export function checkPremiumNumber(normalizedE164: string): AllowListResult {
+  if (arePremiumNumbersAllowed()) {
+    return { allowed: true };
+  }
+
+  const national = toJapaneseNationalNumber(normalizedE164);
+  if (national === null) {
+    return { allowed: true };
+  }
+
+  const matched = JP_PREMIUM_PREFIXES.find((entry) => national.startsWith(entry.prefix));
+  if (!matched) {
+    return { allowed: true };
+  }
+
+  return {
+    allowed: false,
+    reason: `${normalizedE164} は高額課金が発生する番号です（${matched.prefix} / ${matched.label}）。安全のためブロックしました。`,
+    suggestion:
+      'この番号への送信・架電は既定で禁止されています。別の番号を指定してください。' +
+      '業務上どうしても必要な場合は、管理者が環境変数 ALLOW_PREMIUM_NUMBERS=true を設定する必要があります。再試行しても結果は変わりません。',
+  };
+}
+
+/**
+ * 国番号による宛先制限を判定する。
+ *
+ * これは IRSF（国際収益分配詐欺）に対する主防御ではない。国番号は地域と
+ * 一対一ではなく（`+1` は米国・カナダ・カリブ海諸国が共有）、粗い制限にしか
+ * ならない。主防御は ALLOWED_NUMBERS と Vonage アカウント側の地域制限・
+ * 利用額上限であり、その旨を README に明記している。
+ */
+export function checkCountryCode(normalizedE164: string): AllowListResult {
+  const allowed = getAllowedCountryCodes();
+  if (allowed === null) {
+    return { allowed: true };
+  }
+
+  const code = getCallingCode(normalizedE164);
+  if (code === null) {
+    return {
+      allowed: false,
+      reason: `${normalizedE164} から国番号を判定できませんでした。実在しない国番号の可能性があります。`,
+      suggestion:
+        '宛先をE.164形式（例: +819012345678）で指定し直してください。日本の番号は国内形式（例: 09012345678）でも指定できます。',
+    };
+  }
+
+  if (allowed.has(code)) {
+    return { allowed: true };
+  }
+
+  const allowedList = [...allowed].sort().join(', ');
+  return {
+    allowed: false,
+    reason: `宛先 ${normalizedE164}（国番号 +${code}）は許可されていません。このサーバーが許可している国番号: ${allowedList}。`,
+    suggestion:
+      `国番号 +${code} 宛の送信・架電はサーバー側で禁止されています。許可されている国の番号を指定するか、` +
+      '管理者に環境変数 ALLOWED_COUNTRY_CODES への追加を依頼してください。再試行しても結果は変わりません。',
+  };
+}
+
+/**
+ * 宛先に関するガードレールをまとめて適用する。
+ *
+ * 判定順は「緩められない制限 → 緩められる制限」。緊急番号を最初に見るのは、
+ * 形式検証で先に弾くと「無効な電話番号形式です」という的外れな理由になり、
+ * エージェントが表記を直して再試行し続けるため。
+ */
+export function checkDestination(rawInput: string, normalizedE164: string): AllowListResult {
+  if (isEmergencyNumber(rawInput) || isEmergencyNumber(normalizedE164)) {
+    return {
+      allowed: false,
+      reason: `${rawInput} は緊急通報番号です。このサーバーからは発信・送信できません。`,
+      suggestion:
+        '緊急通報番号（110 / 119 / 118）への発信は、設定にかかわらず常にブロックされます。緊急の場合は電話機から直接おかけください。再試行しても結果は変わりません。',
+    };
+  }
+
+  const premium = checkPremiumNumber(normalizedE164);
+  if (!premium.allowed) {
+    return premium;
+  }
+
+  const country = checkCountryCode(normalizedE164);
+  if (!country.allowed) {
+    return country;
+  }
+
+  return checkAllowedNumber(normalizedE164);
 }
 
 /**

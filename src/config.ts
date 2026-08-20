@@ -10,6 +10,8 @@
  *   - 緊急停止のつもりの `RATE_LIMIT_PER_HOUR=0` が「無制限」に解釈される
  */
 
+import { isAssignedCallingCode } from './callingCodes.js';
+
 /** 設定エラー。1度の起動で見つかった問題をまとめて報告する */
 export class ConfigError extends Error {
   readonly problems: string[];
@@ -49,6 +51,12 @@ export const CAPABILITY_ENV_VARS = [
   'ENABLE_VOICE',
   'ENABLE_JWT_TOOL',
 ] as const;
+
+/** ALLOWED_COUNTRY_CODES の既定値。このプロジェクトは日本国内利用を前提とする */
+export const DEFAULT_ALLOWED_COUNTRY_CODES = ['81'];
+
+/** ALLOWED_COUNTRY_CODES に指定すると国番号による制限を外す特別な値 */
+export const ALLOW_ALL_COUNTRY_CODES = '*';
 
 /** capability を指定する環境変数名 */
 export type CapabilityName = (typeof CAPABILITY_ENV_VARS)[number];
@@ -187,6 +195,66 @@ export function getCapabilities(): Capabilities {
   return capabilities;
 }
 
+/**
+ * 送信・架電を許可する国番号を返す。null は「制限なし」（`*` 指定時）。
+ *
+ * 既定は日本 (`81`) のみ。海外宛は利用者が意識的に開ける必要がある。
+ * 電話は国ごとに規制が違ううえ、IRSF（国際収益分配詐欺）の入り口でもあるため、
+ * 「気づかないうちに海外へ送れる状態」を既定にしない。
+ */
+export function getAllowedCountryCodes(): Set<string> | null {
+  const raw = process.env.ALLOWED_COUNTRY_CODES;
+  if (raw === undefined || raw.trim() === '') {
+    return new Set(DEFAULT_ALLOWED_COUNTRY_CODES);
+  }
+
+  if (raw.trim() === ALLOW_ALL_COUNTRY_CODES) {
+    return null;
+  }
+
+  const codes = new Set<string>();
+  const invalid: string[] = [];
+
+  for (const entry of raw.split(',')) {
+    // `+81` `81 ` のような表記ゆれは受け入れる。`081` は受け入れない
+    // （国内プレフィックスの 0 を国番号と混同している設定ミスのため）。
+    const normalized = entry.trim().replace(/^\+/, '');
+    if (normalized === '') {
+      continue;
+    }
+    if (isAssignedCallingCode(normalized)) {
+      codes.add(normalized);
+    } else {
+      invalid.push(entry.trim());
+    }
+  }
+
+  if (invalid.length > 0) {
+    throw new ConfigError([
+      `ALLOWED_COUNTRY_CODES に実在しない国番号が含まれています: ${invalid.join(', ')}。` +
+        '国番号は先頭の 0 や国内プレフィックスを含めない1〜3桁の数字です（日本は 81、米国・カナダは 1）。' +
+        `国番号による制限を外す場合は ${ALLOW_ALL_COUNTRY_CODES} を指定してください。`,
+    ]);
+  }
+
+  if (codes.size === 0) {
+    throw new ConfigError([
+      'ALLOWED_COUNTRY_CODES が設定されていますが、有効な国番号が1件もありません。' +
+        `制限が不要なら環境変数を削除する（既定の ${DEFAULT_ALLOWED_COUNTRY_CODES.join(', ')} に戻る）か、` +
+        `${ALLOW_ALL_COUNTRY_CODES} を指定してください。`,
+    ]);
+  }
+
+  return codes;
+}
+
+/**
+ * プレミアム番号（0990 など）への送信・架電を許可するか。既定は禁止。
+ */
+export function arePremiumNumbersAllowed(): boolean {
+  return parseBooleanEnv('ALLOW_PREMIUM_NUMBERS');
+}
+
 /** 値が実質的に未設定か（空白のみを含む） */
 function isBlank(value: string | undefined): boolean {
   return value === undefined || value.trim() === '';
@@ -236,6 +304,8 @@ export function validateStartupConfig(): string[] {
       defaultValue: DEFAULT_BULK_MAX_ROWS,
     })
   );
+  collect(() => parseBooleanEnv('ALLOW_PREMIUM_NUMBERS'));
+  collect(() => getAllowedCountryCodes());
 
   // capability と依存する資格情報の突き合わせ。
   // パースに失敗している場合は上で報告済みなので、ここはスキップする。
@@ -288,6 +358,18 @@ export function validateStartupConfig(): string[] {
   }
   if (process.env.RATE_LIMIT_PER_HOUR?.trim() === '0') {
     warnings.push('RATE_LIMIT_PER_HOUR=0 のため、SMS送信と架電はすべて拒否されます（無制限ではありません）。');
+  }
+  if (process.env.ALLOWED_COUNTRY_CODES?.trim() === ALLOW_ALL_COUNTRY_CODES) {
+    warnings.push(
+      `ALLOWED_COUNTRY_CODES=${ALLOW_ALL_COUNTRY_CODES} のため、国番号による宛先制限は無効です。` +
+        'IRSF（国際収益分配詐欺）を狙った高額な宛先も許可されます。ALLOWED_NUMBERS の併用と、' +
+        'Vonage アカウント側の地域制限・利用額上限の設定を強く推奨します。'
+    );
+  }
+  if (parseBooleanEnv('ALLOW_PREMIUM_NUMBERS')) {
+    warnings.push(
+      'ALLOW_PREMIUM_NUMBERS=true が設定されています。0990 などの高額課金番号への送信・架電が許可されます。'
+    );
   }
   if (process.env.BULK_MAX_ROWS?.trim() === '0') {
     warnings.push('BULK_MAX_ROWS=0 のため、bulk_sms_from_csv はすべて拒否されます（無制限ではありません）。');
