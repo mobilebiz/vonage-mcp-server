@@ -55,7 +55,9 @@ describe('HTTP MCP Wrapper', () => {
     toolRateLimiter.reset();
     clearMessageStatusStore();
     process.env.VONAGE_APPLICATION_ID = TEST_API_KEY;
-    process.env.RATE_LIMIT_PER_HOUR = '0'; // テストではレートリミットを無効化
+    delete process.env.RATE_LIMIT_PER_HOUR;
+    // RATE_LIMIT_PER_HOUR=0 は「全拒否」の意味なので、無効化には使えない
+    process.env.DISABLE_RATE_LIMIT = 'true';
     delete process.env.ALLOWED_NUMBERS;
     delete process.env.BULK_MAX_ROWS;
     delete process.env.VONAGE_API_SIGNATURE_SECRET;
@@ -237,6 +239,7 @@ describe('HTTP MCP Wrapper', () => {
     });
 
     it('レートリミット超過は 429', async () => {
+      delete process.env.DISABLE_RATE_LIMIT;
       process.env.RATE_LIMIT_PER_HOUR = '1';
       mockSendSMS.mockResolvedValue({ success: true, messageId: 'm' });
 

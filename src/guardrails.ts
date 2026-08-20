@@ -7,7 +7,19 @@
  * - オンメモリの簡易レートリミット
  *
  * このモジュールは Vonage SDK に依存しない（テスト時のモック対象外にするため）。
+ *
+ * 環境変数のパースは src/config.ts に集約されている（VONAGE_MCP-18）。
  */
+
+import { getRateLimitPerHour } from './config.js';
+
+// 既存の import 元を変えずに済むよう、設定系のシンボルはここからも再公開する。
+export {
+  DEFAULT_BULK_MAX_ROWS,
+  DEFAULT_RATE_LIMIT_PER_HOUR,
+  getBulkMaxRows,
+  getRateLimitPerHour,
+} from './config.js';
 
 /** 仕様書準拠のE.164フォーマット */
 export const E164_PATTERN = /^\+[1-9]\d{1,14}$/;
@@ -27,12 +39,6 @@ export const SMS_MAX_LENGTH = 160;
 
 /** make_voice_call の読み上げメッセージ長上限（通話時間の暴走を防ぐ） */
 export const VOICE_MESSAGE_MAX_LENGTH = 1000;
-
-/** レートリミットのデフォルト値（1時間あたりのSMS送信・架電の件数） */
-export const DEFAULT_RATE_LIMIT_PER_HOUR = 5;
-
-/** bulk_sms_from_csv で一度に処理できる最大行数のデフォルト値 */
-export const DEFAULT_BULK_MAX_ROWS = 100;
 
 /**
  * 電話番号をE.164形式（+付き）に正規化する。
@@ -198,42 +204,6 @@ export function validateSenderId(from: string): { valid: boolean; reason?: strin
   };
 }
 
-/**
- * 環境変数 RATE_LIMIT_PER_HOUR から1時間あたりの上限件数を取得する。
- * 0 以下を指定した場合はレートリミット無効（Infinity）。
- */
-export function getRateLimitPerHour(): number {
-  const raw = process.env.RATE_LIMIT_PER_HOUR;
-  if (raw === undefined || raw.trim() === '') {
-    return DEFAULT_RATE_LIMIT_PER_HOUR;
-  }
-
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) {
-    return DEFAULT_RATE_LIMIT_PER_HOUR;
-  }
-
-  return parsed <= 0 ? Infinity : Math.floor(parsed);
-}
-
-/**
- * 環境変数 BULK_MAX_ROWS から bulk_sms_from_csv の最大行数を取得する。
- * 0 以下を指定した場合は無制限（Infinity）。
- */
-export function getBulkMaxRows(): number {
-  const raw = process.env.BULK_MAX_ROWS;
-  if (raw === undefined || raw.trim() === '') {
-    return DEFAULT_BULK_MAX_ROWS;
-  }
-
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) {
-    return DEFAULT_BULK_MAX_ROWS;
-  }
-
-  return parsed <= 0 ? Infinity : Math.floor(parsed);
-}
-
 /** レートリミットの判定結果 */
 export interface RateLimitResult {
   allowed: boolean;
@@ -271,6 +241,11 @@ export class RateLimiter {
   ): RateLimitResult {
     if (!Number.isFinite(limit)) {
       return { allowed: true, limit: Infinity, remaining: Infinity };
+    }
+
+    // limit === 0 は「全拒否」。待っても解けないので retryAfterSeconds は返さない。
+    if (limit === 0) {
+      return { allowed: false, limit: 0, remaining: 0 };
     }
 
     const timestamps = this.prune(key, now);
@@ -336,6 +311,17 @@ export function buildRateLimitError(
   retry_after_seconds: number;
   remaining: number;
 } {
+  // RATE_LIMIT_PER_HOUR=0 は緊急停止。待機を促すのは誤誘導になる。
+  if (result.limit === 0) {
+    return {
+      reason: `${toolName} は管理者によって停止されています（RATE_LIMIT_PER_HOUR=0）。1件も送信していません。`,
+      suggestion:
+        '再試行しても結果は変わりません。利用を再開するには、管理者に RATE_LIMIT_PER_HOUR の設定変更を依頼してください。',
+      retry_after_seconds: 0,
+      remaining: 0,
+    };
+  }
+
   const retryAfter = result.retryAfterSeconds ?? 3600;
   const waitMessage = `約${retryAfter}秒（${Math.ceil(retryAfter / 60)}分）待ってから再試行してください。それまでは同じツールを呼び出さないでください。`;
 

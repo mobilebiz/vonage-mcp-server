@@ -39,7 +39,9 @@ describe('tools registry', () => {
     clearMessageStatusStore();
     delete process.env.ALLOWED_NUMBERS;
     delete process.env.BULK_MAX_ROWS;
-    process.env.RATE_LIMIT_PER_HOUR = '0'; // テストではレートリミットを無効化
+    delete process.env.RATE_LIMIT_PER_HOUR;
+    // RATE_LIMIT_PER_HOUR=0 は「全拒否」の意味なので、無効化には使えない
+    process.env.DISABLE_RATE_LIMIT = 'true';
   });
 
   afterEach(() => {
@@ -196,7 +198,19 @@ describe('tools registry', () => {
 
   describe('レートリミット', () => {
     beforeEach(() => {
+      delete process.env.DISABLE_RATE_LIMIT;
       process.env.RATE_LIMIT_PER_HOUR = '2';
+    });
+
+    it('RATE_LIMIT_PER_HOUR=0 は無制限ではなく全拒否（VONAGE_MCP-18）', async () => {
+      process.env.RATE_LIMIT_PER_HOUR = '0';
+      mockSendSMS.mockResolvedValue({ success: true, messageId: 'm' });
+
+      const payload = await invoke('send_sms', { to: '09012345678', message: 'a' });
+
+      expect(payload.status).toBe('error');
+      expect(payload.reason).toContain('停止されています');
+      expect(mockSendSMS).not.toHaveBeenCalled();
     });
 
     it('上限を超えると再試行方針付きのエラーを返す', async () => {
@@ -316,7 +330,21 @@ describe('tools registry', () => {
       expect(mockSendBulkSMS).not.toHaveBeenCalled();
     });
 
+    it('BULK_MAX_ROWS=0 は無制限ではなく全拒否（VONAGE_MCP-18）', async () => {
+      process.env.BULK_MAX_ROWS = '0';
+
+      const payload = await invoke('bulk_sms_from_csv', {
+        csv_content: 'phone,from,message\n09012345678,VonageMCP,hi\n',
+      });
+
+      expect(payload.status).toBe('error');
+      expect(payload.reason).toContain('停止されています');
+      expect(payload.max_rows).toBe(0);
+      expect(mockSendBulkSMS).not.toHaveBeenCalled();
+    });
+
     it('送信件数の分だけレート枠を消費する', async () => {
+      delete process.env.DISABLE_RATE_LIMIT;
       process.env.RATE_LIMIT_PER_HOUR = '3';
       mockSendBulkSMS.mockResolvedValue({
         totalRequests: 2,
@@ -339,6 +367,7 @@ describe('tools registry', () => {
     });
 
     it('レート枠が足りない場合は1件も送信しない', async () => {
+      delete process.env.DISABLE_RATE_LIMIT;
       process.env.RATE_LIMIT_PER_HOUR = '1';
 
       const payload = await invoke('bulk_sms_from_csv', { csv_content: csv });
@@ -520,6 +549,7 @@ describe('tools registry', () => {
     });
 
     it('レートリミット超過は rate_limit', async () => {
+      delete process.env.DISABLE_RATE_LIMIT;
       process.env.RATE_LIMIT_PER_HOUR = '1';
       mockSendSMS.mockResolvedValue({ success: true, messageId: 'm' });
       await runTool('send_sms', { to: '09012345678', message: 'a' });

@@ -200,6 +200,17 @@ export const toolDefinitions: ToolDefinition[] = [
 
       // 行数上限のチェック。巨大なCSVによる大量課金を防ぐ
       const maxRows = getBulkMaxRows();
+
+      // 0 は「無制限」ではなく「停止」。上限超過と同じ文面だと
+      // 「0行以下に分割してください」という無意味な指示になってしまう。
+      if (maxRows === 0) {
+        return errorOutcome(
+          'bulk_sms_from_csv は管理者によって停止されています（BULK_MAX_ROWS=0）。1件も送信していません。',
+          '再試行しても結果は変わりません。利用するには、管理者に BULK_MAX_ROWS の設定変更を依頼してください。',
+          { total_rows: parseResult.totalRows, max_rows: 0 }
+        );
+      }
+
       if (parseResult.totalRows > maxRows) {
         return errorOutcome(
           `CSVの行数が上限を超えています（${parseResult.totalRows}行 > 上限${maxRows}行）。1件も送信していません。`,

@@ -13,6 +13,7 @@ import {
   validateAndNormalizePhoneNumber,
   validateSenderId,
 } from '../src/guardrails.js';
+import { ConfigError } from '../src/config.js';
 
 describe('guardrails', () => {
   const originalEnv = { ...process.env };
@@ -21,6 +22,7 @@ describe('guardrails', () => {
     delete process.env.ALLOWED_NUMBERS;
     delete process.env.RATE_LIMIT_PER_HOUR;
     delete process.env.BULK_MAX_ROWS;
+    delete process.env.DISABLE_RATE_LIMIT;
   });
 
   afterEach(() => {
@@ -171,14 +173,25 @@ describe('guardrails', () => {
       expect(getRateLimitPerHour()).toBe(20);
     });
 
-    it('0以下なら無制限（Infinity）', () => {
+    it('0 は無制限ではなく全拒否（VONAGE_MCP-18 の破壊的変更）', () => {
       process.env.RATE_LIMIT_PER_HOUR = '0';
+      expect(getRateLimitPerHour()).toBe(0);
+    });
+
+    it('無制限にするには DISABLE_RATE_LIMIT=true が必要', () => {
+      process.env.DISABLE_RATE_LIMIT = 'true';
       expect(getRateLimitPerHour()).toBe(Infinity);
     });
 
-    it('数値でない値はデフォルトにフォールバックする', () => {
+    it('DISABLE_RATE_LIMIT は RATE_LIMIT_PER_HOUR より優先される', () => {
+      process.env.DISABLE_RATE_LIMIT = 'true';
+      process.env.RATE_LIMIT_PER_HOUR = '3';
+      expect(getRateLimitPerHour()).toBe(Infinity);
+    });
+
+    it('数値でない値は黙って既定値に落とさず例外にする', () => {
       process.env.RATE_LIMIT_PER_HOUR = 'abc';
-      expect(getRateLimitPerHour()).toBe(5);
+      expect(() => getRateLimitPerHour()).toThrow(ConfigError);
     });
   });
 
@@ -270,11 +283,19 @@ describe('guardrails', () => {
       expect(getBulkMaxRows()).toBe(100);
     });
 
-    it('数値を指定でき、0以下なら無制限', () => {
+    it('数値を指定できる', () => {
       process.env.BULK_MAX_ROWS = '250';
       expect(getBulkMaxRows()).toBe(250);
+    });
+
+    it('0 は無制限ではなく全拒否（VONAGE_MCP-18 の破壊的変更）', () => {
       process.env.BULK_MAX_ROWS = '0';
-      expect(getBulkMaxRows()).toBe(Infinity);
+      expect(getBulkMaxRows()).toBe(0);
+    });
+
+    it('不正な値は例外にする', () => {
+      process.env.BULK_MAX_ROWS = '-1';
+      expect(() => getBulkMaxRows()).toThrow(ConfigError);
     });
   });
 
@@ -305,6 +326,36 @@ describe('guardrails', () => {
       expect(error.reason).toContain('1件も送信していません');
       expect(error.suggestion).toContain('2行以下に分割');
       expect(error.remaining).toBe(2);
+    });
+
+    it('limit=0 は「停止中」として案内し、待機を促さない', () => {
+      const error = buildRateLimitError('send_sms', { allowed: false, limit: 0, remaining: 0 });
+
+      expect(error.reason).toContain('停止されています');
+      expect(error.reason).toContain('RATE_LIMIT_PER_HOUR=0');
+      expect(error.retry_after_seconds).toBe(0);
+      expect(error.suggestion).toContain('再試行しても結果は変わりません');
+      // 待っても解けないので、待機時間を提示してはいけない
+      expect(error.suggestion).not.toContain('待ってから');
+    });
+  });
+
+  describe('RATE_LIMIT_PER_HOUR=0（全拒否）', () => {
+    it('1件目から拒否され、retryAfterSeconds を返さない', () => {
+      const limiter = new RateLimiter(60_000);
+      const result = limiter.consume('send_sms', 0, 1_000_000, 1);
+
+      expect(result.allowed).toBe(false);
+      expect(result.limit).toBe(0);
+      expect(result.remaining).toBe(0);
+      expect(result.retryAfterSeconds).toBeUndefined();
+    });
+
+    it('拒否された呼び出しは枠を消費しない（時間が経っても解けない）', () => {
+      const limiter = new RateLimiter(60_000);
+      limiter.consume('send_sms', 0, 1_000_000, 1);
+
+      expect(limiter.consume('send_sms', 0, 2_000_000, 1).allowed).toBe(false);
     });
   });
 });

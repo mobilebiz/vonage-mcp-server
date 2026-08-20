@@ -64,8 +64,9 @@ AIエージェント（Gemini Enterprise / Claude 等）から利用する際の
 | 環境変数 | デフォルト | 説明 |
 | --- | --- | --- |
 | `ALLOWED_NUMBERS` | （未設定＝制限なし） | 送信・架電を許可する宛先番号のホワイトリスト（カンマ区切り）。設定すると、これ以外の番号へのリクエストはエラーになる。表記ゆれ（`090-1234-5678` 等）は正規化して比較される。 |
-| `RATE_LIMIT_PER_HOUR` | `5` | 1時間あたりの**送信・架電件数**の上限。`send_sms` / `bulk_sms_from_csv` / `make_voice_call` に**ツールごと独立して**適用される。`0` を指定すると無効。`dry_run: true` の呼び出しは消費しない。 |
-| `BULK_MAX_ROWS` | `100` | `bulk_sms_from_csv` が一度に受け付けるCSVの最大行数。`0` を指定すると無制限。 |
+| `RATE_LIMIT_PER_HOUR` | `5` | 1時間あたりの**送信・架電件数**の上限（`0`〜`10000` の整数）。`send_sms` / `bulk_sms_from_csv` / `make_voice_call` に**ツールごと独立して**適用される。**`0` は「すべて拒否」**（緊急停止）。`dry_run: true` の呼び出しは消費しない。 |
+| `BULK_MAX_ROWS` | `100` | `bulk_sms_from_csv` が一度に受け付けるCSVの最大行数（`0`〜`10000` の整数）。**`0` は「すべて拒否」**（bulk の停止）。 |
+| `DISABLE_RATE_LIMIT` | `false` | `true` にするとレートリミットを完全に無効化する。**危険な設定**であり、起動のたびに警告が出る。本番環境では使わないこと。 |
 | `VONAGE_API_SIGNATURE_SECRET` | （未設定） | Status Webhook の署名検証に使う Vonage の Signature Secret。**推奨**。Vonage Dashboard の Settings → API settings で取得できる。 |
 | `VONAGE_WEBHOOK_SECRET` | （未設定） | 署名検証が使えない環境向けの代替。設定すると `x-webhook-secret` ヘッダーの一致を要求する。 |
 
@@ -80,6 +81,17 @@ VONAGE_API_SIGNATURE_SECRET=your_signature_secret_here
 > [!IMPORTANT]
 > **レートリミットは「ツール呼び出し回数」ではなく「送信件数」で消費されます。**
 > `bulk_sms_from_csv` は CSV の送信対象行数の分だけまとめて枠を消費し、残り枠が足りない場合は**1件も送信せず**エラーを返します。これにより、巨大なCSVを渡してレートリミットを迂回することはできません。
+
+> [!WARNING]
+> **v1.3.0 の破壊的変更: `RATE_LIMIT_PER_HOUR=0` / `BULK_MAX_ROWS=0` の意味が反転しました。**
+> v1.2.1 以前は `0` が「無制限」でしたが、v1.3.0 以降は「**すべて拒否**」になります。緊急停止のつもりで `0` を設定した管理者が、逆に無制限にしてしまう事故を防ぐためです。
+> 無制限にしたい場合は `DISABLE_RATE_LIMIT=true` を明示的に設定してください。`BULK_MAX_ROWS` に無制限の指定はありません（上限 `10000` まで）。
+
+> [!IMPORTANT]
+> **環境変数は起動時に厳格に検証されます。**解釈できない値があると、サーバーは警告を出して動き続けるのではなく、エラーメッセージを表示して**起動に失敗**します（fail-fast）。
+> - 真偽値（`DISABLE_RATE_LIMIT` など）に指定できるのは `true` / `false` のみです。**大文字小文字を区別**し、`1` / `yes` / `on` / `True` はすべてエラーになります。`False` のような値を truthy と誤判定して、無効にしたつもりの設定が有効になる事故を防ぐためです
+> - 数値（`RATE_LIMIT_PER_HOUR` / `BULK_MAX_ROWS`）は10進整数のみです。小数・指数表記・負数・範囲外はエラーになります
+> - 問題は**まとめて**報告されます。1つ直すたびに再起動する必要はありません
 
 > [!IMPORTANT]
 > `ALLOWED_NUMBERS` を設定しているのに有効な電話番号が1件も解釈できない場合（例: `ALLOWED_NUMBERS=,`）、「制限なし」ではなく**すべて拒否**として扱います。設定ミスを安全側に倒すためです。制限が不要な場合は環境変数自体を削除してください。
@@ -271,7 +283,7 @@ Claude Desktopの設定ファイル `claude_desktop_config.json` に以下の設
   - 機能:
     - CSVファイルを解析して複数宛先に一括SMS送信
     - 無効な行・`ALLOWED_NUMBERS` 外の行・**本文が160文字を超える行**は自動的にスキップ
-    - CSVの行数は `BULK_MAX_ROWS`（デフォルト100）で制限
+    - CSVの行数は `BULK_MAX_ROWS`（デフォルト100、`0` は全拒否）で制限
     - **送信件数の分だけレートリミットを消費**し、残り枠が足りなければ1件も送信しない
     - 送信件数と失敗の要約（先頭10件）を返却
     - API制限回避のため100ms間隔で順次送信

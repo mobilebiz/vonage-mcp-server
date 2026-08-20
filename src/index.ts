@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { toolDefinitions } from "./tools.js";
 import { toMcpResult, unexpectedErrorOutcome } from "./toolResponse.js";
+import { applyStartupConfig } from "./config.js";
 
 // dotenvを使用せず、直接Node.jsの--env-fileオプションを使用して環境変数を読み込むことを推奨
 // 実行方法: node --env-file=.env dist/index.js
@@ -38,6 +39,10 @@ function debugLog(message: string, data?: any) {
     }
   }
 }
+
+// 環境変数の検証。不正な設定はここでプロセスを落とす（fail-fast）。
+// ツールを1つでも公開する前に実行する。
+applyStartupConfig();
 
 // Create an MCP server
 const server = new McpServer({

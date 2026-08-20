@@ -8,6 +8,7 @@ import { listTools, runTool, toolDefinitions } from './tools.js';
 import { httpStatusForOutcome, toMcpResult, unexpectedErrorOutcome } from './toolResponse.js';
 import { ingestStatusWebhook } from './messageStatusStore.js';
 import { authenticateWebhook, isWebhookAuthConfigured } from './webhookAuth.js';
+import { applyStartupConfig } from './config.js';
 
 // 環境変数の読み込み
 dotenv.config();
@@ -278,6 +279,11 @@ app.get('/mcp-tools', async (_req, res) => {
 
 // メインモジュールとして実行された場合のみサーバーを起動
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  // 環境変数の検証。不正な設定は listen する前にプロセスを落とす（fail-fast）。
+  // モジュールのトップレベルではなくここに置くのは、テストが app を import
+  // するだけのときに process.exit されないようにするため。
+  applyStartupConfig();
+
   // HTTPサーバーの起動
   const server = app.listen(port, () => {
     console.log(`HTTP MCP Wrapper listening on port ${port}`);
