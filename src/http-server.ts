@@ -189,6 +189,9 @@ app.post('/webhooks/message-status', (req, res) => {
     delivery_status: result.record.status,
     // 再送・順序逆転で古い通知が届いた場合は取り込まず、既存の状態を維持する
     ignored: result.ignored,
+    // このサーバーの送信履歴に無いIDは隔離バッファに置く。同じ Vonage
+    // Application を他システムと共用している場合に true になる。
+    pending: result.pending,
   });
 });
 

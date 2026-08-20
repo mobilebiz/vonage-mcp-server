@@ -4,6 +4,7 @@ import {
   getMessageStatus,
   ingestStatusWebhook,
   messageStatusStoreSize,
+  pendingStatusStoreSize,
   recordMessageStatus,
   recordSubmitted,
 } from '../src/messageStatusStore.js';
@@ -51,8 +52,17 @@ describe('messageStatusStore', () => {
   });
 
   describe('イベント順序の保護', () => {
+    /**
+     * 順序保護は「送信履歴にあるID」に対する挙動なので、初期状態は
+     * recordMessageStatus で直接作る。recordSubmitted だと timestamp が
+     * 「いま」になり、固定日付を使うテストが成立しない。
+     */
+    function seed(messageId: string, status: string, timestamp: string): void {
+      recordMessageStatus({ messageId, status, timestamp });
+    }
+
     it('古いtimestampの通知は取り込まず、既存の状態を維持する', () => {
-      ingestStatusWebhook({ message_uuid: 'm', status: 'delivered', timestamp: '2026-08-04T10:00:00.000Z' });
+      seed('m', 'delivered', '2026-08-04T10:00:00.000Z');
 
       const result = ingestStatusWebhook({
         message_uuid: 'm',
@@ -66,7 +76,7 @@ describe('messageStatusStore', () => {
 
     it('timestampが同一でも、確定済みの状態を前段階へ巻き戻さない', () => {
       const ts = '2026-08-04T10:00:00.000Z';
-      ingestStatusWebhook({ message_uuid: 'm', status: 'delivered', timestamp: ts });
+      seed('m', 'delivered', ts);
 
       const result = ingestStatusWebhook({ message_uuid: 'm', status: 'submitted', timestamp: ts });
 
@@ -89,6 +99,7 @@ describe('messageStatusStore', () => {
 
     it('同じ通知が重複して届いても状態は変わらない', () => {
       const payload = { message_uuid: 'm', status: 'delivered', timestamp: '2026-08-04T10:00:00.000Z' };
+      seed('m', 'delivered', '2026-08-04T10:00:00.000Z');
       ingestStatusWebhook(payload);
       ingestStatusWebhook(payload);
 
@@ -97,7 +108,7 @@ describe('messageStatusStore', () => {
     });
 
     it('未知のステータスは順序判定せず取り込む', () => {
-      ingestStatusWebhook({ message_uuid: 'm', status: 'delivered', timestamp: '2026-08-04T10:00:00.000Z' });
+      seed('m', 'delivered', '2026-08-04T10:00:00.000Z');
 
       const result = ingestStatusWebhook({
         message_uuid: 'm',
@@ -113,12 +124,12 @@ describe('messageStatusStore', () => {
   describe('容量管理', () => {
     it('1001件目を入れると最も古いレコードが破棄される', () => {
       for (let i = 0; i < 1000; i++) {
-        ingestStatusWebhook({ message_uuid: `bulk-${i}`, status: 'delivered' });
+        recordMessageStatus({ messageId: `bulk-${i}`, status: 'delivered', timestamp: 'x' });
       }
       expect(messageStatusStoreSize()).toBe(1000);
       expect(getMessageStatus('bulk-0')).not.toBeNull();
 
-      ingestStatusWebhook({ message_uuid: 'newest', status: 'delivered' });
+      recordMessageStatus({ messageId: 'newest', status: 'delivered', timestamp: 'x' });
 
       expect(messageStatusStoreSize()).toBe(1000);
       expect(getMessageStatus('bulk-0')).toBeNull();
@@ -140,6 +151,7 @@ describe('messageStatusStore', () => {
   });
 
   it('失敗Webhookのエラー情報を保持する', () => {
+    recordSubmitted('msg-2', '+819012345678');
     ingestStatusWebhook({
       message_uuid: 'msg-2',
       status: 'failed',
@@ -151,6 +163,76 @@ describe('messageStatusStore', () => {
     expect(record!.error).toEqual({ code: '1000', reason: 'Throttled' });
   });
 
+  describe('送信履歴に無い message_id (VONAGE_MCP-20)', () => {
+    // 同じ Vonage Application を他システムと共用しているだけで、そちらの DLR が
+    // 流れ込んで正規のレコードを上限から追い出してしまう
+    it('本ストアには入れず、隔離バッファに置く', () => {
+      const result = ingestStatusWebhook({ message_uuid: 'someone-else', status: 'delivered' });
+
+      expect(result!.pending).toBe(true);
+      expect(messageStatusStoreSize()).toBe(0);
+      expect(pendingStatusStoreSize()).toBe(1);
+      expect(getMessageStatus('someone-else')).toBeNull();
+    });
+
+    it('大量に届いても本ストアの正規レコードを追い出さない', () => {
+      recordSubmitted('mine', '+819012345678');
+
+      for (let i = 0; i < 2000; i++) {
+        ingestStatusWebhook({ message_uuid: `other-${i}`, status: 'delivered' });
+      }
+
+      expect(getMessageStatus('mine')).not.toBeNull();
+      expect(messageStatusStoreSize()).toBe(1);
+      expect(pendingStatusStoreSize()).toBeLessThanOrEqual(200);
+    });
+
+    // Webhook が送信レスポンスより先に届く競合。捨てると配信結果を失う
+    it('後から recordSubmitted されたら隔離バッファから取り込む', () => {
+      ingestStatusWebhook({
+        message_uuid: 'race',
+        status: 'delivered',
+        to: '819012345678',
+        timestamp: new Date(Date.now() - 1000).toISOString(),
+      });
+      expect(getMessageStatus('race')).toBeNull();
+
+      recordSubmitted('race', '+819012345678', 'VonageMCP');
+
+      const record = getMessageStatus('race');
+      expect(record).not.toBeNull();
+      expect(record!.status).toBe('delivered');
+      expect(pendingStatusStoreSize()).toBe(0);
+    });
+
+    it('取り込み時に送信元・宛先は recordSubmitted の値で補完される', () => {
+      ingestStatusWebhook({ message_uuid: 'race2', status: 'delivered' });
+      recordSubmitted('race2', '+819012345678', 'VonageMCP');
+
+      const record = getMessageStatus('race2')!;
+      expect(record.to).toBe('+819012345678');
+      expect(record.from).toBe('VonageMCP');
+    });
+
+    it('取り込み後は通常のレコードとして順序保護が効く', () => {
+      ingestStatusWebhook({
+        message_uuid: 'race3',
+        status: 'delivered',
+        timestamp: '2026-08-04T10:00:00.000Z',
+      });
+      recordSubmitted('race3', '+819012345678');
+
+      const result = ingestStatusWebhook({
+        message_uuid: 'race3',
+        status: 'submitted',
+        timestamp: '2026-08-04T09:00:00.000Z',
+      });
+
+      expect(result!.ignored).toBe(true);
+      expect(getMessageStatus('race3')!.status).toBe('delivered');
+    });
+  });
+
   it('message_uuid や status が欠けたペイロードは取り込まない', () => {
     expect(ingestStatusWebhook({ status: 'delivered' })).toBeNull();
     expect(ingestStatusWebhook({ message_uuid: 'msg-3' })).toBeNull();
@@ -160,6 +242,7 @@ describe('messageStatusStore', () => {
   });
 
   it('timestamp が無い場合は受信時刻で補完する', () => {
+    recordSubmitted('msg-4', '+819012345678');
     ingestStatusWebhook({ message_uuid: 'msg-4', status: 'delivered' });
     expect(getMessageStatus('msg-4')!.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });

@@ -24,7 +24,11 @@ vi.mock('../src/voiceCall.js', async () => {
 // モック化の後にappをインポート
 import { app } from '../src/http-server.js';
 import { toolRateLimiter } from '../src/guardrails.js';
-import { clearMessageStatusStore, getMessageStatus } from '../src/messageStatusStore.js';
+import {
+  clearMessageStatusStore,
+  getMessageStatus,
+  recordSubmitted,
+} from '../src/messageStatusStore.js';
 import { clearWebhookReplayCache } from '../src/webhookAuth.js';
 
 /** jti はリプレイ検出の対象なので、テストごとに必ず別の値を使う */
@@ -583,7 +587,14 @@ describe('HTTP MCP Wrapper', () => {
         message_id: 'msg-abc',
         delivery_status: 'delivered',
         ignored: false,
+        // 送信履歴に無いIDなので隔離バッファ行き（VONAGE_MCP-20）
+        pending: true,
       });
+      // まだ本ストアには入らない
+      expect(getMessageStatus('msg-abc')).toBeNull();
+
+      // 対応する送信が記録された時点で取り込まれる
+      recordSubmitted('msg-abc', '+819012345678');
       expect(getMessageStatus('msg-abc')!.status).toBe('delivered');
     });
 
@@ -627,6 +638,8 @@ describe('HTTP MCP Wrapper', () => {
       });
 
       it('有効な署名なら取り込むべき', async () => {
+        recordSubmitted('msg-signed', '+819012345678');
+
         const body = { message_uuid: 'msg-signed', status: 'delivered' };
         const res = await request(app)
           .post('/webhooks/message-status')
@@ -634,6 +647,7 @@ describe('HTTP MCP Wrapper', () => {
           .send(body);
 
         expect(res.status).toBe(200);
+        expect(res.body.pending).toBe(false);
         expect(getMessageStatus('msg-signed')!.status).toBe('delivered');
       });
 
@@ -734,6 +748,8 @@ describe('HTTP MCP Wrapper', () => {
       });
 
       it('同じJWTの再送は 401（リプレイ検出）', async () => {
+        recordSubmitted('msg-replay', '+819012345678');
+
         const body = { message_uuid: 'msg-replay', status: 'delivered' };
         const token = signWebhookJwt(SECRET, body);
 
@@ -807,15 +823,26 @@ describe('HTTP MCP Wrapper', () => {
     });
 
     it('古い通知は ignored: true で既存状態を維持すべき', async () => {
+      // 順序保護は本ストアのレコードに対する挙動なので、送信を先に記録する
+      recordSubmitted('msg-ord', '+819012345678');
+
       await request(app)
         .post('/webhooks/message-status')
         .set('x-webhook-secret', 'test-webhook-secret')
-        .send({ message_uuid: 'msg-ord', status: 'delivered', timestamp: '2026-08-04T10:00:00.000Z' });
+        .send({
+          message_uuid: 'msg-ord',
+          status: 'delivered',
+          timestamp: new Date(Date.now() + 2000).toISOString(),
+        });
 
       const res = await request(app)
         .post('/webhooks/message-status')
         .set('x-webhook-secret', 'test-webhook-secret')
-        .send({ message_uuid: 'msg-ord', status: 'submitted', timestamp: '2026-08-04T09:00:00.000Z' });
+        .send({
+          message_uuid: 'msg-ord',
+          status: 'submitted',
+          timestamp: new Date(Date.now() + 1000).toISOString(),
+        });
 
       expect(res.status).toBe(200);
       expect(res.body.ignored).toBe(true);

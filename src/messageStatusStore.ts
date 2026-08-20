@@ -64,6 +64,26 @@ function parseTimestamp(value: string | undefined): number | null {
 
 const store = new Map<string, MessageStatusRecord>();
 
+/**
+ * このサーバーの送信履歴に無い message_id を隔離するバッファ。
+ *
+ * 送信レスポンスより先に Webhook が届く競合があるため、未知のIDを即座に捨てると
+ * ステータスを取りこぼす。かといって本ストアに入れると、**同じ Vonage Application
+ * を別システムと共用しているだけで**そちらの DLR が流れ込み、1000件の上限から
+ * こちらの正規レコードを追い出してしまう（VONAGE_MCP-20）。
+ *
+ * そこで、対応する recordSubmitted() が来るまでは別の小さな入れ物に置いておく。
+ * 本ストアより上限を小さく、保持期間を短くしてあるのは、ここが「素性の分からない
+ * データの置き場」であり、溜め込む価値がないため。
+ */
+const pending = new Map<string, MessageStatusRecord>();
+
+/** 隔離バッファの保持期間（5分）。送信レスポンスとの競合を吸収できれば十分 */
+const PENDING_TTL_MS = 5 * 60 * 1000;
+
+/** 隔離バッファの最大件数 */
+const PENDING_MAX_ENTRIES = 200;
+
 /** TTL切れのレコードを取り除く */
 function pruneExpired(now: number): void {
   for (const [id, record] of store) {
@@ -105,8 +125,28 @@ export function recordMessageStatus(
   enforceCapacity();
 }
 
+/** 隔離バッファの掃除（TTL と件数上限） */
+function prunePending(now: number): void {
+  for (const [id, record] of pending) {
+    if (now - record.recordedAt >= PENDING_TTL_MS) {
+      pending.delete(id);
+    }
+  }
+
+  while (pending.size > PENDING_MAX_ENTRIES) {
+    const oldestKey = pending.keys().next().value;
+    if (oldestKey === undefined) {
+      break;
+    }
+    pending.delete(oldestKey);
+  }
+}
+
 /**
  * 送信直後の初期ステータス（submitted）を記録する。
+ *
+ * 送信レスポンスより先に Webhook が届いていた場合は、隔離バッファから
+ * 取り込む。これをしないと「Webhook が先に来た」というだけで配信結果を失う。
  */
 export function recordSubmitted(messageId: string, to: string, from?: string): void {
   recordMessageStatus({
@@ -117,6 +157,21 @@ export function recordSubmitted(messageId: string, to: string, from?: string): v
     channel: 'sms',
     timestamp: new Date().toISOString(),
   });
+
+  const buffered = pending.get(messageId);
+  if (!buffered) {
+    return;
+  }
+
+  pending.delete(messageId);
+
+  // ここで shouldIgnoreUpdate を通してはいけない。直前に打った submitted の
+  // timestamp は「いま」であり、先に届いていた DLR の timestamp より必ず新しい。
+  // 順序保護に掛けると、拾うために取っておいた通知を自分で捨てることになる。
+  // 隔離バッファにあるのはこのメッセージに対する本物の DLR なので、
+  // 合成した submitted より常に優先してよい。
+  const { recordedAt: _recordedAt, ...update } = buffered;
+  recordMessageStatus({ ...update, to: update.to ?? to, from: update.from ?? from });
 }
 
 /** Webhook取り込みの結果 */
@@ -125,6 +180,11 @@ export interface IngestResult {
   record: MessageStatusRecord;
   /** 順序が古いため無視した場合 true（レコードは既存のまま） */
   ignored: boolean;
+  /**
+   * このサーバーの送信履歴に無いため、隔離バッファに置いた場合 true。
+   * get_sms_status からはまだ見えない。
+   */
+  pending: boolean;
 }
 
 /**
@@ -155,10 +215,13 @@ export function ingestStatusWebhook(payload: any): IngestResult | null {
       : undefined;
 
   const timestamp = typeof payload.timestamp === 'string' ? payload.timestamp : new Date().toISOString();
-  const existing = store.get(messageId);
+
+  // このサーバーが送信したものか。そうでなければ隔離バッファ側で扱う。
+  const isKnown = store.has(messageId);
+  const existing = isKnown ? store.get(messageId) : pending.get(messageId);
 
   if (existing && shouldIgnoreUpdate(existing, status, timestamp)) {
-    return { record: existing, ignored: true };
+    return { record: existing, ignored: true, pending: !isKnown };
   }
 
   const record: Omit<MessageStatusRecord, 'recordedAt'> = {
@@ -171,8 +234,20 @@ export function ingestStatusWebhook(payload: any): IngestResult | null {
     error,
   };
 
-  recordMessageStatus(record);
-  return { record: store.get(messageId)!, ignored: false };
+  if (isKnown) {
+    recordMessageStatus(record);
+    return { record: store.get(messageId)!, ignored: false, pending: false };
+  }
+
+  const now = Date.now();
+  prunePending(now);
+
+  // 上書き時も挿入順を最新にするため、いったん削除してから追加する
+  pending.delete(messageId);
+  pending.set(messageId, { ...record, recordedAt: now });
+  prunePending(now);
+
+  return { record: pending.get(messageId)!, ignored: false, pending: true };
 }
 
 /** 既存レコードに対して、届いた更新が「古い」ものかどうかを判定する */
@@ -208,12 +283,18 @@ export function getMessageStatus(messageId: string): MessageStatusRecord | null 
   return store.get(messageId) ?? null;
 }
 
-/** テスト用: ストアを空にする */
+/** テスト用: ストアと隔離バッファを空にする */
 export function clearMessageStatusStore(): void {
   store.clear();
+  pending.clear();
 }
 
 /** テスト用: 現在の保持件数 */
 export function messageStatusStoreSize(): number {
   return store.size;
+}
+
+/** テスト用: 隔離バッファの保持件数 */
+export function pendingStatusStoreSize(): number {
+  return pending.size;
 }

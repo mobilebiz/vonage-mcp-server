@@ -869,7 +869,12 @@ curl -X POST http://localhost:3000/mcp \
 
 Vonage Messages API の Status Webhook（配信結果 / DLR）の受信エンドポイントです。Vonage から呼ばれるため Bearer トークン認証の対象外ですが、**別途Webhook認証が必須**です。
 
-受信した配信結果はオンメモリに24時間保持され、`get_sms_status` ツールから参照できます。Vonage Dashboard の Application 設定で **Status URL** に `https://<host>/webhooks/message-status` を登録してください。
+受信した配信結果はオンメモリに24時間保持され、`get_sms_status` ツールから参照できます。
+
+> [!IMPORTANT]
+> **このサーバーが送信した記録のない `message_id` は、配信ステータスの保持対象になりません。**
+> 同じ Vonage Application を別のシステムと共用していると、そちらが送信したメッセージの DLR もこのエンドポイントに届きます。それをそのまま保持すると、**保持件数の上限（1000件）から自分のレコードが押し出され、`get_sms_status` が使えなくなります**。
+> ただし、まれに DLR が送信 API のレスポンスより先に届くことがあります。これを取りこぼさないよう、未知の ID は 5 分間だけ別の小さなバッファに保持し、対応する送信が記録された時点で取り込みます。レスポンスの `pending: true` はこの状態を表します。Vonage Dashboard の Application 設定で **Status URL** に `https://<host>/webhooks/message-status` を登録してください。
 
 認証は以下の優先順位で行われます。
 

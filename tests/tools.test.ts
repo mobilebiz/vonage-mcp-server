@@ -24,7 +24,12 @@ vi.mock('../src/jwtUtils.js', () => ({ generateVonageJWT: mockGenerateJWT }));
 import { enabledToolDefinitions, listTools, runTool, toolDefinitions } from '../src/tools.js';
 import { CAPABILITY_ENV_VARS } from '../src/config.js';
 import { toolRateLimiter } from '../src/guardrails.js';
-import { clearMessageStatusStore, getMessageStatus, ingestStatusWebhook } from '../src/messageStatusStore.js';
+import {
+  clearMessageStatusStore,
+  getMessageStatus,
+  ingestStatusWebhook,
+  recordSubmitted,
+} from '../src/messageStatusStore.js';
 
 /** ツールを実行して軽量ペイロードを取り出す */
 async function invoke(name: string, args: unknown): Promise<any> {
@@ -596,11 +601,15 @@ describe('tools registry', () => {
 
   describe('get_sms_status', () => {
     it('Webhook受信済みのステータスを返す', async () => {
+      // 送信履歴に無いIDは隔離バッファ行きになるので、先に送信を記録する
+      recordSubmitted('msg-1', '+819012345678');
       ingestStatusWebhook({
         message_uuid: 'msg-1',
         status: 'delivered',
         to: '819012345678',
-        timestamp: '2026-08-04T10:00:00.000Z',
+        // recordSubmitted は現在時刻を打つので、webhook 側は必ずそれより後にする。
+        // 固定日付だと、その日付を実時刻が追い越した時点で順序保護に弾かれる。
+        timestamp: new Date(Date.now() + 1000).toISOString(),
       });
 
       const payload = await invoke('get_sms_status', { message_id: 'msg-1' });
