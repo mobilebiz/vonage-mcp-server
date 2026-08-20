@@ -115,7 +115,6 @@ describe('HTTP MCP Wrapper', () => {
     process.env.ENABLE_SMS = 'true';
     process.env.ENABLE_BULK_SMS = 'true';
     process.env.ENABLE_VOICE = 'true';
-    process.env.ENABLE_JWT_TOOL = 'true';
 
     delete process.env.ALLOWED_NUMBERS;
     delete process.env.BULK_MAX_ROWS;
@@ -298,7 +297,6 @@ describe('HTTP MCP Wrapper', () => {
   describe('capability トグル', () => {
     it('無効なツールは tools/list に現れない', async () => {
       delete process.env.ENABLE_VOICE;
-      delete process.env.ENABLE_JWT_TOOL;
       delete process.env.ENABLE_BULK_SMS;
 
       const res = await callMcp({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
@@ -306,7 +304,6 @@ describe('HTTP MCP Wrapper', () => {
       const names = res.body.result.tools.map((t: any) => t.name);
       expect(names).not.toContain('make_voice_call');
       expect(names).not.toContain('get_call_status');
-      expect(names).not.toContain('generate_jwt');
       expect(names).not.toContain('bulk_sms_from_csv');
       expect(names).toContain('send_sms');
     });
@@ -472,7 +469,7 @@ describe('HTTP MCP Wrapper', () => {
       const res = await callMcp({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
 
       expect(res.status).toBe(200);
-      expect(res.body.result.tools.length).toBe(6);
+      expect(res.body.result.tools.length).toBe(5);
     });
 
     it('ping に応答する', async () => {

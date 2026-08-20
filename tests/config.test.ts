@@ -29,7 +29,6 @@ const MANAGED_ENV = [
   'ENABLE_SMS',
   'ENABLE_BULK_SMS',
   'ENABLE_VOICE',
-  'ENABLE_JWT_TOOL',
   'DISABLE_RATE_LIMIT',
   'RATE_LIMIT_PER_HOUR',
   'BULK_MAX_ROWS',
@@ -163,7 +162,6 @@ describe('config', () => {
       ENABLE_SMS: false,
       ENABLE_BULK_SMS: false,
       ENABLE_VOICE: false,
-      ENABLE_JWT_TOOL: false,
     };
 
     it('既定はすべて OFF', () => {

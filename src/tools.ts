@@ -11,7 +11,6 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import { sendSMS, sendBulkSMS } from './vonage.js';
 import { parseAndValidateCSV } from './csvUtils.js';
 import { makeVoiceCall, estimateCallDuration, normalizeVoiceName } from './voiceCall.js';
-import { generateVonageJWT } from './jwtUtils.js';
 import { getCallStatus } from './callStatus.js';
 import { getMessageStatus, recordSubmitted } from './messageStatusStore.js';
 import {
@@ -494,40 +493,6 @@ const toolImplementations: ToolImplementation[] = [
     },
   },
 
-  {
-    name: 'generate_jwt',
-    capability: 'ENABLE_JWT_TOOL',
-    title: 'JWT生成',
-    description:
-      'Vonage Voice API用のJWT認証トークンを生成する。環境変数からApplication IDとPrivate Keyを読み込む。生成されたトークンは機密情報のため、ユーザーが明示的に要求した場合のみ実行すること。',
-    schema: {
-      expiresIn: z
-        .number()
-        .int()
-        .positive()
-        .optional()
-        .describe('トークンの有効期限（秒）。デフォルト: 86400（24時間）。'),
-      subject: z.string().optional().describe('トークンのサブジェクト。デフォルト: VonageMCP。'),
-    },
-    handler: async ({ expiresIn, subject }) => {
-      const result = await generateVonageJWT({ expiresIn, subject });
-
-      if (!result.success) {
-        return errorOutcome(
-          result.error ?? 'JWTの生成に失敗しました',
-          'VONAGE_APPLICATION_ID と VONAGE_PRIVATE_KEY_PATH が正しく設定されているかユーザーに確認してください。再試行しても結果は変わりません。',
-          {},
-          'internal'
-        );
-      }
-
-      return successOutcome({
-        token: result.token,
-        expires_at: result.expiresAt,
-        subject: subject ?? 'VonageMCP',
-      });
-    },
-  },
 ];
 
 /**

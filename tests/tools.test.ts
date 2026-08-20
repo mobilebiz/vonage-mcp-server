@@ -1,11 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-const { mockSendSMS, mockSendBulkSMS, mockMakeVoiceCall, mockGetCallStatus, mockGenerateJWT } = vi.hoisted(() => ({
+const { mockSendSMS, mockSendBulkSMS, mockMakeVoiceCall, mockGetCallStatus } = vi.hoisted(() => ({
   mockSendSMS: vi.fn(),
   mockSendBulkSMS: vi.fn(),
   mockMakeVoiceCall: vi.fn(),
   mockGetCallStatus: vi.fn(),
-  mockGenerateJWT: vi.fn(),
 }));
 
 vi.mock('../src/vonage.js', async () => {
@@ -19,7 +18,6 @@ vi.mock('../src/voiceCall.js', async () => {
 });
 
 vi.mock('../src/callStatus.js', () => ({ getCallStatus: mockGetCallStatus }));
-vi.mock('../src/jwtUtils.js', () => ({ generateVonageJWT: mockGenerateJWT }));
 
 import { enabledToolDefinitions, listTools, runTool, toolDefinitions } from '../src/tools.js';
 import { CAPABILITY_ENV_VARS } from '../src/config.js';
@@ -56,7 +54,6 @@ describe('tools registry', () => {
     process.env.ENABLE_SMS = 'true';
     process.env.ENABLE_BULK_SMS = 'true';
     process.env.ENABLE_VOICE = 'true';
-    process.env.ENABLE_JWT_TOOL = 'true';
 
   });
 
@@ -69,7 +66,6 @@ describe('tools registry', () => {
       const tools = listTools();
       expect(tools.map((t) => t.name).sort()).toEqual([
         'bulk_sms_from_csv',
-        'generate_jwt',
         'get_call_status',
         'get_sms_status',
         'make_voice_call',
@@ -640,29 +636,6 @@ describe('tools registry', () => {
     });
   });
 
-  describe('generate_jwt', () => {
-    it('成功時は token と有効期限を返す', async () => {
-      mockGenerateJWT.mockResolvedValue({ success: true, token: 'jwt-token', expiresAt: '2026-08-05T00:00:00.000Z' });
-
-      const payload = await invoke('generate_jwt', {});
-
-      expect(payload).toEqual({
-        status: 'success',
-        token: 'jwt-token',
-        expires_at: '2026-08-05T00:00:00.000Z',
-        subject: 'VonageMCP',
-      });
-    });
-
-    it('失敗時は設定確認を促す', async () => {
-      mockGenerateJWT.mockResolvedValue({ success: false, error: 'private key not found' });
-
-      const payload = await invoke('generate_jwt', {});
-
-      expect(payload.status).toBe('error');
-      expect(payload.suggestion).toContain('VONAGE_APPLICATION_ID');
-    });
-  });
 
   describe('エラー種別 (errorKind)', () => {
     it('入力エラーは validation', async () => {
@@ -832,7 +805,7 @@ describe('tools registry', () => {
     it('ツール定義は凍結されていて capability を書き換えられない', () => {
       const sendSms = toolDefinitions.find((t) => t.name === 'send_sms')!;
       expect(() => {
-        (sendSms as any).capability = 'ENABLE_JWT_TOOL';
+        (sendSms as any).capability = 'ENABLE_VOICE';
       }).toThrow();
     });
 
@@ -846,7 +819,6 @@ describe('tools registry', () => {
       ['ENABLE_SMS', ['get_sms_status', 'send_sms']],
       ['ENABLE_BULK_SMS', ['bulk_sms_from_csv']],
       ['ENABLE_VOICE', ['get_call_status', 'make_voice_call']],
-      ['ENABLE_JWT_TOOL', ['generate_jwt']],
     ])('%s だけを有効にすると対象ツールだけが公開される', (capability, expected) => {
       disableAll();
       process.env[capability] = 'true';

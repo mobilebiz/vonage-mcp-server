@@ -66,7 +66,6 @@ npm install
 | `ENABLE_SMS` | `send_sms` / `get_sms_status` | OFF |
 | `ENABLE_BULK_SMS` | `bulk_sms_from_csv` | OFF |
 | `ENABLE_VOICE` | `make_voice_call` / `get_call_status` | OFF |
-| `ENABLE_JWT_TOOL` | `generate_jwt` | OFF |
 
 ```sh
 # SMSの単発送信だけを使う場合
@@ -76,9 +75,13 @@ ENABLE_SMS=true
 無効なツールは `tools/list` の結果に含まれません。エージェントが存在しないツールを呼ぼうとして迷走せず、使わないツールの定義がコンテキストを消費することもありません。
 
 > [!IMPORTANT]
-> **`ENABLE_BULK_SMS` と `ENABLE_JWT_TOOL` を SMS / Voice から分けているのは、爆発半径が違うためです。**
-> - `bulk_sms_from_csv` は1回の呼び出しで数百件を送信できます
-> - `generate_jwt` は Vonage API を直接叩ける署名済みクレデンシャルを呼び出し側に渡します。**これを渡した相手には、このサーバーのガードレール（宛先制限・レートリミット）が一切効きません**
+> **`ENABLE_BULK_SMS` を `ENABLE_SMS` から分けているのは、爆発半径が違うためです。**
+> 単発の `send_sms` が1件なのに対し、`bulk_sms_from_csv` は1回の呼び出しで数百件を送信できます。
+
+> [!WARNING]
+> **v1.3.0 の破壊的変更: `generate_jwt` ツールを削除しました。**
+> Vonage API を直接叩ける署名済みクレデンシャルを呼び出し側に渡すツールで、**受け取った相手にはこのサーバーのガードレール（宛先制限・レートリミット・capability トグル）が一切効きません**。既定 OFF にしても、一度有効化した後にプロンプトインジェクションで長寿命のトークンを生成させられる余地が残ります。
+> AIエージェントから Vonage を使いやすくするという本サーバーの目的に対して汎用の JWT 発行は主要な用途ではないため、迂回路を残さない判断をしました。JWT が必要な場合は [Vonage 公式のサーバーSDK](https://developer.vonage.com/en/getting-started/concepts/authentication) を直接お使いください。
 
 > [!IMPORTANT]
 > 有効な値は `true` / `false` のみで、**大文字小文字を区別**します。`ENABLE_SMS=True` や `ENABLE_SMS=1` は起動エラーになります。無効にしたつもりの `false` が truthy と判定されて機能が公開される事故を防ぐため、曖昧な値は推測せずに落とす方針です。
@@ -419,16 +422,6 @@ Claude Desktopの設定ファイル `claude_desktop_config.json` に以下の設
     - Webhook未設定時・stdio版では `submitted` のまま（`note` フィールドで明示される）
     - 記録はオンメモリで24時間保持（プロセス再起動でクリア）
 
-- **generate_jwt**: JWT生成ツール
-  - 入力:
-    - `expiresIn` (オプション): トークンの有効期限（秒単位、デフォルト: 86400 = 24時間）
-    - `subject` (オプション): トークンのサブジェクト（デフォルト: VonageMCP）
-  - 機能:
-    - Vonage Voice API用のJWT認証トークンを生成
-    - 環境変数から自動的にApplication IDとPrivate Keyを読み込み
-    - デフォルトのACL設定を含む（Voice API用の標準パス）
-    - 有効期限とサブジェクトをカスタマイズ可能
-
 #### ツールのレスポンス形式
 
 | status | 意味 | 例 |
@@ -482,19 +475,6 @@ phone,from,message
 
 「先ほどの通話の料金と時間を教えてください」
 → get_call_statusツールで通話詳細を確認
-```
-
-#### JWT生成
-
-```text
-「Vonage Voice API用のJWTトークンを生成してください」
-→ generate_jwtツールを使用してデフォルト設定（24時間有効）でJWT生成
-
-「有効期限1時間のJWTトークンを生成してください」
-→ generate_jwtツールを使用してexpiresIn=3600でJWT生成
-
-「サブジェクトを'AdminUser'にしてJWTトークンを生成してください」
-→ generate_jwtツールを使用してカスタムサブジェクトでJWT生成
 ```
 
 ## CSV一括送信機能
@@ -622,60 +602,6 @@ get_call_status({
 // 通話時間: 27秒
 ```
 
-## JWT生成機能
-
-### 機能概要
-
-Vonage Voice API用のJWT認証トークンを生成します。環境変数から自動的にApplication IDとPrivate Keyを読み込み、セキュアなトークンを生成します。
-
-### 主な特徴
-
-- **自動設定読み込み**: 環境変数から自動的にApplication IDとPrivate Keyを取得
-- **カスタマイズ可能**: 有効期限とサブジェクトを柔軟に設定
-- **デフォルトACL**: Voice API用の標準的なACL設定を自動適用
-- **有効期限管理**: トークンの有効期限を自動計算・表示
-
-### パラメータ
-
-| パラメータ | 型 | デフォルト | 説明 |
-|------------|------|------------|------|
-| expiresIn | number | 86400 | トークンの有効期限（秒単位、86400 = 24時間） |
-| subject | string | VonageMCP | トークンのサブジェクト（識別用） |
-
-### 使用例
-
-```javascript
-// デフォルト設定（24時間有効）
-generate_jwt()
-
-// 1時間有効のトークン
-generate_jwt({
-  expiresIn: 3600
-})
-
-// カスタムサブジェクト
-generate_jwt({
-  subject: "AdminUser",
-  expiresIn: 7200  // 2時間
-})
-```
-
-### ACL設定
-
-生成されるJWTには以下のデフォルトACL（Access Control List）が含まれます：
-
-- `/*/users/**` - ユーザー管理
-- `/*/conversations/**` - 会話管理
-- `/*/sessions/**` - セッション管理
-- `/*/devices/**` - デバイス管理
-- `/*/image/**` - 画像管理
-- `/*/media/**` - メディア管理
-- `/*/applications/**` - アプリケーション管理
-- `/*/push/**` - プッシュ通知
-- `/*/knocking/**` - ノッキング機能
-- `/*/legs/**` - 通話レッグ管理
-
-
 ### 5. トラブルシューティング
 
 #### サーバーが起動しない場合
@@ -728,7 +654,6 @@ vonage-mcp-server/
 │   ├── vonage.ts          # Vonage SMS送信機能
 │   ├── csvUtils.ts        # CSV解析・バリデーション機能
 │   ├── voiceCall.ts       # Voice通話機能・NCCO生成
-│   ├── jwtUtils.ts        # JWT生成機能
 │   └── callStatus.ts      # 通話ステータス取得機能
 ├── csv/                    # サンプルCSVファイル
 │   ├── sample_contacts.csv        # 基本テスト用
@@ -739,7 +664,6 @@ vonage-mcp-server/
 ├── tests/                  # テストファイル
 │   ├── index.test.ts      # メイン機能のテスト
 │   ├── utils.test.ts      # ユーティリティのテスト
-│   ├── jwtUtils.test.ts   # JWT生成のテスト
 │   ├── callStatus.test.ts # 通話ステータス取得のテスト
 │   ├── tools.test.ts      # ツールレジストリ・ガードレール統合のテスト
 │   ├── guardrails.test.ts # ホワイトリスト・レートリミットのテスト
@@ -787,7 +711,7 @@ curl -X POST http://localhost:3000/mcp \
 
 > [!IMPORTANT]
 > **CORS は既定で閉じています。**
-> Bearer トークン認証があっても、ブラウザ側がトークンを持つ構成（ブラウザ拡張や Web 版の MCP クライアント）では、CORS が開いていると悪意ある Web ページが `/mcp` を呼び、**レスポンスまで読み取れます**。`ENABLE_JWT_TOOL=true` の場合は、生成した署名済みクレデンシャルの窃取に直結します。
+> Bearer トークン認証があっても、ブラウザ側がトークンを持つ構成（ブラウザ拡張や Web 版の MCP クライアント）では、CORS が開いていると悪意ある Web ページが `/mcp` を呼び、**レスポンスまで読み取れます**。ツールのレスポンスに含まれる宛先や配信状況も読み取られます。
 > MCP クライアントの多くはブラウザではないため、開ける必要があるのは例外的なケースだけです。必要な場合のみ `ALLOWED_ORIGINS` に列挙してください。
 
 > [!IMPORTANT]
@@ -926,7 +850,7 @@ AIエージェントに設定すべき System Instruction（承認フロー、`d
 
 - `@vonage/server-sdk` - Vonage SMS機能
 - `@vonage/voice` - Voice通話機能専用SDK
-- `@vonage/jwt` - JWT認証トークン生成
+- `@vonage/jwt` - Webhook の署名検証
 - `csv-parse` - CSVファイル解析
 - `@modelcontextprotocol/sdk` - MCP Server実装
 - `zod` - スキーマ検証

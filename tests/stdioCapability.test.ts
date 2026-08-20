@@ -172,17 +172,6 @@ describe('stdio トランスポートの capability 強制', () => {
     expect(JSON.stringify(response)).not.toContain('call_id');
   });
 
-  it('ENABLE_JWT_TOOL が無効なら stdio から generate_jwt を実行できない', async () => {
-    const { responses } = await talkToServer({ ...baseEnv, ENABLE_SMS: 'true' }, [
-      ...handshake,
-      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'generate_jwt', arguments: {} } },
-    ]);
-
-    const response = responses.find((r) => r.id === 2)!;
-    expect(response.error ?? response.result?.isError).toBeTruthy();
-    expect(JSON.stringify(response)).not.toContain('"token"');
-  });
-
   it('bulk は SMS とは独立したトグルで制御される', async () => {
     const { responses } = await talkToServer({ ...baseEnv, ENABLE_SMS: 'true' }, [
       ...handshake,

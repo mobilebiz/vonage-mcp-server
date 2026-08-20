@@ -41,16 +41,10 @@ export const MAX_BULK_MAX_ROWS = 10_000;
 /**
  * capability トグルの環境変数名。
  *
- * bulk と generate_jwt を SMS / Voice から分離しているのは爆発半径が違うため:
- * bulk は1回の呼び出しで数百件を送れ、generate_jwt は Vonage API を直接叩ける
- * 署名済みクレデンシャルを呼び出し側に渡す（＝ガードレールの迂回路になる）。
+ * bulk を SMS から分離しているのは爆発半径が違うため。単発が1件なのに対し、
+ * bulk は1回の呼び出しで数百件を送れる。
  */
-export const CAPABILITY_ENV_VARS = [
-  'ENABLE_SMS',
-  'ENABLE_BULK_SMS',
-  'ENABLE_VOICE',
-  'ENABLE_JWT_TOOL',
-] as const;
+export const CAPABILITY_ENV_VARS = ['ENABLE_SMS', 'ENABLE_BULK_SMS', 'ENABLE_VOICE'] as const;
 
 /**
  * レートリミットのバケット。
