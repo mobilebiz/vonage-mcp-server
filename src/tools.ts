@@ -26,7 +26,7 @@ import {
   validateAndNormalizePhoneNumber,
   validateSenderId,
 } from './guardrails.js';
-import { isCapabilityEnabled, type CapabilityName } from './config.js';
+import { getRateLimits, isCapabilityEnabled, type CapabilityName } from './config.js';
 import {
   dryRunOutcome,
   errorOutcome,
@@ -107,19 +107,36 @@ function guardDestination(to: string): { outcome: ToolOutcome } | { normalized: 
 
 /**
  * レートリミットを cost 件分消費する。超過していればエラーの ToolOutcome を返す。
- * 足りない場合は1件も消費しない（部分送信を避けるため）。
+ *
+ * バケットは**ツール名ではなくチャネル**で分ける。ツール名で分けると、単発 SMS で
+ * 上限まで送ったあと1行だけの CSV を繰り返すことで上限を素通りできる
+ * （VONAGE_MCP-17）。`global` と該当チャネルの両方を原子的に消費し、
+ * どちらか一方でも足りなければ1件も送らない。
  */
-function consumeRateLimit(toolName: string, cost: number = 1): ToolOutcome | null {
-  const result = toolRateLimiter.consume(toolName, undefined, undefined, cost);
-  if (result.allowed) {
+function consumeRateLimit(
+  toolName: string,
+  channel: 'sms' | 'voice',
+  cost: number = 1
+): ToolOutcome | null {
+  const limits = getRateLimits();
+  const outcome = toolRateLimiter.consumeAll([
+    { bucket: 'global', key: 'global', limit: limits.global, cost },
+    { bucket: channel, key: channel, limit: limits[channel], cost },
+  ]);
+
+  if (outcome.allowed) {
     return null;
   }
 
-  const error = buildRateLimitError(toolName, result, cost);
+  const error = buildRateLimitError(toolName, outcome.result, cost, outcome.bucket);
   return errorOutcome(
     error.reason,
     error.suggestion,
-    { retry_after_seconds: error.retry_after_seconds, remaining_quota: error.remaining },
+    {
+      retry_after_seconds: error.retry_after_seconds,
+      remaining_quota: error.remaining,
+      exceeded_bucket: outcome.bucket,
+    },
     'rate_limit'
   );
 }
@@ -173,7 +190,7 @@ const toolImplementations: ToolImplementation[] = [
         });
       }
 
-      const limited = consumeRateLimit('send_sms');
+      const limited = consumeRateLimit('send_sms', 'sms');
       if (limited) {
         return limited;
       }
@@ -291,7 +308,7 @@ const toolImplementations: ToolImplementation[] = [
       }
 
       // 送信件数分のレート枠を消費する。足りなければ1件も送らない
-      const limited = consumeRateLimit('bulk_sms_from_csv', allowed.length);
+      const limited = consumeRateLimit('bulk_sms_from_csv', 'sms', allowed.length);
       if (limited) {
         return limited;
       }
@@ -372,7 +389,7 @@ const toolImplementations: ToolImplementation[] = [
         });
       }
 
-      const limited = consumeRateLimit('make_voice_call');
+      const limited = consumeRateLimit('make_voice_call', 'voice');
       if (limited) {
         return limited;
       }

@@ -39,6 +39,8 @@ describe('tools registry', () => {
     toolRateLimiter.reset();
     clearMessageStatusStore();
     delete process.env.ALLOWED_NUMBERS;
+    delete process.env.SMS_RATE_LIMIT_PER_HOUR;
+    delete process.env.VOICE_RATE_LIMIT_PER_HOUR;
     delete process.env.ALLOWED_COUNTRY_CODES;
     delete process.env.ALLOW_PREMIUM_NUMBERS;
     delete process.env.BULK_MAX_ROWS;
@@ -283,15 +285,79 @@ describe('tools registry', () => {
       expect((await invoke('send_sms', { to: '09012345678', message: 'a' })).status).toBe('success');
     });
 
-    it('ツールごとに独立してカウントする', async () => {
+    // RATE_LIMIT_PER_HOUR は「合計何件まで」を意味する。SMS と架電で別枠にすると
+    // 管理者が設定した上限の2倍が送れてしまう（VONAGE_MCP-17）。
+    it('SMSと架電は共通の global バケットを消費する', async () => {
       mockSendSMS.mockResolvedValue({ success: true, messageId: 'msg-123' });
       mockMakeVoiceCall.mockResolvedValue({ success: true, callId: 'call-1' });
 
       await invoke('send_sms', { to: '09012345678', message: 'a' });
-      await invoke('send_sms', { to: '09012345678', message: 'a' });
-      expect((await invoke('send_sms', { to: '09012345678', message: 'a' })).status).toBe('error');
+      await invoke('make_voice_call', { to: '09012345678', message: 'a' });
 
-      expect((await invoke('make_voice_call', { to: '09012345678', message: 'a' })).status).toBe('success');
+      const third = await invoke('send_sms', { to: '09012345678', message: 'a' });
+      expect(third.status).toBe('error');
+      expect(third.exceeded_bucket).toBe('global');
+    });
+
+    // これが元のバグ。単発で使い切ったあと1行CSVを繰り返せば上限を素通りできた
+    it('単発SMSと bulk は同じ枠を消費し、合計が上限を超えない', async () => {
+      mockSendSMS.mockResolvedValue({ success: true, messageId: 'msg-123' });
+      mockSendBulkSMS.mockResolvedValue({
+        totalRequests: 1,
+        successCount: 1,
+        failureCount: 0,
+        results: [{ to: '+819012345678', success: true, messageId: 'm1' }],
+      });
+
+      await invoke('send_sms', { to: '09012345678', message: 'a' });
+      await invoke('send_sms', { to: '09012345678', message: 'a' });
+
+      const bulk = await invoke('bulk_sms_from_csv', {
+        csv_content: 'phone,from,message\n09012345678,VonageMCP,hi\n',
+      });
+
+      expect(bulk.status).toBe('error');
+      expect(mockSendBulkSMS).not.toHaveBeenCalled();
+    });
+
+    describe('チャネル別の上限', () => {
+      it('SMS_RATE_LIMIT_PER_HOUR は global より先に効く', async () => {
+        process.env.RATE_LIMIT_PER_HOUR = '10';
+        process.env.SMS_RATE_LIMIT_PER_HOUR = '1';
+        mockSendSMS.mockResolvedValue({ success: true, messageId: 'm' });
+        mockMakeVoiceCall.mockResolvedValue({ success: true, callId: 'c' });
+
+        expect((await invoke('send_sms', { to: '09012345678', message: 'a' })).status).toBe('success');
+
+        const blocked = await invoke('send_sms', { to: '09012345678', message: 'a' });
+        expect(blocked.status).toBe('error');
+        expect(blocked.exceeded_bucket).toBe('sms');
+        expect(blocked.reason).toContain('SMS_RATE_LIMIT_PER_HOUR');
+
+        // SMS が尽きても架電は global の残枠で通る
+        expect((await invoke('make_voice_call', { to: '09012345678', message: 'a' })).status).toBe(
+          'success'
+        );
+      });
+
+      // 一部のバケットだけ消費して失敗すると、送っていない分の枠が減る
+      it('チャネル側で拒否された場合、global の枠は消費されない', async () => {
+        process.env.RATE_LIMIT_PER_HOUR = '10';
+        process.env.SMS_RATE_LIMIT_PER_HOUR = '0';
+        mockMakeVoiceCall.mockResolvedValue({ success: true, callId: 'c' });
+
+        for (let i = 0; i < 5; i++) {
+          const blocked = await invoke('send_sms', { to: '09012345678', message: 'a' });
+          expect(blocked.status).toBe('error');
+        }
+
+        // global を5件消費していたなら、この10件目までの架電が通らなくなる
+        for (let i = 0; i < 10; i++) {
+          expect((await invoke('make_voice_call', { to: '09012345678', message: 'a' })).status).toBe(
+            'success'
+          );
+        }
+      });
     });
   });
 

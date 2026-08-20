@@ -396,6 +396,56 @@ describe('guardrails', () => {
     });
   });
 
+  describe('複数バケットの原子的な消費', () => {
+    it('すべてのバケットに空きがあれば消費する', () => {
+      const limiter = new RateLimiter(60_000);
+
+      const result = limiter.consumeAll(
+        [
+          { bucket: 'global', key: 'global', limit: 5, cost: 2 },
+          { bucket: 'sms', key: 'sms', limit: 5, cost: 2 },
+        ],
+        1_000_000
+      );
+
+      expect(result.allowed).toBe(true);
+      expect(limiter.check('global', 5, 1_000_000).remaining).toBe(3);
+      expect(limiter.check('sms', 5, 1_000_000).remaining).toBe(3);
+    });
+
+    // 順に消費すると global だけ減り、送っていない分の枠が失われる
+    it('1つでも足りなければ、どのバケットも消費しない', () => {
+      const limiter = new RateLimiter(60_000);
+
+      const result = limiter.consumeAll(
+        [
+          { bucket: 'global', key: 'global', limit: 10, cost: 3 },
+          { bucket: 'sms', key: 'sms', limit: 1, cost: 3 },
+        ],
+        1_000_000
+      );
+
+      expect(result.allowed).toBe(false);
+      expect(result.allowed === false && result.bucket).toBe('sms');
+      expect(limiter.check('global', 10, 1_000_000).remaining).toBe(10);
+      expect(limiter.check('sms', 1, 1_000_000).remaining).toBe(1);
+    });
+
+    it('どのバケットで不足したかを返す', () => {
+      const limiter = new RateLimiter(60_000);
+
+      const result = limiter.consumeAll(
+        [
+          { bucket: 'global', key: 'global', limit: 0, cost: 1 },
+          { bucket: 'voice', key: 'voice', limit: 100, cost: 1 },
+        ],
+        1_000_000
+      );
+
+      expect(result.allowed === false && result.bucket).toBe('global');
+    });
+  });
+
   describe('RATE_LIMIT_PER_HOUR=0（全拒否）', () => {
     it('1件目から拒否され、retryAfterSeconds を返さない', () => {
       const limiter = new RateLimiter(60_000);

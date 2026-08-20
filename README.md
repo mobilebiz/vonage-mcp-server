@@ -97,6 +97,8 @@ AIエージェント（Gemini Enterprise / Claude 等）から利用する際の
 | `ALLOWED_NUMBERS` | （未設定＝制限なし） | 送信・架電を許可する宛先番号のホワイトリスト（カンマ区切り）。設定すると、これ以外の番号へのリクエストはエラーになる。表記ゆれ（`090-1234-5678` 等）は正規化して比較される。 |
 | `RATE_LIMIT_PER_HOUR` | `5` | 1時間あたりの**送信・架電件数**の上限（`0`〜`10000` の整数）。`send_sms` / `bulk_sms_from_csv` / `make_voice_call` に**ツールごと独立して**適用される。**`0` は「すべて拒否」**（緊急停止）。`dry_run: true` の呼び出しは消費しない。 |
 | `BULK_MAX_ROWS` | `100` | `bulk_sms_from_csv` が一度に受け付けるCSVの最大行数（`0`〜`10000` の整数）。**`0` は「すべて拒否」**（bulk の停止）。 |
+| `SMS_RATE_LIMIT_PER_HOUR` | （未設定＝`RATE_LIMIT_PER_HOUR` に委ねる） | SMS だけをさらに絞りたい場合の上限。`send_sms` と `bulk_sms_from_csv` の合計に対して効く。 |
+| `VOICE_RATE_LIMIT_PER_HOUR` | （未設定＝`RATE_LIMIT_PER_HOUR` に委ねる） | 架電だけをさらに絞りたい場合の上限。 |
 | `DISABLE_RATE_LIMIT` | `false` | `true` にするとレートリミットを完全に無効化する。**危険な設定**であり、起動のたびに警告が出る。本番環境では使わないこと。 |
 | `VONAGE_API_SIGNATURE_SECRET` | （未設定） | Status Webhook の署名検証に使う Vonage の Signature Secret。**推奨**。Vonage Dashboard の Settings → API settings で取得できる。 |
 | `VONAGE_WEBHOOK_SECRET` | （未設定） | 署名検証が使えない環境向けの代替。設定すると `x-webhook-secret` ヘッダーの一致を要求する。 |
@@ -151,9 +153,23 @@ SMS の `from` には Vonage 公式ルールが適用されます。**英数字1
 > [!NOTE]
 > 短縮番号（`110` や海外の `911` / `112` など）は、E.164 の桁数要件を満たさないため一律で拒否されます。日本の緊急通報番号については、桁数検証とは独立した明示的なブロックも入れています（桁数の扱いが将来変わっても効き続けるようにするため）。
 
+#### レートリミットの数え方
+
+**「ツール呼び出し回数」ではなく「送信件数」で消費されます。** `bulk_sms_from_csv` は CSV の送信対象行数の分だけまとめて枠を消費し、残り枠が足りない場合は**1件も送信せず**エラーを返します。巨大なCSVを渡して上限を迂回することはできません。
+
+枠はツールごとではなく、次の2層で管理されます。
+
+| バケット | 対象 | 環境変数 |
+| --- | --- | --- |
+| `global` | SMS・架電のすべて | `RATE_LIMIT_PER_HOUR` |
+| `sms` | `send_sms` + `bulk_sms_from_csv` | `SMS_RATE_LIMIT_PER_HOUR` |
+| `voice` | `make_voice_call` | `VOICE_RATE_LIMIT_PER_HOUR` |
+
+1回の送信は該当する2つのバケット（`global` と `sms` または `voice`）を**同時に**消費します。どちらか一方でも足りなければ**どちらも消費せず**エラーになるので、「送っていないのに枠だけ減る」ことはありません。エラーレスポンスの `exceeded_bucket` に、どのバケットで不足したかが入ります。
+
 > [!IMPORTANT]
-> **レートリミットは「ツール呼び出し回数」ではなく「送信件数」で消費されます。**
-> `bulk_sms_from_csv` は CSV の送信対象行数の分だけまとめて枠を消費し、残り枠が足りない場合は**1件も送信せず**エラーを返します。これにより、巨大なCSVを渡してレートリミットを迂回することはできません。
+> **`RATE_LIMIT_PER_HOUR=5` は「1時間に合計5件まで」を意味します。**
+> ツールごとに別枠ではありません。単発SMSで5件送ったあと1行だけのCSVを繰り返す、といった方法で上限を超えることはできません。
 
 > [!WARNING]
 > **v1.3.0 の破壊的変更: `RATE_LIMIT_PER_HOUR=0` / `BULK_MAX_ROWS=0` の意味が反転しました。**

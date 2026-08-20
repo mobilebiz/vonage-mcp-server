@@ -52,6 +52,26 @@ export const CAPABILITY_ENV_VARS = [
   'ENABLE_JWT_TOOL',
 ] as const;
 
+/**
+ * レートリミットのバケット。
+ *
+ * `global` が主たる上限で、`sms` / `voice` は必要な組織だけが追加で絞るための層。
+ * ツールごとにバケットを分けると、単発 SMS で上限まで送ったあと1行だけの CSV を
+ * 繰り返すことで上限を素通りできてしまう（VONAGE_MCP-17）。課金は送信手段では
+ * なく件数で発生するので、バケットも送信手段ではなく件数に対して置く。
+ */
+export const RATE_LIMIT_BUCKETS = ['global', 'sms', 'voice'] as const;
+
+/** レートリミットのバケット名 */
+export type RateLimitBucket = (typeof RATE_LIMIT_BUCKETS)[number];
+
+/** バケットごとの上限を指定する環境変数名 */
+export const RATE_LIMIT_ENV_VARS: Record<RateLimitBucket, string> = {
+  global: 'RATE_LIMIT_PER_HOUR',
+  sms: 'SMS_RATE_LIMIT_PER_HOUR',
+  voice: 'VOICE_RATE_LIMIT_PER_HOUR',
+};
+
 /** ALLOWED_COUNTRY_CODES の既定値。このプロジェクトは日本国内利用を前提とする */
 export const DEFAULT_ALLOWED_COUNTRY_CODES = ['81'];
 
@@ -162,6 +182,38 @@ export function getRateLimitPerHour(): number {
     max: MAX_RATE_LIMIT_PER_HOUR,
     defaultValue: DEFAULT_RATE_LIMIT_PER_HOUR,
   });
+}
+
+/**
+ * チャネル別の上限（`sms` / `voice`）を返す。未設定は Infinity＝`global` に委ねる。
+ *
+ * 既定を Infinity にしているのは、`RATE_LIMIT_PER_HOUR` だけを設定した管理者の
+ * 意図（合計で何件まで）をそのまま満たすため。チャネルごとに絞りたい組織だけが
+ * 明示的に設定する。
+ */
+function getChannelRateLimit(bucket: 'sms' | 'voice'): number {
+  const name = RATE_LIMIT_ENV_VARS[bucket];
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') {
+    return Infinity;
+  }
+
+  return parseIntegerEnv(name, { min: 0, max: MAX_RATE_LIMIT_PER_HOUR, defaultValue: Infinity });
+}
+
+/**
+ * 全バケットの上限を返す。DISABLE_RATE_LIMIT=true ならすべて Infinity。
+ */
+export function getRateLimits(): Record<RateLimitBucket, number> {
+  if (isRateLimitDisabled()) {
+    return { global: Infinity, sms: Infinity, voice: Infinity };
+  }
+
+  return {
+    global: getRateLimitPerHour(),
+    sms: getChannelRateLimit('sms'),
+    voice: getChannelRateLimit('voice'),
+  };
 }
 
 /**
@@ -304,6 +356,8 @@ export function validateStartupConfig(): string[] {
       defaultValue: DEFAULT_BULK_MAX_ROWS,
     })
   );
+  collect(() => getChannelRateLimit('sms'));
+  collect(() => getChannelRateLimit('voice'));
   collect(() => parseBooleanEnv('ALLOW_PREMIUM_NUMBERS'));
   collect(() => getAllowedCountryCodes());
 
@@ -370,6 +424,13 @@ export function validateStartupConfig(): string[] {
     warnings.push(
       'ALLOW_PREMIUM_NUMBERS=true が設定されています。0990 などの高額課金番号への送信・架電が許可されます。'
     );
+  }
+  for (const bucket of ['sms', 'voice'] as const) {
+    if (process.env[RATE_LIMIT_ENV_VARS[bucket]]?.trim() === '0') {
+      warnings.push(
+        `${RATE_LIMIT_ENV_VARS[bucket]}=0 のため、${bucket === 'sms' ? 'SMS送信' : '架電'}はすべて拒否されます（無制限ではありません）。`
+      );
+    }
   }
   if (process.env.BULK_MAX_ROWS?.trim() === '0') {
     warnings.push('BULK_MAX_ROWS=0 のため、bulk_sms_from_csv はすべて拒否されます（無制限ではありません）。');

@@ -11,7 +11,13 @@
  * 環境変数のパースは src/config.ts に集約されている（VONAGE_MCP-18）。
  */
 
-import { arePremiumNumbersAllowed, getAllowedCountryCodes, getRateLimitPerHour } from './config.js';
+import {
+  RATE_LIMIT_ENV_VARS,
+  arePremiumNumbersAllowed,
+  getAllowedCountryCodes,
+  getRateLimitPerHour,
+  type RateLimitBucket,
+} from './config.js';
 import { getCallingCode } from './callingCodes.js';
 
 // 既存の import 元を変えずに済むよう、設定系のシンボルはここからも再公開する。
@@ -488,6 +494,31 @@ export class RateLimiter {
     return { allowed: true, limit, remaining: Math.max(0, limit - timestamps.length) };
   }
 
+  /**
+   * 複数バケットを**原子的に**消費する。
+   *
+   * 先に全バケットの空きを確認し、1つでも足りなければ**どのバケットも消費しない**。
+   * 順に消費すると、global を消費した直後に sms で弾かれ、送っていない分の枠だけ
+   * 減るという状態が残る。
+   */
+  consumeAll(
+    requests: Array<{ bucket: RateLimitBucket; key: string; limit: number; cost: number }>,
+    now: number = Date.now()
+  ): { allowed: true } | { allowed: false; bucket: RateLimitBucket; result: RateLimitResult } {
+    for (const request of requests) {
+      const result = this.check(request.key, request.limit, now, request.cost);
+      if (!result.allowed) {
+        return { allowed: false, bucket: request.bucket, result };
+      }
+    }
+
+    for (const request of requests) {
+      this.consume(request.key, request.limit, now, request.cost);
+    }
+
+    return { allowed: true };
+  }
+
   /** テスト用: カウンタをリセットする */
   reset(key?: string): void {
     if (key === undefined) {
@@ -508,19 +539,22 @@ export const toolRateLimiter = new RateLimiter();
 export function buildRateLimitError(
   toolName: string,
   result: RateLimitResult,
-  cost: number = 1
+  cost: number = 1,
+  bucket: RateLimitBucket = 'global'
 ): {
   reason: string;
   suggestion: string;
   retry_after_seconds: number;
   remaining: number;
 } {
-  // RATE_LIMIT_PER_HOUR=0 は緊急停止。待機を促すのは誤誘導になる。
+  const envVar = RATE_LIMIT_ENV_VARS[bucket];
+
+  // 上限 0 は緊急停止。待機を促すのは誤誘導になる。
   if (result.limit === 0) {
     return {
-      reason: `${toolName} は管理者によって停止されています（RATE_LIMIT_PER_HOUR=0）。1件も送信していません。`,
+      reason: `${toolName} は管理者によって停止されています（${envVar}=0）。1件も送信していません。`,
       suggestion:
-        '再試行しても結果は変わりません。利用を再開するには、管理者に RATE_LIMIT_PER_HOUR の設定変更を依頼してください。',
+        `再試行しても結果は変わりません。利用を再開するには、管理者に ${envVar} の設定変更を依頼してください。`,
       retry_after_seconds: 0,
       remaining: 0,
     };
@@ -531,18 +565,18 @@ export function buildRateLimitError(
 
   if (cost > 1) {
     return {
-      reason: `レートリミット超過: ${toolName} は${cost}件の送信を要求しましたが、残り枠は${result.remaining}件です（上限: 1時間あたり${result.limit}件）。1件も送信していません。`,
+      reason: `レートリミット超過: ${toolName} は${cost}件の送信を要求しましたが、残り枠は${result.remaining}件です（${envVar}: 1時間あたり${result.limit}件）。1件も送信していません。`,
       suggestion:
         result.remaining > 0
-          ? `CSVを${result.remaining}行以下に分割して再試行するか、${waitMessage}管理者に RATE_LIMIT_PER_HOUR の引き上げを依頼することもできます。`
-          : `${waitMessage}管理者に RATE_LIMIT_PER_HOUR の引き上げを依頼することもできます。`,
+          ? `CSVを${result.remaining}行以下に分割して再試行するか、${waitMessage}管理者に ${envVar} の引き上げを依頼することもできます。`
+          : `${waitMessage}管理者に ${envVar} の引き上げを依頼することもできます。`,
       retry_after_seconds: retryAfter,
       remaining: result.remaining,
     };
   }
 
   return {
-    reason: `レートリミット超過: ${toolName} は1時間あたり${result.limit}件までです。`,
+    reason: `レートリミット超過: ${toolName} は1時間あたり${result.limit}件までです（${envVar}）。`,
     suggestion: waitMessage,
     retry_after_seconds: retryAfter,
     remaining: result.remaining,
