@@ -152,23 +152,70 @@ describe('guardrails', () => {
   });
 
   describe('validateSenderId', () => {
-    it('英数字3〜11文字（先頭は英字）を許可する', () => {
-      expect(validateSenderId('VonageMCP').valid).toBe(true);
-      expect(validateSenderId('abc').valid).toBe(true);
-      expect(validateSenderId('Sales12345').valid).toBe(true);
+    const JP = '+819012345678';
+    const US = '+12125551234';
+
+    it('公式ルールどおり英数字1〜11文字を許可する', () => {
+      for (const good of ['VonageMCP', 'abc', 'Sales12345', 'AB', 'X', 'ABCDEFGHIJK']) {
+        expect(validateSenderId(good, JP).valid, `${good} は許可されるべき`).toBe(true);
+      }
     });
 
-    it('E.164形式の電話番号も許可する', () => {
-      expect(validateSenderId('+819012345678').valid).toBe(true);
-      expect(validateSenderId('09012345678').valid).toBe(true);
+    // 以前の実装は「3文字以上・先頭は英字」を課しており、これらを弾いていた
+    it('数字始まり・2文字以下でも公式ルール上は有効', () => {
+      expect(validateSenderId('2FA', JP).valid).toBe(true);
+      expect(validateSenderId('365Support', JP).valid).toBe(true);
+      expect(validateSenderId('X1', JP).valid).toBe(true);
     });
 
-    it('数字のみの短い文字列・日本語・長すぎる値を拒否する', () => {
-      for (const bad of ['123', '送信元', 'ab', 'ABCDEFGHIJKL', '1Sales']) {
-        const result = validateSenderId(bad);
+    it('12文字以上・記号・日本語・空白は拒否する', () => {
+      for (const bad of ['ABCDEFGHIJKL', '送信元', 'Vonage MCP', 'Vonage-MCP', '']) {
+        const result = validateSenderId(bad, JP);
         expect(result.valid, `${bad} は拒否されるべき`).toBe(false);
         expect(result.suggestion).toBeTruthy();
       }
+    });
+
+    // dry_run が承認した送信元と実際に届く送信元が食い違うのを防ぐ
+    describe('日本宛の数値送信元', () => {
+      it.each(['+819012345678', '09012345678', '0120123456', '81901234'])(
+        '%s は拒否され、上書きされることが説明される',
+        (from) => {
+          const result = validateSenderId(from, JP);
+          expect(result.valid).toBe(false);
+          expect(result.reason).toContain('上書き');
+          expect(result.suggestion).toContain('再試行しても結果は変わりません');
+        }
+      );
+
+      it('宛先が不明な場合も日本宛として厳しく判定する', () => {
+        expect(validateSenderId('09012345678').valid).toBe(false);
+      });
+
+      it('日本以外が宛先なら発信元電話番号を送信元にできる', () => {
+        expect(validateSenderId('+819012345678', US).valid).toBe(true);
+      });
+    });
+
+    describe('日本で禁止されている Generic Sender ID', () => {
+      // いずれも「英数字11文字以内」を満たすため、書式チェックだけでは素通りする
+      it.each(['INFO', 'info', 'Info', 'SMS', 'sms', 'NOTICE', 'notice'])(
+        '%s は拒否される',
+        (from) => {
+          const result = validateSenderId(from, JP);
+          expect(result.valid).toBe(false);
+          expect(result.reason).toContain('Generic Sender ID');
+        }
+      );
+
+      it('汎用語を含むだけの送信者IDは拒否しない', () => {
+        expect(validateSenderId('InfoDesk', JP).valid).toBe(true);
+        expect(validateSenderId('SMSGuide', JP).valid).toBe(true);
+      });
+
+      it('日本以外が宛先なら適用しない', () => {
+        expect(validateSenderId('INFO', US).valid).toBe(true);
+      });
     });
   });
 

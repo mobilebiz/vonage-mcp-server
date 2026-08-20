@@ -156,8 +156,9 @@ const toolImplementations: ToolImplementation[] = [
 
       // 送信元は dry_run の時点で検証する。ここで通しておかないと
       // 「Ready to send」と言った後に本実行でVonageに弾かれ、レート枠だけ消費される。
+      // 可否は宛先の国で変わる（日本宛では数値の送信元が使えない）ため宛先も渡す。
       if (from !== undefined) {
-        const sender = validateSenderId(from);
+        const sender = validateSenderId(from, guarded.normalized);
         if (!sender.valid) {
           return errorOutcome(sender.reason!, sender.suggestion!);
         }

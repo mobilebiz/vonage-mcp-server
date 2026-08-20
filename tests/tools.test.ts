@@ -178,7 +178,7 @@ describe('tools registry', () => {
       const payload = await invoke('send_sms', {
         to: '09012345678',
         message: 'hello',
-        from: '123',
+        from: 'Vonage MCP',
         dry_run: true,
       });
 
@@ -187,13 +187,51 @@ describe('tools registry', () => {
       expect(mockSendSMS).not.toHaveBeenCalled();
     });
 
-    it('有効な送信元（英数字・電話番号）は許可される', async () => {
+    it('日本宛の数値送信元は dry_run の時点で拒否される', async () => {
+      const payload = await invoke('send_sms', {
+        to: '09012345678',
+        message: 'hello',
+        from: '+819087654321',
+        dry_run: true,
+      });
+
+      expect(payload.status).toBe('error');
+      expect(payload.reason).toContain('上書き');
+      expect(mockSendSMS).not.toHaveBeenCalled();
+    });
+
+    it('日本で禁止されている Generic Sender ID は拒否される', async () => {
+      const payload = await invoke('send_sms', {
+        to: '09012345678',
+        message: 'hello',
+        from: 'INFO',
+        dry_run: true,
+      });
+
+      expect(payload.status).toBe('error');
+      expect(payload.reason).toContain('Generic Sender ID');
+    });
+
+    it('有効な英数字の送信元は許可される', async () => {
       mockSendSMS.mockResolvedValue({ success: true, messageId: 'msg-123' });
 
-      for (const from of ['VonageMCP', '+819087654321']) {
+      for (const from of ['VonageMCP', '2FA', 'AB']) {
         const payload = await invoke('send_sms', { to: '09012345678', message: 'a', from, dry_run: true });
         expect(payload.status, `${from} は許可されるべき`).toBe('dry_run_success');
       }
+    });
+
+    it('海外宛なら発信元電話番号を送信元にできる', async () => {
+      process.env.ALLOWED_COUNTRY_CODES = '81,1';
+
+      const payload = await invoke('send_sms', {
+        to: '+12125551234',
+        message: 'a',
+        from: '+819087654321',
+        dry_run: true,
+      });
+
+      expect(payload.status).toBe('dry_run_success');
     });
 
     it('ALLOWED_NUMBERS 内の番号は送信できる', async () => {
@@ -593,6 +631,38 @@ describe('tools registry', () => {
 
       expect(payload.status).toBe('error');
       expect(payload.reason).toContain('boom');
+    });
+  });
+
+  // 単発とCSVでルールがずれていると、`2FA` は CSV だけ弾かれ、日本で禁止されている
+  // `INFO` は CSV だけ通る、という食い違いが起きる
+  describe('送信者IDのルールが単発とCSVで一致している', () => {
+    async function bulkRowErrors(from: string): Promise<string[]> {
+      const payload = await invoke('bulk_sms_from_csv', {
+        csv_content: `phone,from,message\n09012345678,${from},hi\n`,
+        dry_run: true,
+      });
+      return payload.status === 'error' ? [payload.reason] : [];
+    }
+
+    it('CSV でも 2FA のような数字始まりの送信者IDが通る', async () => {
+      const payload = await invoke('bulk_sms_from_csv', {
+        csv_content: 'phone,from,message\n09012345678,2FA,hi\n',
+        dry_run: true,
+      });
+
+      expect(payload.status).toBe('dry_run_success');
+      expect(payload.sendable_rows).toBe(1);
+    });
+
+    it('CSV でも日本で禁止されている INFO は弾かれる', async () => {
+      const errors = await bulkRowErrors('INFO');
+      expect(errors.join()).toContain('送信可能な行がありません');
+    });
+
+    it('CSV でも日本宛の数値送信元は弾かれる', async () => {
+      const errors = await bulkRowErrors('09087654321');
+      expect(errors.join()).toContain('送信可能な行がありません');
     });
   });
 

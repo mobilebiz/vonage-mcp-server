@@ -319,20 +319,82 @@ export function checkDestination(rawInput: string, normalizedE164: string): Allo
 }
 
 /**
+ * Vonage 公式の英数字 sender ID ルール。
+ * https://developer.vonage.com/en/messaging/sms/guides/custom-sender-id
+ *
+ * 「最大11文字、a-z A-Z 0-9」。先頭文字と最小長の規定は無い。
+ * 以前の実装は「3文字以上・先頭は英字」を課しており、`2FA` や `AB` のような
+ * 実際に使える sender ID を弾いていた。
+ */
+export const ALPHANUMERIC_SENDER_ID_PATTERN = /^[A-Za-z0-9]{1,11}$/;
+
+/**
+ * 日本で禁止されている Generic Sender ID。
+ *
+ * いずれも「英数字11文字以内」を満たすため、書式チェックだけでは素通りする。
+ * 判定は大文字小文字を区別しない。
+ */
+export const GENERIC_SENDER_IDS: readonly string[] = [
+  'INFO',
+  'SMS',
+  'NOTICE',
+  'MSG',
+  'TEXT',
+  'ALERT',
+  'NOTIFY',
+  'VERIFY',
+  'OTP',
+];
+
+/** 電話番号として書かれた送信元か（数字のみ、または + 始まりの数字） */
+function looksLikePhoneNumber(from: string): boolean {
+  return /^\+?\d[\d\s-]*$/.test(from);
+}
+
+/**
  * SMSの送信元表示名（sender ID）を検証する。
  *
- * Vonageは英数字のsender ID（3〜11文字・数字始まり不可）と、発信元電話番号の
- * どちらも受け付けるため、両方を許容する。csvUtils.validateFrom より緩いが、
- * dry_run が「送れる」と言ったのに本実行で弾かれる状況を防ぐのが目的。
+ * 日本宛かどうかで可否が変わるため、宛先を受け取る。宛先が分からない場合は
+ * 日本宛として扱う（このサーバーは日本国内利用を前提としており、判断できない
+ * ときは厳しい側に倒すため）。
+ *
+ * dry_run の時点でここを通しておかないと、「Ready to send」と言った内容と
+ * 実際に届くものが食い違う。それが最も避けたい失敗の形。
  */
-export function validateSenderId(from: string): { valid: boolean; reason?: string; suggestion?: string } {
-  // 英数字のsender ID: 3〜11文字、先頭は英字
-  if (/^[A-Za-z][A-Za-z0-9]{2,10}$/.test(from)) {
+export function validateSenderId(
+  from: string,
+  destinationE164?: string
+): { valid: boolean; reason?: string; suggestion?: string } {
+  const isJapanDestination = destinationE164 === undefined || destinationE164.startsWith('+81');
+
+  // 日本宛の Numeric Sender ID は原則不可で、**指定しても Vonage 側で上書きされる**。
+  // 通してしまうと、ユーザーが承認した送信元とは別の送信者IDで届く。
+  if (isJapanDestination && looksLikePhoneNumber(from)) {
+    return {
+      valid: false,
+      reason: `日本宛のSMSでは数値の送信元（${from}）は使用できません。指定しても Vonage 側で別の送信者IDに上書きされます。`,
+      suggestion:
+        '送信元には英数字の送信者ID（1〜11文字、例: VonageMCP）を指定してください。' +
+        '電話番号を送信元として表示することは日本の携帯キャリアの仕様上できません。同じ番号で再試行しても結果は変わりません。',
+    };
+  }
+
+  if (isJapanDestination && GENERIC_SENDER_IDS.includes(from.trim().toUpperCase())) {
+    return {
+      valid: false,
+      reason: `送信元 ${from} は日本で禁止されている汎用送信者ID（Generic Sender ID）です。`,
+      suggestion:
+        `${GENERIC_SENDER_IDS.join(' / ')} のような汎用的な語は日本では使用できません。` +
+        '自社名やサービス名など、送信者を特定できる英数字1〜11文字を指定してください。再試行しても結果は変わりません。',
+    };
+  }
+
+  if (ALPHANUMERIC_SENDER_ID_PATTERN.test(from)) {
     return { valid: true };
   }
 
-  // 発信元電話番号として解釈できる場合も許容
-  if (E164_DIALABLE_PATTERN.test(normalizeToE164(from))) {
+  // 日本以外の宛先では、自社の発信元電話番号を送信元に使える
+  if (!isJapanDestination && E164_DIALABLE_PATTERN.test(normalizeToE164(from))) {
     return { valid: true };
   }
 
@@ -340,7 +402,9 @@ export function validateSenderId(from: string): { valid: boolean; reason?: strin
     valid: false,
     reason: `無効な送信元です: ${from}`,
     suggestion:
-      '送信元は英数字3〜11文字（先頭は英字、例: VonageMCP）か、E.164形式の電話番号（例: +819012345678）で指定してください。日本語や記号、数字のみの短い文字列は使用できません。',
+      '送信元は英数字1〜11文字（a-z A-Z 0-9、例: VonageMCP）で指定してください。' +
+      '日本語・記号・空白は使用できません。' +
+      (isJapanDestination ? '日本宛では電話番号を送信元にすることもできません。' : ''),
   };
 }
 
