@@ -37,7 +37,7 @@ export interface WebhookAuthResult {
 }
 
 /** タイミング攻撃に強い文字列比較 */
-function safeEqual(a: string, b: string): boolean {
+export function safeEqual(a: string, b: string): boolean {
   // 長さの違いから情報が漏れないよう、ハッシュ化してから固定長で比較する
   const ha = createHash('sha256').update(a).digest();
   const hb = createHash('sha256').update(b).digest();

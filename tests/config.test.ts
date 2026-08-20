@@ -8,8 +8,13 @@ import {
   MAX_RATE_LIMIT_PER_HOUR,
   getBulkMaxRows,
   getCapabilities,
+  getBindHost,
+  getMcpAuthToken,
+  getPort,
   getRateLimitPerHour,
   isCapabilityEnabled,
+  isHttpAuthConfigured,
+  isLoopbackHost,
   isRateLimitDisabled,
   parseBooleanEnv,
   parseIntegerEnv,
@@ -28,6 +33,10 @@ const MANAGED_ENV = [
   'VONAGE_APPLICATION_ID',
   'VONAGE_PRIVATE_KEY_PATH',
   'VONAGE_VOICE_FROM',
+  'MCP_AUTH_TOKEN',
+  'TRUST_UPSTREAM_AUTH',
+  'BIND_HOST',
+  'PORT',
 ];
 
 describe('config', () => {
@@ -178,11 +187,62 @@ describe('config', () => {
     });
   });
 
+  describe('HTTP の認証と待ち受けアドレス', () => {
+    it('認証が未設定ならループバックに bind する', () => {
+      expect(isHttpAuthConfigured()).toBe(false);
+      expect(getBindHost()).toBe('127.0.0.1');
+      expect(isLoopbackHost(getBindHost())).toBe(true);
+    });
+
+    it('MCP_AUTH_TOKEN を設定すると全インターフェースで待ち受ける', () => {
+      process.env.MCP_AUTH_TOKEN = 'a'.repeat(32);
+      expect(isHttpAuthConfigured()).toBe(true);
+      expect(getBindHost()).toBe('0.0.0.0');
+    });
+
+    it('TRUST_UPSTREAM_AUTH=true でも認証済みとみなす', () => {
+      process.env.TRUST_UPSTREAM_AUTH = 'true';
+      expect(isHttpAuthConfigured()).toBe(true);
+      expect(getBindHost()).toBe('0.0.0.0');
+    });
+
+    it('短いトークンは起動エラー', () => {
+      process.env.MCP_AUTH_TOKEN = 'short';
+      expect(() => getMcpAuthToken()).toThrow(ConfigError);
+    });
+
+    // 無認証のサーバーが外部公開されるのを警告で済ませない
+    it('認証なしで外部アドレスに bind しようとすると起動エラー', () => {
+      process.env.BIND_HOST = '0.0.0.0';
+      expect(() => validateStartupConfig()).toThrow(/BIND_HOST/);
+    });
+
+    it('認証があれば外部アドレスに bind できる', () => {
+      process.env.BIND_HOST = '0.0.0.0';
+      process.env.MCP_AUTH_TOKEN = 'a'.repeat(32);
+      expect(() => validateStartupConfig()).not.toThrow();
+    });
+
+    it('認証なしでもループバックの明示指定は許される', () => {
+      process.env.BIND_HOST = '127.0.0.1';
+      expect(() => validateStartupConfig()).not.toThrow();
+    });
+
+    it('TRUST_UPSTREAM_AUTH=true は警告を出す', () => {
+      process.env.TRUST_UPSTREAM_AUTH = 'true';
+      expect(validateStartupConfig().join('\n')).toContain('TRUST_UPSTREAM_AUTH');
+    });
+
+    it('PORT は範囲を検証する', () => {
+      process.env.PORT = '70000';
+      expect(() => getPort()).toThrow(ConfigError);
+    });
+  });
+
   describe('validateStartupConfig', () => {
     it('既定の環境では起動できるが、全機能 OFF であることを警告する', () => {
-      const warnings = validateStartupConfig();
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0]).toContain('すべての機能が無効です');
+      const warnings = validateStartupConfig().join('\n');
+      expect(warnings).toContain('すべての機能が無効です');
     });
 
     it('capability を1つでも有効にすれば全 OFF 警告は出ない', () => {
@@ -190,7 +250,7 @@ describe('config', () => {
       process.env.VONAGE_APPLICATION_ID = 'app-id';
       process.env.VONAGE_PRIVATE_KEY_PATH = './private.key';
 
-      expect(validateStartupConfig()).toEqual([]);
+      expect(validateStartupConfig().join('\n')).not.toContain('すべての機能が無効です');
     });
 
     it('複数の問題をまとめて報告する', () => {

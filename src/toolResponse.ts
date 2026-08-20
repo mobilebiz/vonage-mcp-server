@@ -87,7 +87,11 @@ export function toMcpResult(outcome: ToolOutcome): McpToolResult {
  * エラー種別に対応するHTTPステータスコードを返す。
  *
  * `upstream`（Vonage API側の失敗）を 200 にしているのは、これがMCPのツール実行結果
- * であってHTTPリクエスト自体の失敗ではないため。v1.2.1 以前の /mcp-invoke の挙動とも一致する。
+ * であってHTTPリクエスト自体の失敗ではないため。
+ *
+ * このサーバー自身は使わない。MCP の JSON-RPC はツールのエラーを result として
+ * 200 で返すためである（VONAGE_MCP-9 で独自の /mcp-invoke を削除した）。
+ * このレジストリを自前のHTTP層に組み込む利用者向けに残してある。
  */
 export function httpStatusForOutcome(outcome: ToolOutcome): number {
   if (!outcome.isError) {

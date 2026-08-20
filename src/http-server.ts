@@ -4,11 +4,18 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
-import { enabledToolDefinitions, findToolDefinition, listTools, runTool } from './tools.js';
-import { httpStatusForOutcome, toMcpResult, unexpectedErrorOutcome } from './toolResponse.js';
+import { enabledToolDefinitions, listTools, runTool } from './tools.js';
+import { toMcpResult, unexpectedErrorOutcome } from './toolResponse.js';
 import { ingestStatusWebhook } from './messageStatusStore.js';
-import { authenticateWebhook, isWebhookAuthConfigured } from './webhookAuth.js';
-import { applyStartupConfig } from './config.js';
+import { authenticateWebhook, isWebhookAuthConfigured, safeEqual } from './webhookAuth.js';
+import {
+  applyStartupConfig,
+  getBindHost,
+  getMcpAuthToken,
+  getPort,
+  isLoopbackHost,
+  isUpstreamAuthTrusted,
+} from './config.js';
 
 // 環境変数の読み込み
 dotenv.config();
@@ -25,7 +32,6 @@ if (isMainModule) {
 }
 
 export const app = express();
-const port = process.env.PORT || 3000;
 
 const SERVER_VERSION = '1.3.0';
 
@@ -66,18 +72,49 @@ for (const tool of enabledToolDefinitions()) {
 }
 
 /**
- * APIキー認証ミドルウェア
+ * MCP エンドポイントの認証ミドルウェア。
+ *
+ * `app.use('/mcp', ...)` として**パス単位**で適用する。メソッドごとに書くと、
+ * Streamable HTTP が使う GET (SSE) や DELETE (セッション終了) を書き漏らして
+ * そこだけ無認証になる（VONAGE_MCP-9 / -10）。
+ *
+ * 認証が未設定の場合は素通しする。この構成ではサーバー自体が 127.0.0.1 にしか
+ * bind されておらず（getBindHost 参照）、外部からは到達できない。リクエストごとに
+ * 接続元を見て localhost か判定する方式は、プロキシ配下で誤判定するため採らない。
  */
-const authenticateApiKey = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-  const apiKey = req.headers['x-api-key'];
-  const validApiKey = process.env.VONAGE_APPLICATION_ID;
-
-  if (!apiKey || apiKey !== validApiKey) {
-    res.status(401).json({ error: 'Unauthorized: Invalid or missing API Key' });
+function requireMcpAuth(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+): void {
+  if (isUpstreamAuthTrusted()) {
+    next();
     return;
   }
+
+  const expected = getMcpAuthToken();
+  if (expected === null) {
+    next();
+    return;
+  }
+
+  const header = req.headers['authorization'];
+  const value = Array.isArray(header) ? header[0] : header;
+  const match = typeof value === 'string' ? /^Bearer\s+(.+)$/i.exec(value.trim()) : null;
+
+  if (!match || !safeEqual(match[1].trim(), expected)) {
+    res.status(401).json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'Unauthorized: missing or invalid bearer token' },
+      id: null,
+    });
+    return;
+  }
+
   next();
-};
+}
+
+app.use('/mcp', requireMcpAuth);
 
 /**
  * ヘルスチェック用エンドポイント
@@ -140,22 +177,7 @@ app.post('/webhooks/inbound', (_req, res) => {
  * Handles MCP JSON-RPC requests with authentication
  */
 app.post('/mcp', async (req, res) => {
-  // Check API key authentication
-  const apiKey = req.headers['x-api-key'];
-  const validApiKey = process.env.VONAGE_APPLICATION_ID;
-
-  if (!apiKey || apiKey !== validApiKey) {
-    res.status(401).json({
-      jsonrpc: '2.0',
-      error: {
-        code: -32000,
-        message: 'Unauthorized: Invalid or missing API Key'
-      },
-      id: null
-    });
-    return;
-  }
-
+  // 認証は app.use('/mcp', requireMcpAuth) で済んでいる
   try {
     const { jsonrpc, id, method, params } = req.body;
 
@@ -238,63 +260,31 @@ app.post('/mcp', async (req, res) => {
   }
 });
 
-// これ以降のエンドポイントには認証を適用
-app.use(authenticateApiKey);
-
-/**
- * MCPツールを実行するためのエンドポイント
- * POST /mcp-invoke
- * Body: { "tool": "tool_name", "params": { ... } }
+/*
+ * 削除したエンドポイント (VONAGE_MCP-9)
+ *
+ * - POST /mcp-invoke
+ * - GET  /mcp-tools
+ *
+ * MCP と等価な機能を独自のインターフェースで二重に公開していた。/mcp だけ認証や
+ * ガードレールを直しても、こうした別経路が残っていればそこから全部迂回できる。
+ * ツールの実行経路は /mcp（MCP プロトコル）1本に絞る。
  */
-app.post('/mcp-invoke', async (req, res) => {
-  const { tool, params } = req.body;
-
-  // ツール名が指定されていない場合は400エラーを返す
-  if (!tool) {
-    res.status(400).json({ error: 'Missing "tool" parameter' });
-    return;
-  }
-
-  // 存在しないツールは 404。無効化されているだけのツールはここを通し、
-  // runTool() の capability 判定に 403 を返させる（404 だと管理者が
-  // 「デプロイし忘れた」のか「無効化しただけ」なのか切り分けられない）。
-  if (!findToolDefinition(tool)) {
-    res.status(404).json({ error: `Unknown tool: ${tool}` });
-    return;
-  }
-
-  try {
-    console.log(`Invoking tool: ${tool}`);
-
-    const outcome = await runTool(tool, params);
-    const result = toMcpResult(outcome);
-
-    // エラー種別に応じたステータスを返す。
-    // 入力エラー/ガードレール違反=400、レート超過=429、未検出=404、想定外=500。
-    // Vonage API 側の送信失敗は 200（MCPのツール結果）で、v1.2.1 以前の挙動と一致する。
-    res.status(httpStatusForOutcome(outcome)).json(result);
-  } catch (error: any) {
-    console.error(`Error invoking tool ${tool}:`, error);
-    res.status(500).json({
-      error: 'Internal Server Error',
-      details: error.message
-    });
-  }
-});
-
-/**
- * 利用可能なツールの一覧を取得するエンドポイント
- * GET /mcp-tools
- */
-app.get('/mcp-tools', async (_req, res) => {
-  res.json({ tools: listTools() });
-});
 
 // メインモジュールとして実行された場合のみサーバーを起動
 if (isMainModule) {
   // HTTPサーバーの起動
-  const server = app.listen(port, () => {
-    console.log(`HTTP MCP Wrapper listening on port ${port}`);
+  const host = getBindHost();
+  const port = getPort();
+
+  const server = app.listen(port, host, () => {
+    console.log(`HTTP MCP Wrapper listening on ${host}:${port}`);
+    if (isLoopbackHost(host)) {
+      console.warn(
+        '[WARN] ループバックアドレスで待ち受けています。外部からは接続できません。' +
+          ' 外部公開する場合は MCP_AUTH_TOKEN を設定してください。'
+      );
+    }
     if (!isWebhookAuthConfigured()) {
       console.warn(
         '[WARN] Webhook認証が未設定のため POST /webhooks/message-status は無効です。' +

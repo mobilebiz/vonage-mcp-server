@@ -62,9 +62,23 @@ function signWebhookJwt(
   return `${header}.${payload}.${signature}`;
 }
 
-/** レスポンスの content[0].text をJSONとしてパースする */
-function payloadOf(res: request.Response): any {
-  return JSON.parse(res.body.content[0].text);
+/** JSON-RPC の result.content[0].text をJSONとしてパースする */
+function resultPayload(res: request.Response): any {
+  return JSON.parse(res.body.result.content[0].text);
+}
+
+/** /mcp に JSON-RPC リクエストを投げる（認証トークンが設定されていれば添える） */
+function callMcp(body: Record<string, unknown>): request.Test {
+  const req = request(app).post('/mcp');
+  if (process.env.MCP_AUTH_TOKEN) {
+    req.set('Authorization', `Bearer ${process.env.MCP_AUTH_TOKEN}`);
+  }
+  return req.send(body) as request.Test;
+}
+
+/** tools/call を1回実行する */
+function callTool(name: string, args: Record<string, unknown>): request.Test {
+  return callMcp({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } });
 }
 
 describe('HTTP MCP Wrapper', () => {
@@ -76,6 +90,10 @@ describe('HTTP MCP Wrapper', () => {
     clearMessageStatusStore();
     clearWebhookReplayCache();
     delete process.env.WEBHOOK_MAX_AGE_SECONDS;
+    // 既定は無認証（サーバー自体がループバックにしか bind されない構成）。
+    // 認証を検証するテストだけが個別に設定する。
+    delete process.env.MCP_AUTH_TOKEN;
+    delete process.env.TRUST_UPSTREAM_AUTH;
     process.env.VONAGE_APPLICATION_ID = TEST_API_KEY;
     delete process.env.RATE_LIMIT_PER_HOUR;
     // RATE_LIMIT_PER_HOUR=0 は「全拒否」の意味なので、無効化には使えない
@@ -99,181 +117,172 @@ describe('HTTP MCP Wrapper', () => {
     expect(res.body).toEqual({ status: 'ok', connected: true });
   });
 
-  it('POST /mcp-invoke は tool パラメータがない場合 400 を返すべき', async () => {
-    const res = await request(app)
-      .post('/mcp-invoke')
-      .set('X-API-KEY', TEST_API_KEY)
-      .send({ params: {} });
+  it('POST /mcp は JSON-RPC 2.0 以外を 400 で拒否する', async () => {
+    const res = await callMcp({ jsonrpc: '1.0', id: 1, method: 'ping' });
 
     expect(res.status).toBe(400);
-    expect(res.body).toEqual({ error: 'Missing "tool" parameter' });
+    expect(res.body.error.code).toBe(-32600);
   });
 
-  it('認証キーがない場合 401 を返すべき', async () => {
-    const res = await request(app)
-      .post('/mcp-invoke')
-      .send({ tool: 'send_sms' });
+  describe('Bearer トークン認証', () => {
+    const TOKEN = 'a'.repeat(32);
 
-    expect(res.status).toBe(401);
-    expect(res.body).toEqual({ error: 'Unauthorized: Invalid or missing API Key' });
-  });
-
-  it('認証キーが無効な場合 401 を返すべき', async () => {
-    const res = await request(app)
-      .post('/mcp-invoke')
-      .set('X-API-KEY', 'invalid-key')
-      .send({ tool: 'send_sms' });
-
-    expect(res.status).toBe(401);
-    expect(res.body).toEqual({ error: 'Unauthorized: Invalid or missing API Key' });
-  });
-
-  it('POST /mcp-invoke は send_sms を正常に実行し軽量JSONを返すべき', async () => {
-    mockSendSMS.mockResolvedValue({ success: true, messageId: 'msg-123' });
-
-    const res = await request(app)
-      .post('/mcp-invoke')
-      .set('X-API-KEY', TEST_API_KEY)
-      .send({ tool: 'send_sms', params: { to: '+819012345678', message: 'Hello' } });
-
-    expect(res.status).toBe(200);
-    expect(payloadOf(res)).toEqual({
-      status: 'success',
-      message_id: 'msg-123',
-      to: '+819012345678',
-    });
-    expect(mockSendSMS).toHaveBeenCalledWith({ to: '+819012345678', message: 'Hello', from: undefined });
-  });
-
-  it('POST /mcp-invoke は無効な電話番号で 400 を返すべき', async () => {
-    const res = await request(app)
-      .post('/mcp-invoke')
-      .set('X-API-KEY', TEST_API_KEY)
-      .send({ tool: 'send_sms', params: { to: 'invalid', message: 'Hello' } });
-
-    expect(res.status).toBe(400);
-    expect(payloadOf(res).status).toBe('error');
-    expect(payloadOf(res).suggestion).toBeTruthy();
-    expect(mockSendSMS).not.toHaveBeenCalled();
-  });
-
-  it('POST /mcp-invoke は dry_run で送信せずに検証結果を返すべき', async () => {
-    const res = await request(app)
-      .post('/mcp-invoke')
-      .set('X-API-KEY', TEST_API_KEY)
-      .send({ tool: 'send_sms', params: { to: '09012345678', message: 'Hello', dry_run: true } });
-
-    expect(res.status).toBe(200);
-    expect(payloadOf(res)).toMatchObject({ status: 'dry_run_success', message: 'Ready to send' });
-    expect(mockSendSMS).not.toHaveBeenCalled();
-  });
-
-  it('POST /mcp-invoke は ALLOWED_NUMBERS 外の宛先をブロックすべき', async () => {
-    process.env.ALLOWED_NUMBERS = '+819087654321';
-
-    const res = await request(app)
-      .post('/mcp-invoke')
-      .set('X-API-KEY', TEST_API_KEY)
-      .send({ tool: 'send_sms', params: { to: '+819012345678', message: 'Hello' } });
-
-    expect(res.status).toBe(400);
-    expect(payloadOf(res).reason).toContain('許可されていません');
-    expect(mockSendSMS).not.toHaveBeenCalled();
-  });
-
-  it('POST /mcp-invoke は make_voice_call を正常に実行すべき', async () => {
-    mockMakeVoiceCall.mockResolvedValue({ success: true, callId: 'call-123' });
-
-    const res = await request(app)
-      .post('/mcp-invoke')
-      .set('X-API-KEY', TEST_API_KEY)
-      .send({ tool: 'make_voice_call', params: { to: '+819012345678', message: 'Test message' } });
-
-    expect(res.status).toBe(200);
-    expect(payloadOf(res)).toMatchObject({ status: 'success', call_id: 'call-123' });
-    expect(mockMakeVoiceCall).toHaveBeenCalled();
-  });
-
-  it('POST /mcp-invoke は不明なツールで 404 を返すべき', async () => {
-    const res = await request(app)
-      .post('/mcp-invoke')
-      .set('X-API-KEY', TEST_API_KEY)
-      .send({ tool: 'unknown_tool', params: {} });
-
-    expect(res.status).toBe(404);
-    expect(res.body.error).toContain('Unknown tool');
-  });
-
-  it('GET /mcp-tools はツール一覧を返すべき', async () => {
-    const res = await request(app)
-      .get('/mcp-tools')
-      .set('X-API-KEY', TEST_API_KEY);
-
-    expect(res.status).toBe(200);
-    expect(res.body.tools).toBeDefined();
-    expect(res.body.tools.length).toBe(6);
-    expect(res.body.tools[0].name).toBe('send_sms');
-    expect(res.body.tools[0].inputSchema.properties.dry_run).toBeDefined();
-    expect(res.body.tools.map((t: any) => t.name)).toContain('get_sms_status');
-  });
-
-  describe('capability トグル', () => {
-    it('無効なツールは GET /mcp-tools に現れない', async () => {
-      delete process.env.ENABLE_VOICE;
-      delete process.env.ENABLE_JWT_TOOL;
-
-      const res = await request(app).get('/mcp-tools').set('X-API-KEY', TEST_API_KEY);
-
-      const names = res.body.tools.map((t: any) => t.name);
-      expect(names).not.toContain('make_voice_call');
-      expect(names).not.toContain('get_call_status');
-      expect(names).not.toContain('generate_jwt');
-      expect(names).toContain('send_sms');
+    beforeEach(() => {
+      process.env.MCP_AUTH_TOKEN = TOKEN;
     });
 
-    it('無効なツールは tools/list にも現れない', async () => {
-      delete process.env.ENABLE_BULK_SMS;
+    it('トークンが無ければ 401', async () => {
+      const res = await request(app).post('/mcp').send({ jsonrpc: '2.0', id: 1, method: 'ping' });
 
+      expect(res.status).toBe(401);
+      expect(res.body.error.message).toContain('bearer token');
+    });
+
+    it('トークンが違えば 401', async () => {
+      const res = await request(app)
+        .post('/mcp')
+        .set('Authorization', `Bearer ${'b'.repeat(32)}`)
+        .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+
+      expect(res.status).toBe(401);
+    });
+
+    it('正しいトークンなら通る', async () => {
+      const res = await request(app)
+        .post('/mcp')
+        .set('Authorization', `Bearer ${TOKEN}`)
+        .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+
+      expect(res.status).toBe(200);
+    });
+
+    // Application ID は公開識別子であって秘密情報ではない（VONAGE_MCP-9）
+    it('Application ID を X-API-KEY に入れても通らない', async () => {
       const res = await request(app)
         .post('/mcp')
         .set('X-API-KEY', TEST_API_KEY)
-        .send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+        .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
 
-      expect(res.body.result.tools.map((t: any) => t.name)).not.toContain('bulk_sms_from_csv');
+      expect(res.status).toBe(401);
     });
 
-    // 「デプロイし忘れ」と「無効化しただけ」を管理者が切り分けられるようにする
-    it('存在しないツールは 404、無効なだけのツールは 403', async () => {
-      const unknown = await request(app)
-        .post('/mcp-invoke')
-        .set('X-API-KEY', TEST_API_KEY)
-        .send({ tool: 'no_such_tool', params: {} });
-      expect(unknown.status).toBe(404);
+    // メソッドごとに認証を書くと、Streamable HTTP の GET / DELETE で漏れる
+    it.each(['get', 'delete', 'put', 'patch'] as const)('%s /mcp も認証される', async (method) => {
+      const res = await request(app)[method]('/mcp');
+      expect(res.status).toBe(401);
+    });
 
-      delete process.env.ENABLE_JWT_TOOL;
-      const disabled = await request(app)
+    it('TRUST_UPSTREAM_AUTH=true なら自前では認証しない', async () => {
+      process.env.TRUST_UPSTREAM_AUTH = 'true';
+
+      const res = await request(app).post('/mcp').send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+
+      expect(res.status).toBe(200);
+    });
+  });
+
+  // MCP と等価な機能を独自インターフェースで二重に公開していた経路。
+  // 片方だけ認証を直しても、もう片方が残っていれば全部迂回できる。
+  describe('削除した独自エンドポイント (VONAGE_MCP-9)', () => {
+    beforeEach(() => {
+      process.env.MCP_AUTH_TOKEN = 'a'.repeat(32);
+    });
+
+    it('POST /mcp-invoke は存在しない', async () => {
+      mockSendSMS.mockResolvedValue({ success: true, messageId: 'msg-123' });
+
+      const res = await request(app)
         .post('/mcp-invoke')
         .set('X-API-KEY', TEST_API_KEY)
-        .send({ tool: 'generate_jwt', params: {} });
-      expect(disabled.status).toBe(403);
+        .send({ tool: 'send_sms', params: { to: '+819012345678', message: 'Hello' } });
+
+      expect(res.status).toBe(404);
+      expect(mockSendSMS).not.toHaveBeenCalled();
+    });
+
+    it('GET /mcp-tools は存在しない', async () => {
+      const res = await request(app).get('/mcp-tools').set('X-API-KEY', TEST_API_KEY);
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe('tools/call', () => {
+    it('send_sms を実行し軽量JSONを返す', async () => {
+      mockSendSMS.mockResolvedValue({ success: true, messageId: 'msg-123' });
+
+      const res = await callTool('send_sms', { to: '+819012345678', message: 'Hello' });
+
+      expect(res.status).toBe(200);
+      expect(resultPayload(res)).toEqual({
+        status: 'success',
+        message_id: 'msg-123',
+        to: '+819012345678',
+      });
+      expect(mockSendSMS).toHaveBeenCalledWith({
+        to: '+819012345678',
+        message: 'Hello',
+        from: undefined,
+      });
+    });
+
+    it('無効な電話番号は送信せずエラーを返す', async () => {
+      const res = await callTool('send_sms', { to: 'invalid', message: 'Hello' });
+
+      expect(resultPayload(res).status).toBe('error');
+      expect(resultPayload(res).suggestion).toBeTruthy();
+      expect(mockSendSMS).not.toHaveBeenCalled();
+    });
+
+    it('dry_run では送信しない', async () => {
+      const res = await callTool('send_sms', { to: '09012345678', message: 'Hello', dry_run: true });
+
+      expect(resultPayload(res)).toMatchObject({ status: 'dry_run_success', message: 'Ready to send' });
+      expect(mockSendSMS).not.toHaveBeenCalled();
+    });
+
+    it('ALLOWED_NUMBERS 外の宛先はブロックする', async () => {
+      process.env.ALLOWED_NUMBERS = '+819087654321';
+
+      const res = await callTool('send_sms', { to: '+819012345678', message: 'Hello' });
+
+      expect(resultPayload(res).reason).toContain('許可されていません');
+      expect(mockSendSMS).not.toHaveBeenCalled();
+    });
+
+    it('make_voice_call を実行できる', async () => {
+      mockMakeVoiceCall.mockResolvedValue({ success: true, callId: 'call-123' });
+
+      const res = await callTool('make_voice_call', { to: '+819012345678', message: 'Test message' });
+
+      expect(resultPayload(res)).toMatchObject({ status: 'success', call_id: 'call-123' });
+      expect(mockMakeVoiceCall).toHaveBeenCalled();
+    });
+  });
+
+  describe('capability トグル', () => {
+    it('無効なツールは tools/list に現れない', async () => {
+      delete process.env.ENABLE_VOICE;
+      delete process.env.ENABLE_JWT_TOOL;
+      delete process.env.ENABLE_BULK_SMS;
+
+      const res = await callMcp({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+
+      const names = res.body.result.tools.map((t: any) => t.name);
+      expect(names).not.toContain('make_voice_call');
+      expect(names).not.toContain('get_call_status');
+      expect(names).not.toContain('generate_jwt');
+      expect(names).not.toContain('bulk_sms_from_csv');
+      expect(names).toContain('send_sms');
     });
 
     it('tools/call でも無効なツールは実行されない', async () => {
       delete process.env.ENABLE_VOICE;
       mockMakeVoiceCall.mockResolvedValue({ success: true, callId: 'c' });
 
-      const res = await request(app)
-        .post('/mcp')
-        .set('X-API-KEY', TEST_API_KEY)
-        .send({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'tools/call',
-          params: { name: 'make_voice_call', arguments: { to: '09012345678', message: 'テスト' } },
-        });
+      const res = await callTool('make_voice_call', { to: '09012345678', message: 'テスト' });
 
       expect(res.body.result.isError).toBe(true);
-      expect(JSON.parse(res.body.result.content[0].text).required_capability).toBe('ENABLE_VOICE');
+      expect(resultPayload(res).required_capability).toBe('ENABLE_VOICE');
       expect(mockMakeVoiceCall).not.toHaveBeenCalled();
     });
   });
@@ -318,78 +327,47 @@ describe('HTTP MCP Wrapper', () => {
     });
   });
 
-  describe('エラー種別ごとのHTTPステータス', () => {
-    it('入力エラーは 400', async () => {
-      const res = await request(app)
-        .post('/mcp-invoke')
-        .set('X-API-KEY', TEST_API_KEY)
-        .send({ tool: 'send_sms', params: { to: 'abc', message: 'Hello' } });
-      expect(res.status).toBe(400);
+  // /mcp-invoke を削除したため、HTTPステータスへの写像は toolResponse の
+  // 単体テスト（tests/toolResponse.test.ts）に移した。ここでは MCP の
+  // JSON-RPC としての振る舞い — ツールのエラーは HTTP 200 の result として
+  // 返る — を確認する。
+  describe('ツールのエラーは JSON-RPC の result として返る', () => {
+    it('入力エラーでも HTTP は 200 で isError が立つ', async () => {
+      const res = await callTool('send_sms', { to: 'abc', message: 'Hello' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.result.isError).toBe(true);
+      expect(resultPayload(res).status).toBe('error');
     });
 
-    it('無効化されたツールは 403', async () => {
-      delete process.env.ENABLE_VOICE;
-      mockMakeVoiceCall.mockResolvedValue({ success: true, callId: 'c' });
-
-      const res = await request(app)
-        .post('/mcp-invoke')
-        .set('X-API-KEY', TEST_API_KEY)
-        .send({ tool: 'make_voice_call', params: { to: '09012345678', message: 'テスト' } });
-
-      expect(res.status).toBe(403);
-      expect(payloadOf(res).required_capability).toBe('ENABLE_VOICE');
-      expect(mockMakeVoiceCall).not.toHaveBeenCalled();
-    });
-
-    it('レートリミット超過は 429', async () => {
+    it('レートリミット超過も result として返る', async () => {
       delete process.env.DISABLE_RATE_LIMIT;
       process.env.RATE_LIMIT_PER_HOUR = '1';
       mockSendSMS.mockResolvedValue({ success: true, messageId: 'm' });
 
-      await request(app)
-        .post('/mcp-invoke')
-        .set('X-API-KEY', TEST_API_KEY)
-        .send({ tool: 'send_sms', params: { to: '09012345678', message: 'a' } });
-
-      const res = await request(app)
-        .post('/mcp-invoke')
-        .set('X-API-KEY', TEST_API_KEY)
-        .send({ tool: 'send_sms', params: { to: '09012345678', message: 'a' } });
-
-      expect(res.status).toBe(429);
-      expect(payloadOf(res).retry_after_seconds).toBeGreaterThan(0);
-    });
-
-    it('Vonage API の送信失敗は 200（v1.2.1以前と同じ挙動）', async () => {
-      mockSendSMS.mockResolvedValue({ success: false, error: 'service unavailable' });
-
-      const res = await request(app)
-        .post('/mcp-invoke')
-        .set('X-API-KEY', TEST_API_KEY)
-        .send({ tool: 'send_sms', params: { to: '09012345678', message: 'a' } });
+      await callTool('send_sms', { to: '09012345678', message: 'a' });
+      const res = await callTool('send_sms', { to: '09012345678', message: 'a' });
 
       expect(res.status).toBe(200);
-      expect(payloadOf(res).status).toBe('error');
+      expect(resultPayload(res).retry_after_seconds).toBeGreaterThan(0);
     });
 
-    it('ステータス未検出は 404', async () => {
-      const res = await request(app)
-        .post('/mcp-invoke')
-        .set('X-API-KEY', TEST_API_KEY)
-        .send({ tool: 'get_sms_status', params: { message_id: 'unknown' } });
+    it('Vonage API の送信失敗も result として返る', async () => {
+      mockSendSMS.mockResolvedValue({ success: false, error: 'service unavailable' });
 
-      expect(res.status).toBe(404);
+      const res = await callTool('send_sms', { to: '09012345678', message: 'a' });
+
+      expect(res.status).toBe(200);
+      expect(resultPayload(res).status).toBe('error');
     });
 
-    it('想定外の例外は 500', async () => {
+    it('想定外の例外も result として返る（プロセスは落ちない）', async () => {
       mockSendSMS.mockRejectedValue(new Error('boom'));
 
-      const res = await request(app)
-        .post('/mcp-invoke')
-        .set('X-API-KEY', TEST_API_KEY)
-        .send({ tool: 'send_sms', params: { to: '09012345678', message: 'a' } });
+      const res = await callTool('send_sms', { to: '09012345678', message: 'a' });
 
-      expect(res.status).toBe(500);
+      expect(res.status).toBe(200);
+      expect(resultPayload(res).reason).toContain('boom');
     });
   });
 

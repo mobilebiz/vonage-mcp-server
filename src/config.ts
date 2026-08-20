@@ -72,6 +72,15 @@ export const RATE_LIMIT_ENV_VARS: Record<RateLimitBucket, string> = {
   voice: 'VOICE_RATE_LIMIT_PER_HOUR',
 };
 
+/**
+ * MCP_AUTH_TOKEN に要求する最小の長さ。
+ * 短い共有シークレットは総当たりで破られるため、設定の時点で弾く。
+ */
+export const MIN_MCP_AUTH_TOKEN_LENGTH = 16;
+
+/** ループバックとみなすホスト */
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['127.0.0.1', '::1', 'localhost']);
+
 /** 署名付き Webhook を受け付ける時刻のずれの許容幅（秒） */
 export const DEFAULT_WEBHOOK_MAX_AGE_SECONDS = 300;
 
@@ -304,6 +313,74 @@ export function getAllowedCountryCodes(): Set<string> | null {
 }
 
 /**
+ * HTTP トランスポートの Bearer トークン。未設定なら null。
+ *
+ * 以前は `X-API-KEY` を `VONAGE_APPLICATION_ID` と比較していたが、
+ * **Application ID は秘密情報ではない**（Vonage に送る JWT の claim に入る公開識別子）。
+ * これを認証に使うと、Application ID を知っている者は誰でもデプロイの持ち主の
+ * 課金で SMS・架電ができてしまう（VONAGE_MCP-9）。
+ */
+export function getMcpAuthToken(): string | null {
+  const raw = process.env.MCP_AUTH_TOKEN;
+  if (raw === undefined || raw.trim() === '') {
+    return null;
+  }
+
+  const token = raw.trim();
+  if (token.length < MIN_MCP_AUTH_TOKEN_LENGTH) {
+    throw new ConfigError([
+      `MCP_AUTH_TOKEN が短すぎます（${token.length}文字）。${MIN_MCP_AUTH_TOKEN_LENGTH}文字以上のランダムな文字列を指定してください` +
+        '（例: openssl rand -hex 32）。',
+    ]);
+  }
+
+  return token;
+}
+
+/**
+ * 認証を上流（Cloud Run IAM / API Gateway など）に任せる宣言。
+ *
+ * これを true にすると、このサーバー自身は Bearer トークンを要求しない。
+ * 手前で認証していない環境で有効にすると完全に無防備になるため、既定は false。
+ */
+export function isUpstreamAuthTrusted(): boolean {
+  return parseBooleanEnv('TRUST_UPSTREAM_AUTH');
+}
+
+/** HTTP トランスポートの認証が何らかの形で構成されているか */
+export function isHttpAuthConfigured(): boolean {
+  return getMcpAuthToken() !== null || isUpstreamAuthTrusted();
+}
+
+/** ループバックアドレスか */
+export function isLoopbackHost(host: string): boolean {
+  return LOOPBACK_HOSTS.has(host.trim());
+}
+
+/**
+ * HTTP サーバーの待ち受けアドレス。
+ *
+ * 認証が未設定なら**ループバックに固定**する。リクエストごとに接続元が
+ * localhost かを判定する方式は採らない。Cloud Run やリバースプロキシ配下では
+ * アプリから見た接続元が 127.0.0.1 になり、**外部からのリクエストが全部
+ * 「localhost」と判定されて無認証で通る**ためである。bind するアドレスなら
+ * プロキシの有無に左右されない。
+ */
+export function getBindHost(): string {
+  const raw = process.env.BIND_HOST;
+  if (raw !== undefined && raw.trim() !== '') {
+    return raw.trim();
+  }
+
+  return isHttpAuthConfigured() ? '0.0.0.0' : '127.0.0.1';
+}
+
+/** HTTP サーバーの待ち受けポート */
+export function getPort(): number {
+  return parseIntegerEnv('PORT', { min: 1, max: 65535, defaultValue: 3000 });
+}
+
+/**
  * 署名付き Webhook の `iat` / `exp` に許す時刻のずれ（秒）。
  *
  * 短くするほどリプレイ可能な時間窓が縮むが、サーバー間の時刻ずれに弱くなる。
@@ -376,6 +453,9 @@ export function validateStartupConfig(): string[] {
   collect(() => getChannelRateLimit('voice'));
   collect(() => parseBooleanEnv('ALLOW_PREMIUM_NUMBERS'));
   collect(() => getWebhookMaxAgeSeconds());
+  collect(() => getMcpAuthToken());
+  collect(() => parseBooleanEnv('TRUST_UPSTREAM_AUTH'));
+  collect(() => getPort());
   collect(() => getAllowedCountryCodes());
 
   // capability と依存する資格情報の突き合わせ。
@@ -408,8 +488,38 @@ export function validateStartupConfig(): string[] {
     );
   }
 
+  // 外部インターフェースに bind するなら認証は必須。ここを警告で済ませると、
+  // 「動いたから大丈夫」と判断されたまま無認証のサーバーが公開される。
+  let httpAuthConfigured = false;
+  try {
+    httpAuthConfigured = isHttpAuthConfigured();
+  } catch {
+    // MCP_AUTH_TOKEN のパースエラーは上で報告済み
+  }
+
+  const bindHost = process.env.BIND_HOST?.trim();
+  if (bindHost !== undefined && bindHost !== '' && !isLoopbackHost(bindHost) && !httpAuthConfigured) {
+    problems.push(
+      `BIND_HOST=${bindHost} は外部から到達できるアドレスですが、HTTP の認証が設定されていません。` +
+        'MCP_AUTH_TOKEN を設定するか、上流で認証している場合は TRUST_UPSTREAM_AUTH=true を明示してください。' +
+        '認証を設定しない場合は BIND_HOST を外してください（127.0.0.1 で待ち受けます）。'
+    );
+  }
+
   if (problems.length > 0) {
     throw new ConfigError(problems);
+  }
+
+  if (parseBooleanEnv('TRUST_UPSTREAM_AUTH')) {
+    warnings.push(
+      'TRUST_UPSTREAM_AUTH=true が設定されています。このサーバー自身は認証しません。' +
+        'Cloud Run IAM や API Gateway など、手前の層で必ず認証してください。'
+    );
+  } else if (!httpAuthConfigured) {
+    warnings.push(
+      'MCP_AUTH_TOKEN が未設定のため、HTTPサーバーは 127.0.0.1 でのみ待ち受けます。' +
+        '外部から利用する場合は MCP_AUTH_TOKEN を設定してください。'
+    );
   }
 
   // 全 OFF は「動くはずのものが動かない」という問い合わせに直結するので明示する

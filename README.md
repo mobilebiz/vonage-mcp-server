@@ -762,67 +762,75 @@ npm run start:http
 
 #### 認証
 
-すべてのリクエスト（`/health`を除く）には、`X-API-KEY` ヘッダが必要です。
-値には、環境変数 `VONAGE_APPLICATION_ID` の値を指定してください。
+**MCP エンドポイント (`/mcp`) は Bearer トークンで認証します。**
+
+```sh
+# 32バイトのランダムな値を生成して設定する
+MCP_AUTH_TOKEN=$(openssl rand -hex 32)
+```
 
 ```bash
-curl -X POST http://localhost:3000/mcp-invoke \
+curl -X POST http://localhost:3000/mcp \
   -H "Content-Type: application/json" \
-  -H "X-API-KEY: your_application_id" \
-  -d '{"tool": "tool_name", "params": { ... }}'
+  -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+| 環境変数 | 既定 | 説明 |
+| --- | --- | --- |
+| `MCP_AUTH_TOKEN` | （未設定） | `/mcp` の Bearer トークン。16文字以上。短い値は起動エラーになる。 |
+| `TRUST_UPSTREAM_AUTH` | `false` | `true` にすると、このサーバー自身は認証せず上流（Cloud Run IAM / API Gateway など）に任せる。 |
+| `BIND_HOST` | 認証があれば `0.0.0.0`、無ければ `127.0.0.1` | 待ち受けアドレス。 |
+| `PORT` | `3000` | 待ち受けポート。 |
+
+> [!WARNING]
+> **v1.3.0 の破壊的変更: `X-API-KEY` による認証を廃止しました。**
+> v1.2.1 以前は `X-API-KEY` ヘッダを `VONAGE_APPLICATION_ID` と比較していました。**Application ID は秘密情報ではありません** — Vonage に送る JWT の claim に入る公開識別子です。これを認証に使うと、Application ID を知っている者は誰でも、そのデプロイの持ち主の課金で SMS 送信や架電ができてしまいます。`MCP_AUTH_TOKEN` に移行してください。
+
+> [!IMPORTANT]
+> **認証を設定しない場合、HTTPサーバーは `127.0.0.1` でのみ待ち受けます。**
+> 認証なしで `BIND_HOST` に外部アドレスを指定すると、**起動時にエラーで停止します**。
+> リクエストごとに接続元が localhost かを判定する方式は採っていません。Cloud Run やリバースプロキシの配下では、アプリから見た接続元が `127.0.0.1` になり、**外部からのリクエストが全部「localhost」と判定されて無認証で通る**ためです。bind するアドレスならプロキシの有無に左右されません。
+
+#### 推奨構成: 認証は手前の層に置く
+
+もっとも堅いのは、**Cloud Run IAM や API Gateway をこのサーバーの手前に置く**構成です。認証の実装をこのサーバーから切り離せるうえ、鍵のローテーションや監査ログもプラットフォーム側の仕組みに乗せられます。
+
+その場合は `TRUST_UPSTREAM_AUTH=true` を設定してください（起動のたびに警告が出ます）。**手前で認証していない環境でこれを有効にすると完全に無防備になります。**
+
+```sh
+# Cloud Run IAM で認証する例（--allow-unauthenticated は付けない）
+gcloud run deploy vonage-mcp-server \
+  --set-env-vars TRUST_UPSTREAM_AUTH=true,ENABLE_SMS=true \
+  --no-allow-unauthenticated
 ```
 
 #### APIエンドポイント
 
-**GET** `/mcp-tools`
-
-利用可能なツールの一覧を返します。
-
-**Response:**
-```json
-{
-  "tools": [
-    {
-      "name": "tool_name",
-      "description": "Tool description",
-      "inputSchema": { ... }
-    }
-  ]
-}
-```
-
-**POST** `/mcp-invoke`
-
-**Body:**
-```json
-{
-  "tool": "tool_name",
-  "params": {
-    "param1": "value1"
-  }
-}
-```
-
-**Response:**
-MCPツールからのJSON形式の結果。エラーの種別に応じて以下のHTTPステータスを返します。
-
-| 状況 | HTTPステータス |
+| 経路 | 認証 |
 | --- | --- |
-| 成功 / dry_run / 一部成功 | `200` |
-| 入力エラー・`ALLOWED_NUMBERS` 違反・本文長超過 | `400` |
-| 無効化されたツールの呼び出し（capability トグル） | `403` |
-| ステータス記録が見つからない（`get_sms_status`） | `404` |
-| レートリミット超過 | `429`（`retry_after_seconds` を含む） |
-| Vonage API 側の送信失敗 | `200`（MCPのツール結果として返す。v1.2.1以前と同じ） |
-| サーバー内部の想定外エラー | `500` |
+| `GET /health` | 不要 |
+| `POST /mcp` | Bearer トークン（`/mcp` 配下は**全 HTTP メソッド**が対象） |
+| `POST /webhooks/*` | Vonage の署名検証 |
 
 **POST** `/mcp`
 
-MCP JSON-RPC 2.0 エンドポイント。`initialize` / `tools/list` / `tools/call` / `ping` に対応します。Gemini Enterprise などのMCPクライアントはこちらを使用してください。
+MCP JSON-RPC 2.0 エンドポイント。`initialize` / `tools/list` / `tools/call` / `ping` に対応します。MCP クライアントはこちらを使用してください。
+
+ツールの実行エラー（入力エラー・ガードレール違反・レートリミット超過など）は、HTTP エラーではなく **`result` の `isError: true`** として返ります。MCP の仕様どおりの挙動です。原因は `reason`、次に取るべき行動は `suggestion` に入ります。
+
+> [!WARNING]
+> **v1.3.0 の破壊的変更: `POST /mcp-invoke` と `GET /mcp-tools` を削除しました。**
+> MCP と等価な機能を独自のインターフェースで二重に公開していたためです。`/mcp` だけ認証やガードレールを直しても、こうした別経路が残っていればそこから全部迂回できます。ツールの実行経路は `/mcp` の1本に絞りました。
+> 既存の呼び出しは JSON-RPC の `tools/call` に置き換えてください。
+>
+> ```json
+> {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_sms","arguments":{"to":"09012345678","message":"hello"}}}
+> ```
 
 **POST** `/webhooks/message-status`
 
-Vonage Messages API の Status Webhook（配信結果 / DLR）の受信エンドポイントです。Vonage から呼ばれるため `x-api-key` 認証の対象外ですが、**別途Webhook認証が必須**です。
+Vonage Messages API の Status Webhook（配信結果 / DLR）の受信エンドポイントです。Vonage から呼ばれるため Bearer トークン認証の対象外ですが、**別途Webhook認証が必須**です。
 
 受信した配信結果はオンメモリに24時間保持され、`get_sms_status` ツールから参照できます。Vonage Dashboard の Application 設定で **Status URL** に `https://<host>/webhooks/message-status` を登録してください。
 
