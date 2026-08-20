@@ -1,21 +1,8 @@
-import { defineConfig } from 'vitest/config'
+import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    environment: 'node',
-    include: ['tests/**/*.test.ts', 'src/**/*.test.ts'],
-    coverage: {
-      provider: 'v8',
-      reporter: ['text', 'lcov', 'html'],
-      exclude: [
-        'node_modules/',
-        'dist/',
-        '**/*.d.ts',
-        '**/*.config.*'
-      ]
-    },
-    globals: true,
-    // デフォルトでrunモードにする場合
-    // run: true
-  }
-}) 
+    // プロキシ環境変数の無効化。理由は tests/setup.ts を参照。
+    setupFiles: ['./tests/setup.ts'],
+  },
+});
