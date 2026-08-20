@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
-import { listTools, runTool, toolDefinitions } from './tools.js';
+import { enabledToolDefinitions, findToolDefinition, listTools, runTool } from './tools.js';
 import { httpStatusForOutcome, toMcpResult, unexpectedErrorOutcome } from './toolResponse.js';
 import { ingestStatusWebhook } from './messageStatusStore.js';
 import { authenticateWebhook, isWebhookAuthConfigured } from './webhookAuth.js';
@@ -12,6 +12,17 @@ import { applyStartupConfig } from './config.js';
 
 // 環境変数の読み込み
 dotenv.config();
+
+// このファイルが直接実行されたか（テストが app を import しただけか）。
+// モジュールのトップレベルでツールを登録する前に判定しておく必要がある。
+const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
+
+// 環境変数の検証。不正な設定はツールを1つでも登録する前にプロセスを落とす。
+// ここより後ろに置くと、capability のパースエラーが ConfigError の
+// スタックトレースとして表面化し、[FATAL] の読みやすいメッセージが出ない。
+if (isMainModule) {
+  applyStartupConfig();
+}
 
 export const app = express();
 const port = process.env.PORT || 3000;
@@ -29,17 +40,15 @@ app.use(
   })
 );
 
-// ツール定義（共通レジストリ src/tools.ts から生成）
-const tools = listTools();
-
 // Create MCP server instance
 const mcpServer = new McpServer({
   name: 'vonage-mcp-server',
   version: SERVER_VERSION
 });
 
-// 共通レジストリからツールを一括登録（stdio版 src/index.ts と同一の定義）
-for (const tool of toolDefinitions) {
+// 共通レジストリから、有効になっているツールだけを登録する（stdio版と同一の判定）。
+// 実行は必ず runTool() を経由させる (VONAGE_MCP-7)。
+for (const tool of enabledToolDefinitions()) {
   mcpServer.registerTool(
     tool.name,
     {
@@ -48,7 +57,7 @@ for (const tool of toolDefinitions) {
       inputSchema: tool.schema
     },
     async (args: any) => {
-      const outcome = await tool.handler(args).catch((error) =>
+      const outcome = await runTool(tool.name, args).catch((error) =>
         unexpectedErrorOutcome(tool.name, error)
       );
       return toMcpResult(outcome) as any;
@@ -181,7 +190,8 @@ app.post('/mcp', async (req, res) => {
         break;
 
       case 'tools/list':
-        result = { tools };
+        // リクエストごとに評価する。無効な capability のツールは含まれない。
+        result = { tools: listTools() };
         break;
 
       case 'tools/call': {
@@ -245,7 +255,10 @@ app.post('/mcp-invoke', async (req, res) => {
     return;
   }
 
-  if (!toolDefinitions.some((definition) => definition.name === tool)) {
+  // 存在しないツールは 404。無効化されているだけのツールはここを通し、
+  // runTool() の capability 判定に 403 を返させる（404 だと管理者が
+  // 「デプロイし忘れた」のか「無効化しただけ」なのか切り分けられない）。
+  if (!findToolDefinition(tool)) {
     res.status(404).json({ error: `Unknown tool: ${tool}` });
     return;
   }
@@ -274,16 +287,11 @@ app.post('/mcp-invoke', async (req, res) => {
  * GET /mcp-tools
  */
 app.get('/mcp-tools', async (_req, res) => {
-  res.json({ tools });
+  res.json({ tools: listTools() });
 });
 
 // メインモジュールとして実行された場合のみサーバーを起動
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  // 環境変数の検証。不正な設定は listen する前にプロセスを落とす（fail-fast）。
-  // モジュールのトップレベルではなくここに置くのは、テストが app を import
-  // するだけのときに process.exit されないようにするため。
-  applyStartupConfig();
-
+if (isMainModule) {
   // HTTPサーバーの起動
   const server = app.listen(port, () => {
     console.log(`HTTP MCP Wrapper listening on port ${port}`);

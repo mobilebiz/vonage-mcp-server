@@ -57,6 +57,35 @@ npm install
    VONAGE_VOICE_FROM=14155550100  # Voice通話用のFROM番号
    ```
 
+### 機能の有効化（capability トグル）
+
+**このサーバーは、既定ではツールを1つも公開しません。** 使う機能だけを環境変数で明示的に有効にしてください。電話とSMSは実際に課金が発生し、相手にも迷惑がかかりうる操作なので、「気づかないうちに使える状態になっていた」を避けるための設計です。
+
+| 環境変数 | 有効になるツール | 既定 |
+| --- | --- | --- |
+| `ENABLE_SMS` | `send_sms` / `get_sms_status` | OFF |
+| `ENABLE_BULK_SMS` | `bulk_sms_from_csv` | OFF |
+| `ENABLE_VOICE` | `make_voice_call` / `get_call_status` | OFF |
+| `ENABLE_JWT_TOOL` | `generate_jwt` | OFF |
+
+```sh
+# SMSの単発送信だけを使う場合
+ENABLE_SMS=true
+```
+
+無効なツールは `tools/list` の結果に含まれません。エージェントが存在しないツールを呼ぼうとして迷走せず、使わないツールの定義がコンテキストを消費することもありません。
+
+> [!IMPORTANT]
+> **`ENABLE_BULK_SMS` と `ENABLE_JWT_TOOL` を SMS / Voice から分けているのは、爆発半径が違うためです。**
+> - `bulk_sms_from_csv` は1回の呼び出しで数百件を送信できます
+> - `generate_jwt` は Vonage API を直接叩ける署名済みクレデンシャルを呼び出し側に渡します。**これを渡した相手には、このサーバーのガードレール（宛先制限・レートリミット）が一切効きません**
+
+> [!IMPORTANT]
+> 有効な値は `true` / `false` のみで、**大文字小文字を区別**します。`ENABLE_SMS=True` や `ENABLE_SMS=1` は起動エラーになります。無効にしたつもりの `false` が truthy と判定されて機能が公開される事故を防ぐため、曖昧な値は推測せずに落とす方針です。
+
+> [!NOTE]
+> capability を有効にした場合、`VONAGE_APPLICATION_ID` は必須になります。`ENABLE_VOICE=true` の場合はさらに `VONAGE_VOICE_FROM` が必要で、いずれも未設定なら起動時にエラーになります（実行して初めて失敗するより、起動時に気づけるほうが安全なため）。
+
 ### 安全機能（Guardrails）の環境変数
 
 AIエージェント（Gemini Enterprise / Claude 等）から利用する際の、意図しない課金・スパム送信を防ぐための設定です。すべて任意で、未設定でも動作します。
@@ -89,7 +118,7 @@ VONAGE_API_SIGNATURE_SECRET=your_signature_secret_here
 
 > [!IMPORTANT]
 > **環境変数は起動時に厳格に検証されます。**解釈できない値があると、サーバーは警告を出して動き続けるのではなく、エラーメッセージを表示して**起動に失敗**します（fail-fast）。
-> - 真偽値（`DISABLE_RATE_LIMIT` など）に指定できるのは `true` / `false` のみです。**大文字小文字を区別**し、`1` / `yes` / `on` / `True` はすべてエラーになります。`False` のような値を truthy と誤判定して、無効にしたつもりの設定が有効になる事故を防ぐためです
+> - 真偽値（`ENABLE_*` / `DISABLE_RATE_LIMIT`）に指定できるのは `true` / `false` のみです。**大文字小文字を区別**し、`1` / `yes` / `on` / `True` はすべてエラーになります。`False` のような値を truthy と誤判定して、無効にしたつもりの設定が有効になる事故を防ぐためです
 > - 数値（`RATE_LIMIT_PER_HOUR` / `BULK_MAX_ROWS`）は10進整数のみです。小数・指数表記・負数・範囲外はエラーになります
 > - 問題は**まとめて**報告されます。1つ直すたびに再起動する必要はありません
 
@@ -708,6 +737,7 @@ MCPツールからのJSON形式の結果。エラーの種別に応じて以下�
 | --- | --- |
 | 成功 / dry_run / 一部成功 | `200` |
 | 入力エラー・`ALLOWED_NUMBERS` 違反・本文長超過 | `400` |
+| 無効化されたツールの呼び出し（capability トグル） | `403` |
 | ステータス記録が見つからない（`get_sms_status`） | `404` |
 | レートリミット超過 | `429`（`retry_after_seconds` を含む） |
 | Vonage API 側の送信失敗 | `200`（MCPのツール結果として返す。v1.2.1以前と同じ） |

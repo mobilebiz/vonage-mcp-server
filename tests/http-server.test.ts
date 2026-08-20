@@ -58,6 +58,12 @@ describe('HTTP MCP Wrapper', () => {
     delete process.env.RATE_LIMIT_PER_HOUR;
     // RATE_LIMIT_PER_HOUR=0 は「全拒否」の意味なので、無効化には使えない
     process.env.DISABLE_RATE_LIMIT = 'true';
+    // capability は既定で全 OFF。ツールの挙動を検証するテストでは明示的に有効化する
+    process.env.ENABLE_SMS = 'true';
+    process.env.ENABLE_BULK_SMS = 'true';
+    process.env.ENABLE_VOICE = 'true';
+    process.env.ENABLE_JWT_TOOL = 'true';
+
     delete process.env.ALLOWED_NUMBERS;
     delete process.env.BULK_MAX_ROWS;
     delete process.env.VONAGE_API_SIGNATURE_SECRET;
@@ -189,6 +195,67 @@ describe('HTTP MCP Wrapper', () => {
     expect(res.body.tools.map((t: any) => t.name)).toContain('get_sms_status');
   });
 
+  describe('capability トグル', () => {
+    it('無効なツールは GET /mcp-tools に現れない', async () => {
+      delete process.env.ENABLE_VOICE;
+      delete process.env.ENABLE_JWT_TOOL;
+
+      const res = await request(app).get('/mcp-tools').set('X-API-KEY', TEST_API_KEY);
+
+      const names = res.body.tools.map((t: any) => t.name);
+      expect(names).not.toContain('make_voice_call');
+      expect(names).not.toContain('get_call_status');
+      expect(names).not.toContain('generate_jwt');
+      expect(names).toContain('send_sms');
+    });
+
+    it('無効なツールは tools/list にも現れない', async () => {
+      delete process.env.ENABLE_BULK_SMS;
+
+      const res = await request(app)
+        .post('/mcp')
+        .set('X-API-KEY', TEST_API_KEY)
+        .send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+
+      expect(res.body.result.tools.map((t: any) => t.name)).not.toContain('bulk_sms_from_csv');
+    });
+
+    // 「デプロイし忘れ」と「無効化しただけ」を管理者が切り分けられるようにする
+    it('存在しないツールは 404、無効なだけのツールは 403', async () => {
+      const unknown = await request(app)
+        .post('/mcp-invoke')
+        .set('X-API-KEY', TEST_API_KEY)
+        .send({ tool: 'no_such_tool', params: {} });
+      expect(unknown.status).toBe(404);
+
+      delete process.env.ENABLE_JWT_TOOL;
+      const disabled = await request(app)
+        .post('/mcp-invoke')
+        .set('X-API-KEY', TEST_API_KEY)
+        .send({ tool: 'generate_jwt', params: {} });
+      expect(disabled.status).toBe(403);
+    });
+
+    it('tools/call でも無効なツールは実行されない', async () => {
+      delete process.env.ENABLE_VOICE;
+      mockMakeVoiceCall.mockResolvedValue({ success: true, callId: 'c' });
+
+      const res = await request(app)
+        .post('/mcp')
+        .set('X-API-KEY', TEST_API_KEY)
+        .send({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'make_voice_call', arguments: { to: '09012345678', message: 'テスト' } },
+        });
+
+      expect(res.body.result.isError).toBe(true);
+      expect(JSON.parse(res.body.result.content[0].text).required_capability).toBe('ENABLE_VOICE');
+      expect(mockMakeVoiceCall).not.toHaveBeenCalled();
+    });
+  });
+
   describe('POST /mcp (JSON-RPC)', () => {
     it('tools/list は全ツールを返すべき', async () => {
       const res = await request(app)
@@ -236,6 +303,20 @@ describe('HTTP MCP Wrapper', () => {
         .set('X-API-KEY', TEST_API_KEY)
         .send({ tool: 'send_sms', params: { to: 'abc', message: 'Hello' } });
       expect(res.status).toBe(400);
+    });
+
+    it('無効化されたツールは 403', async () => {
+      delete process.env.ENABLE_VOICE;
+      mockMakeVoiceCall.mockResolvedValue({ success: true, callId: 'c' });
+
+      const res = await request(app)
+        .post('/mcp-invoke')
+        .set('X-API-KEY', TEST_API_KEY)
+        .send({ tool: 'make_voice_call', params: { to: '09012345678', message: 'テスト' } });
+
+      expect(res.status).toBe(403);
+      expect(payloadOf(res).required_capability).toBe('ENABLE_VOICE');
+      expect(mockMakeVoiceCall).not.toHaveBeenCalled();
     });
 
     it('レートリミット超過は 429', async () => {

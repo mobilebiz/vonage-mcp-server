@@ -25,6 +25,7 @@ import {
   validateAndNormalizePhoneNumber,
   validateSenderId,
 } from './guardrails.js';
+import { isCapabilityEnabled, type CapabilityName } from './config.js';
 import {
   dryRunOutcome,
   errorOutcome,
@@ -54,13 +55,26 @@ const toField = z
     '宛先電話番号。E.164形式（例: +819012345678）を推奨。日本の国内形式（例: 09012345678）は自動的に +81 付きのE.164形式へ変換される。'
   );
 
-/** ツール定義 */
+/**
+ * ツールのメタデータ（トランスポートに公開する形）
+ *
+ * **handler を意図的に含めていない。** stdio 版はかつて `tool.handler(args)` を
+ * 直接呼んでおり、capability やレートリミットの判定を素通りできた。
+ * ハンドラを型からも実体からも外すことで、トランスポートは runTool() を通る
+ * 以外にツールを実行する手段が無くなる（VONAGE_MCP-7）。
+ */
 export interface ToolDefinition {
   name: string;
   title: string;
   description: string;
   /** MCP registerTool に渡す Zod の raw shape */
   schema: ZodRawShape;
+  /** このツールを有効化する環境変数 */
+  capability: CapabilityName;
+}
+
+/** ツール定義 + ハンドラ。このモジュールの外へは出さない */
+interface ToolImplementation extends ToolDefinition {
   /** 検証済み引数を受け取り、軽量なペイロードを返すハンドラ */
   handler: (args: any) => Promise<ToolOutcome>;
 }
@@ -102,9 +116,10 @@ function consumeRateLimit(toolName: string, cost: number = 1): ToolOutcome | nul
   );
 }
 
-export const toolDefinitions: ToolDefinition[] = [
+const toolImplementations: ToolImplementation[] = [
   {
     name: 'send_sms',
+    capability: 'ENABLE_SMS',
     title: 'SMS送信ツール',
     description:
       'VonageのMessages APIでSMSを1件送信する。送信は課金対象のため、実行前に必ず dry_run: true で検証し、宛先と本文をユーザーに提示して承認を得ること。日本の国内形式（0始まり）の番号は自動的にE.164形式へ変換される。',
@@ -175,6 +190,7 @@ export const toolDefinitions: ToolDefinition[] = [
 
   {
     name: 'bulk_sms_from_csv',
+    capability: 'ENABLE_BULK_SMS',
     title: 'CSV一括SMS送信',
     description:
       `CSV（ヘッダー: phone,from,message）から複数のSMSをまとめて送信する。無効な行はスキップされる。1行あたりの本文は${SMS_MAX_LENGTH}文字まで。多数の課金が発生するため、必ず dry_run: true で件数を確認し、ユーザーの承認を得てから実行すること。送信件数の分だけレートリミットを消費する。`,
@@ -315,6 +331,7 @@ export const toolDefinitions: ToolDefinition[] = [
 
   {
     name: 'make_voice_call',
+    capability: 'ENABLE_VOICE',
     title: '音声通話',
     description:
       '指定した番号へ発信し、テキストを合成音声で読み上げる。課金対象かつ相手を呼び出す行為のため、実行前に必ず dry_run: true で検証し、通話の要件と読み上げ内容をユーザーとすり合わせて承認を得ること。',
@@ -373,6 +390,7 @@ export const toolDefinitions: ToolDefinition[] = [
 
   {
     name: 'get_call_status',
+    capability: 'ENABLE_VOICE',
     title: '通話ステータス取得',
     description:
       'Vonage Voice APIで通話のステータス（completed / busy / failed など）と料金・通話時間を取得する。make_voice_call が返した call_id を指定すること。',
@@ -413,6 +431,7 @@ export const toolDefinitions: ToolDefinition[] = [
 
   {
     name: 'get_sms_status',
+    capability: 'ENABLE_SMS',
     title: 'SMS配信ステータス取得',
     description:
       'send_sms が返した message_id のSMS配信ステータス（submitted / delivered / failed など）を取得する。Vonage Messages APIはステータスをWebhookで非同期通知する仕様のため、delivered まで進むにはこのサーバーのHTTP版で Status Webhook を受信している必要がある。',
@@ -451,6 +470,7 @@ export const toolDefinitions: ToolDefinition[] = [
 
   {
     name: 'generate_jwt',
+    capability: 'ENABLE_JWT_TOOL',
     title: 'JWT生成',
     description:
       'Vonage Voice API用のJWT認証トークンを生成する。環境変数からApplication IDとPrivate Keyを読み込む。生成されたトークンは機密情報のため、ユーザーが明示的に要求した場合のみ実行すること。',
@@ -484,9 +504,41 @@ export const toolDefinitions: ToolDefinition[] = [
   },
 ];
 
-/** ツール名から定義を引く */
+/**
+ * 全ツールのメタデータ。handler は取り除いてあるため、これを受け取った
+ * トランスポートがハンドラを直接実行することはできない。
+ */
+export const toolDefinitions: ToolDefinition[] = toolImplementations.map(
+  ({ handler: _handler, ...definition }) => Object.freeze(definition)
+);
+
+/** ツール名からメタデータを引く（capability の有効・無効は問わない） */
 export function findToolDefinition(name: string): ToolDefinition | undefined {
   return toolDefinitions.find((tool) => tool.name === name);
+}
+
+/**
+ * 現在の環境変数で有効になっているツールのメタデータを返す。
+ * トランスポートはこれを使って registerTool する（無効なツールは登録しない）。
+ */
+export function enabledToolDefinitions(): ToolDefinition[] {
+  return toolDefinitions.filter((tool) => isCapabilityEnabled(tool.capability));
+}
+
+/**
+ * 無効化されたツールが呼ばれたときのエラー。
+ *
+ * 登録自体を行わないので通常は到達しないが、登録後に環境変数が変わった場合や
+ * トランスポート側の実装ミスに対する最後の砦として runTool でも判定する。
+ */
+function disabledToolOutcome(tool: ToolDefinition): ToolOutcome {
+  return errorOutcome(
+    `${tool.name} はサーバー側で無効化されています（環境変数 ${tool.capability} が未設定または false）。`,
+    `サーバーの環境変数に ${tool.capability}=true を設定して再起動するよう管理者に依頼してください。` +
+      '再試行しても結果は変わりません。',
+    { required_capability: tool.capability },
+    'disabled'
+  );
 }
 
 /** ツールのJSON Schema（MCPの inputSchema 形式）を生成する */
@@ -496,9 +548,14 @@ export function toolInputJsonSchema(tool: ToolDefinition): Record<string, unknow
   return schema;
 }
 
-/** tools/list 用のツール一覧を生成する */
+/**
+ * tools/list 用のツール一覧を生成する。
+ *
+ * 無効なツールは含めない。理由は2つで、(a) エージェントが存在しないツールを
+ * 呼ぼうとして迷走しない (b) 使わないツール定義がコンテキストを食わない。
+ */
 export function listTools(): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
-  return toolDefinitions.map((tool) => ({
+  return enabledToolDefinitions().map((tool) => ({
     name: tool.name,
     description: tool.description,
     inputSchema: toolInputJsonSchema(tool),
@@ -510,12 +567,21 @@ export function listTools(): Array<{ name: string; description: string; inputSch
  * Zodによる検証に失敗した場合も、AIが自己修復できるエラーレスポンスを返す。
  */
 export async function runTool(name: string, args: unknown): Promise<ToolOutcome> {
-  const tool = findToolDefinition(name);
+  const tool = toolImplementations.find((t) => t.name === name);
   if (!tool) {
+    const available = enabledToolDefinitions().map((t) => t.name);
     return errorOutcome(
       `未知のツールです: ${name}`,
-      `利用可能なツール: ${toolDefinitions.map((t) => t.name).join(', ')}`
+      available.length > 0
+        ? `利用可能なツール: ${available.join(', ')}`
+        : 'このサーバーでは現在どのツールも有効になっていません。管理者に capability の有効化を依頼してください。'
     );
+  }
+
+  // capability の判定は引数の検証より先に行う。無効な機能について
+  // 「引数が不正です」と返すと、エージェントが引数を直して再試行し続けてしまう。
+  if (!isCapabilityEnabled(tool.capability)) {
+    return disabledToolOutcome(tool);
   }
 
   const parsed = z.object(tool.schema).safeParse(args ?? {});

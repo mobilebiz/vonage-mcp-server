@@ -12,11 +12,12 @@ export type ToolPayload = Record<string, unknown>;
  * エラーの種別。HTTPラッパーがステータスコードへ変換するために使う。
  * - `validation`: 引数不正・ホワイトリスト違反など、呼び出し側が直せるもの → 400
  * - `rate_limit`: レートリミット超過 → 429
+ * - `disabled`: サーバー側で機能が無効化されている → 403
  * - `not_found`: 指定されたIDのレコードが無い → 404
  * - `upstream`: Vonage API側の失敗。MCPのツール結果として返すのが妥当 → 200
  * - `internal`: 想定外の例外 → 500
  */
-export type ToolErrorKind = 'validation' | 'rate_limit' | 'not_found' | 'upstream' | 'internal';
+export type ToolErrorKind = 'validation' | 'rate_limit' | 'disabled' | 'not_found' | 'upstream' | 'internal';
 
 /** ハンドラの実行結果（MCPレスポンスに変換する前の中間形式） */
 export interface ToolOutcome {
@@ -96,6 +97,9 @@ export function httpStatusForOutcome(outcome: ToolOutcome): number {
   switch (outcome.errorKind) {
     case 'rate_limit':
       return 429;
+    case 'disabled':
+      // 認証の問題ではなくサーバー設定の問題なので 401 ではなく 403
+      return 403;
     case 'not_found':
       return 404;
     case 'upstream':

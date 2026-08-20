@@ -21,7 +21,8 @@ vi.mock('../src/voiceCall.js', async () => {
 vi.mock('../src/callStatus.js', () => ({ getCallStatus: mockGetCallStatus }));
 vi.mock('../src/jwtUtils.js', () => ({ generateVonageJWT: mockGenerateJWT }));
 
-import { listTools, runTool, toolDefinitions } from '../src/tools.js';
+import { enabledToolDefinitions, listTools, runTool, toolDefinitions } from '../src/tools.js';
+import { CAPABILITY_ENV_VARS } from '../src/config.js';
 import { toolRateLimiter } from '../src/guardrails.js';
 import { clearMessageStatusStore, getMessageStatus, ingestStatusWebhook } from '../src/messageStatusStore.js';
 
@@ -42,6 +43,12 @@ describe('tools registry', () => {
     delete process.env.RATE_LIMIT_PER_HOUR;
     // RATE_LIMIT_PER_HOUR=0 は「全拒否」の意味なので、無効化には使えない
     process.env.DISABLE_RATE_LIMIT = 'true';
+    // capability は既定で全 OFF。ツールの挙動を検証するテストでは明示的に有効化する
+    process.env.ENABLE_SMS = 'true';
+    process.env.ENABLE_BULK_SMS = 'true';
+    process.env.ENABLE_VOICE = 'true';
+    process.env.ENABLE_JWT_TOOL = 'true';
+
   });
 
   afterEach(() => {
@@ -584,6 +591,110 @@ describe('tools registry', () => {
 
       expect(payload.status).toBe('error');
       expect(payload.reason).toContain('boom');
+    });
+  });
+
+  describe('capability トグル', () => {
+    /** 全 capability を無効にする */
+    function disableAll(): void {
+      for (const name of CAPABILITY_ENV_VARS) {
+        delete process.env[name];
+      }
+    }
+
+    // これが stdio 迂回を構造的に潰している部分。
+    // 型からもオブジェクトからも handler が消えているので、
+    // トランスポートは runTool() を通す以外にツールを実行できない。
+    it('公開されるツール定義に handler が含まれない', () => {
+      for (const tool of toolDefinitions) {
+        expect(Object.keys(tool)).not.toContain('handler');
+        expect((tool as any).handler).toBeUndefined();
+      }
+    });
+
+    it('ツール定義は凍結されていて capability を書き換えられない', () => {
+      const sendSms = toolDefinitions.find((t) => t.name === 'send_sms')!;
+      expect(() => {
+        (sendSms as any).capability = 'ENABLE_JWT_TOOL';
+      }).toThrow();
+    });
+
+    it('全ツールに capability が割り当てられている', () => {
+      for (const tool of toolDefinitions) {
+        expect(CAPABILITY_ENV_VARS).toContain(tool.capability);
+      }
+    });
+
+    it.each([
+      ['ENABLE_SMS', ['get_sms_status', 'send_sms']],
+      ['ENABLE_BULK_SMS', ['bulk_sms_from_csv']],
+      ['ENABLE_VOICE', ['get_call_status', 'make_voice_call']],
+      ['ENABLE_JWT_TOOL', ['generate_jwt']],
+    ])('%s だけを有効にすると対象ツールだけが公開される', (capability, expected) => {
+      disableAll();
+      process.env[capability] = 'true';
+
+      expect(listTools().map((t) => t.name).sort()).toEqual(expected);
+      expect(enabledToolDefinitions().map((t) => t.name).sort()).toEqual(expected);
+    });
+
+    it('全 OFF なら tools/list は空になる', () => {
+      disableAll();
+      expect(listTools()).toEqual([]);
+    });
+
+    it('ENABLE_X=false は未設定と同じく無効', () => {
+      disableAll();
+      for (const name of CAPABILITY_ENV_VARS) {
+        process.env[name] = 'false';
+      }
+      expect(listTools()).toEqual([]);
+    });
+
+    it('無効なツールを直接呼ぶと自己修復可能なエラーを返し、APIを呼ばない', async () => {
+      disableAll();
+      mockMakeVoiceCall.mockResolvedValue({ success: true, callId: 'c' });
+
+      const outcome = await runTool('make_voice_call', { to: '09012345678', message: 'テスト' });
+
+      expect(outcome.isError).toBe(true);
+      expect(outcome.errorKind).toBe('disabled');
+      expect(outcome.payload.reason).toContain('無効化されています');
+      expect(outcome.payload.suggestion).toContain('ENABLE_VOICE=true');
+      expect(outcome.payload.required_capability).toBe('ENABLE_VOICE');
+      expect(mockMakeVoiceCall).not.toHaveBeenCalled();
+    });
+
+    // 「引数が不正です」と返すと、エージェントが引数を直して再試行し続けてしまう
+    it('引数が不正でも capability の判定を優先する', async () => {
+      disableAll();
+
+      const outcome = await runTool('send_sms', { to: 'not-a-number' });
+
+      expect(outcome.errorKind).toBe('disabled');
+      expect(outcome.payload.reason).toContain('ENABLE_SMS');
+    });
+
+    it('bulk は ENABLE_SMS では有効にならない（独立したトグル）', async () => {
+      disableAll();
+      process.env.ENABLE_SMS = 'true';
+
+      const outcome = await runTool('bulk_sms_from_csv', {
+        csv_content: 'phone,from,message\n09012345678,VonageMCP,hi\n',
+        dry_run: true,
+      });
+
+      expect(outcome.errorKind).toBe('disabled');
+      expect(outcome.payload.required_capability).toBe('ENABLE_BULK_SMS');
+      expect(mockSendBulkSMS).not.toHaveBeenCalled();
+    });
+
+    it('全 OFF のときの未知ツールエラーは、有効なツールが無いことを伝える', async () => {
+      disableAll();
+
+      const outcome = await runTool('no_such_tool', {});
+
+      expect(outcome.payload.suggestion).toContain('どのツールも有効になっていません');
     });
   });
 });

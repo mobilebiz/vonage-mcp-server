@@ -36,14 +36,25 @@ export const MAX_RATE_LIMIT_PER_HOUR = 10_000;
 /** 同上（bulk の行数） */
 export const MAX_BULK_MAX_ROWS = 10_000;
 
-/** capability トグルの環境変数名 */
-export const CAPABILITY_ENV_VARS = ['ENABLE_SMS', 'ENABLE_VOICE'] as const;
+/**
+ * capability トグルの環境変数名。
+ *
+ * bulk と generate_jwt を SMS / Voice から分離しているのは爆発半径が違うため:
+ * bulk は1回の呼び出しで数百件を送れ、generate_jwt は Vonage API を直接叩ける
+ * 署名済みクレデンシャルを呼び出し側に渡す（＝ガードレールの迂回路になる）。
+ */
+export const CAPABILITY_ENV_VARS = [
+  'ENABLE_SMS',
+  'ENABLE_BULK_SMS',
+  'ENABLE_VOICE',
+  'ENABLE_JWT_TOOL',
+] as const;
 
-/** 有効化されている機能 */
-export interface Capabilities {
-  sms: boolean;
-  voice: boolean;
-}
+/** capability を指定する環境変数名 */
+export type CapabilityName = (typeof CAPABILITY_ENV_VARS)[number];
+
+/** 有効化されている機能。キーは環境変数名そのもの（命名体系を二重に持たない） */
+export type Capabilities = Record<CapabilityName, boolean>;
 
 /**
  * 真偽値の環境変数を厳格に解釈する。
@@ -157,13 +168,23 @@ export function getBulkMaxRows(): number {
 }
 
 /**
- * 有効化されている機能を返す。いずれも既定は OFF（利用者に意識的に有効化させる）。
+ * 指定した capability が有効か。既定は OFF（利用者に意識的に有効化させる）。
+ *
+ * 値は毎回 process.env から読み直す。起動時に検証済みなので、ここで解釈できない
+ * 値に当たるのは環境変数が実行中に書き換えられた場合だけであり、その場合は
+ * 例外にして機能を有効化しないほうが安全（fail-closed）。
  */
+export function isCapabilityEnabled(name: CapabilityName): boolean {
+  return parseBooleanEnv(name);
+}
+
+/** 有効化されている機能を返す。いずれも既定は OFF。 */
 export function getCapabilities(): Capabilities {
-  return {
-    sms: parseBooleanEnv('ENABLE_SMS'),
-    voice: parseBooleanEnv('ENABLE_VOICE'),
-  };
+  const capabilities = {} as Capabilities;
+  for (const name of CAPABILITY_ENV_VARS) {
+    capabilities[name] = parseBooleanEnv(name);
+  }
+  return capabilities;
 }
 
 /** 値が実質的に未設定か（空白のみを含む） */
@@ -225,10 +246,12 @@ export function validateStartupConfig(): string[] {
     capabilities = null;
   }
 
-  if (capabilities !== null && (capabilities.sms || capabilities.voice)) {
+  const enabled = capabilities === null ? [] : CAPABILITY_ENV_VARS.filter((name) => capabilities[name]);
+
+  if (enabled.length > 0) {
     if (isBlank(process.env.VONAGE_APPLICATION_ID)) {
       problems.push(
-        'VONAGE_APPLICATION_ID が未設定です。ENABLE_SMS / ENABLE_VOICE のいずれかを有効にする場合は必須です。'
+        `VONAGE_APPLICATION_ID が未設定です。${enabled.join(' / ')} を有効にする場合は必須です。`
       );
     }
     if (isBlank(process.env.VONAGE_PRIVATE_KEY_PATH)) {
@@ -238,7 +261,7 @@ export function validateStartupConfig(): string[] {
     }
   }
 
-  if (capabilities?.voice && isBlank(process.env.VONAGE_VOICE_FROM)) {
+  if (capabilities?.ENABLE_VOICE && isBlank(process.env.VONAGE_VOICE_FROM)) {
     problems.push(
       'ENABLE_VOICE=true ですが VONAGE_VOICE_FROM が未設定です。発信元番号が無いと make_voice_call は必ず失敗します。'
     );
@@ -246,6 +269,14 @@ export function validateStartupConfig(): string[] {
 
   if (problems.length > 0) {
     throw new ConfigError(problems);
+  }
+
+  // 全 OFF は「動くはずのものが動かない」という問い合わせに直結するので明示する
+  if (capabilities !== null && enabled.length === 0) {
+    warnings.push(
+      `すべての機能が無効です。ツールは1つも公開されません。利用する機能を ${CAPABILITY_ENV_VARS.join(' / ')} ` +
+        'のいずれかに true を設定して有効化してください（既定はすべて OFF です）。'
+    );
   }
 
   // 危険な設定は、起動のたびに目に入るようにしておく

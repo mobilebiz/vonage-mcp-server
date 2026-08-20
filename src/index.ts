@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { toolDefinitions } from "./tools.js";
+import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { enabledToolDefinitions, runTool } from "./tools.js";
 import { toMcpResult, unexpectedErrorOutcome } from "./toolResponse.js";
 import { applyStartupConfig } from "./config.js";
 
@@ -50,9 +51,13 @@ const server = new McpServer({
   version: "1.3.0"
 });
 
-// 共通レジストリ (src/tools.ts) の定義からツールを一括登録する。
-// スキーマ・ガードレール・レスポンス整形はすべてレジストリ側に集約されている。
-for (const tool of toolDefinitions) {
+// 共通レジストリ (src/tools.ts) から、有効になっているツールだけを登録する。
+// 実行は必ず runTool() を経由させる。以前はここで tool.handler() を直接呼んで
+// おり、capability の判定を stdio 経由で丸ごと迂回できた (VONAGE_MCP-7)。
+const enabledTools = enabledToolDefinitions();
+debugLog(`有効なツール: ${enabledTools.map((t) => t.name).join(', ') || '(なし)'}`);
+
+for (const tool of enabledTools) {
   server.registerTool(
     tool.name,
     {
@@ -62,13 +67,22 @@ for (const tool of toolDefinitions) {
     },
     async (args: any) => {
       debugLog(`${tool.name} が呼び出されました`, args);
-      const outcome = await tool.handler(args).catch((error) =>
+      const outcome = await runTool(tool.name, args).catch((error) =>
         unexpectedErrorOutcome(tool.name, error)
       );
       debugLog(`${tool.name} の結果`, outcome.payload);
       return toMcpResult(outcome) as any;
     }
   );
+}
+
+// capability が全 OFF だと registerTool が1度も呼ばれず、SDK は tools capability
+// 自体を宣言しない。その結果 tools/list が "Method not found" で失敗する。
+// 既定は全 OFF なので、これは初回起動でいちばん起きやすい状態であり、
+// 「ツールが0件」と正しく伝えるために空の一覧ハンドラを自前で登録する。
+if (enabledTools.length === 0) {
+  server.server.registerCapabilities({ tools: { listChanged: true } });
+  server.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: [] }));
 }
 
 // Start receiving messages on stdin and sending messages on stdout

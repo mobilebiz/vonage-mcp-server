@@ -9,6 +9,7 @@ import {
   getBulkMaxRows,
   getCapabilities,
   getRateLimitPerHour,
+  isCapabilityEnabled,
   isRateLimitDisabled,
   parseBooleanEnv,
   parseIntegerEnv,
@@ -18,7 +19,9 @@ import {
 /** このモジュールが読む環境変数（テストごとに完全にクリアする） */
 const MANAGED_ENV = [
   'ENABLE_SMS',
+  'ENABLE_BULK_SMS',
   'ENABLE_VOICE',
+  'ENABLE_JWT_TOOL',
   'DISABLE_RATE_LIMIT',
   'RATE_LIMIT_PER_HOUR',
   'BULK_MAX_ROWS',
@@ -142,24 +145,51 @@ describe('config', () => {
   });
 
   describe('getCapabilities', () => {
+    const allOff = {
+      ENABLE_SMS: false,
+      ENABLE_BULK_SMS: false,
+      ENABLE_VOICE: false,
+      ENABLE_JWT_TOOL: false,
+    };
+
     it('既定はすべて OFF', () => {
-      expect(getCapabilities()).toEqual({ sms: false, voice: false });
+      expect(getCapabilities()).toEqual(allOff);
     });
 
     it('ENABLE_X=false は確実に無効になる', () => {
-      process.env.ENABLE_SMS = 'false';
-      process.env.ENABLE_VOICE = 'false';
-      expect(getCapabilities()).toEqual({ sms: false, voice: false });
+      for (const name of CAPABILITY_ENV_VARS) {
+        process.env[name] = 'false';
+      }
+      expect(getCapabilities()).toEqual(allOff);
+      for (const name of CAPABILITY_ENV_VARS) {
+        expect(isCapabilityEnabled(name)).toBe(false);
+      }
     });
 
     it('ENABLE_X=true で有効になる', () => {
       process.env.ENABLE_SMS = 'true';
-      expect(getCapabilities()).toEqual({ sms: true, voice: false });
+      expect(getCapabilities()).toEqual({ ...allOff, ENABLE_SMS: true });
+      expect(isCapabilityEnabled('ENABLE_SMS')).toBe(true);
+    });
+
+    it('各トグルは独立している（bulk だけ有効にできる）', () => {
+      process.env.ENABLE_BULK_SMS = 'true';
+      expect(getCapabilities()).toEqual({ ...allOff, ENABLE_BULK_SMS: true });
     });
   });
 
   describe('validateStartupConfig', () => {
-    it('既定の環境では問題も警告も無い', () => {
+    it('既定の環境では起動できるが、全機能 OFF であることを警告する', () => {
+      const warnings = validateStartupConfig();
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('すべての機能が無効です');
+    });
+
+    it('capability を1つでも有効にすれば全 OFF 警告は出ない', () => {
+      process.env.ENABLE_SMS = 'true';
+      process.env.VONAGE_APPLICATION_ID = 'app-id';
+      process.env.VONAGE_PRIVATE_KEY_PATH = './private.key';
+
       expect(validateStartupConfig()).toEqual([]);
     });
 
