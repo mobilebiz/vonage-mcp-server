@@ -10,7 +10,13 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 
 import { sendSMS, sendBulkSMS } from './vonage.js';
 import { parseAndValidateCSV } from './csvUtils.js';
-import { makeVoiceCall, estimateCallDuration, normalizeVoiceName } from './voiceCall.js';
+import {
+  MAX_CALL_DURATION_SECONDS,
+  callLengthTimer,
+  estimateCallDuration,
+  makeVoiceCall,
+  normalizeVoiceName,
+} from './voiceCall.js';
 import { getCallStatus } from './callStatus.js';
 import { getMessageStatus, recordSubmitted } from './messageStatusStore.js';
 import {
@@ -385,6 +391,10 @@ const toolImplementations: ToolImplementation[] = [
           to: guarded.normalized,
           voice: finalVoice,
           estimated_duration_seconds: estimatedDuration,
+          // 実際に Vonage へ渡す強制切断までの秒数。見積もりだけを見せると
+          // 「約N秒」で承認したのに実際はもっと課金され得る、という食い違いが起きる。
+          max_duration_seconds: callLengthTimer(message),
+          duration_cap_seconds: MAX_CALL_DURATION_SECONDS,
         });
       }
 
