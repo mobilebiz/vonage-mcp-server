@@ -21,7 +21,7 @@ import { getCallStatus } from './callStatus.js';
 import { getMessageStatus, recordSubmitted } from './messageStatusStore.js';
 import {
   PHONE_INPUT_PATTERN,
-  SMS_MAX_LENGTH,
+  SMS_INPUT_MAX_LENGTH,
   VOICE_MESSAGE_MAX_LENGTH,
   buildRateLimitError,
   checkDestination,
@@ -31,7 +31,14 @@ import {
   validateAndNormalizePhoneNumber,
   validateSenderId,
 } from './guardrails.js';
-import { getRateLimits, isCapabilityEnabled, type CapabilityName } from './config.js';
+import {
+  getRateLimits,
+  getSmsMaxSegments,
+  isCapabilityEnabled,
+  type CapabilityName,
+  type RateLimitBucket,
+} from './config.js';
+import { approximateCharsForSegments, estimateSmsSegments } from './smsSegments.js';
 import {
   dryRunOutcome,
   errorOutcome,
@@ -121,19 +128,34 @@ function guardDestination(to: string): { outcome: ToolOutcome } | { normalized: 
 function consumeRateLimit(
   toolName: string,
   channel: 'sms' | 'voice',
-  cost: number = 1
+  cost: { messages: number; segments?: number }
 ): ToolOutcome | null {
   const limits = getRateLimits();
-  const outcome = toolRateLimiter.consumeAll([
-    { bucket: 'global', key: 'global', limit: limits.global, cost },
-    { bucket: channel, key: channel, limit: limits[channel], cost },
-  ]);
+
+  const requests: Array<{ bucket: RateLimitBucket; key: string; limit: number; cost: number }> = [
+    { bucket: 'global', key: 'global', limit: limits.global, cost: cost.messages },
+    { bucket: channel, key: channel, limit: limits[channel], cost: cost.messages },
+  ];
+
+  // 課金はセグメント単位なので、費用を直接抑えたい運用者のために
+  // セグメント数のバケットも用意する。未設定なら無制限。
+  if (cost.segments !== undefined && cost.segments > 0) {
+    requests.push({
+      bucket: 'segments',
+      key: 'segments',
+      limit: limits.segments,
+      cost: cost.segments,
+    });
+  }
+
+  const outcome = toolRateLimiter.consumeAll(requests);
 
   if (outcome.allowed) {
     return null;
   }
 
-  const error = buildRateLimitError(toolName, outcome.result, cost, outcome.bucket);
+  const failedCost = outcome.bucket === 'segments' ? (cost.segments ?? 0) : cost.messages;
+  const error = buildRateLimitError(toolName, outcome.result, failedCost, outcome.bucket);
   return errorOutcome(
     error.reason,
     error.suggestion,
@@ -144,6 +166,44 @@ function consumeRateLimit(
     },
     'rate_limit'
   );
+}
+
+/**
+ * 本文のセグメント数を検証する。
+ *
+ * 上限は文字数ではなくセグメント数で掛ける。課金がセグメント単位であり、
+ * 文字数は費用と対応しないため。同じ「160文字」でも、英数字なら1通分、
+ * 日本語なら3通分の課金になる。
+ */
+function guardMessageSegments(
+  message: string
+): { outcome: ToolOutcome } | { estimate: ReturnType<typeof estimateSmsSegments> } {
+  const estimate = estimateSmsSegments(message);
+  const maxSegments = getSmsMaxSegments();
+
+  if (estimate.segments <= maxSegments) {
+    return { estimate };
+  }
+
+  const approxChars = approximateCharsForSegments(estimate.encoding, maxSegments);
+
+  return {
+    outcome: errorOutcome(
+      `本文が${estimate.segments}セグメントになります（上限${maxSegments}セグメント）。` +
+        `SMSは${estimate.segments}通分として課金されます（${estimate.characters}文字 / ${estimate.encoding}）。`,
+      `本文を約${approxChars}文字以内に要約して再試行してください。` +
+        (estimate.encoding === 'UCS-2'
+          ? '日本語などの非ASCII文字が含まれるため1セグメントは70文字（連結時は67文字）です。ASCIIだけにすると1セグメント160文字になります。'
+          : '1セグメントは160文字（連結時は153文字）です。') +
+        `上限は管理者が環境変数 SMS_MAX_SEGMENTS で変更できます。`,
+      {
+        segments: estimate.segments,
+        max_segments: maxSegments,
+        characters: estimate.characters,
+        encoding: estimate.encoding,
+      }
+    ),
+  };
 }
 
 const toolImplementations: ToolImplementation[] = [
@@ -158,9 +218,12 @@ const toolImplementations: ToolImplementation[] = [
       message: z
         .string()
         .min(1)
-        .max(SMS_MAX_LENGTH)
+        .max(SMS_INPUT_MAX_LENGTH)
         .describe(
-          `送信するSMS本文。SMSの文字数制限は${SMS_MAX_LENGTH}文字。これを超える場合は事前に要約すること。日本語（非ASCII）を含む場合は70文字を超えると複数通に分割され課金が増えるため、可能な限り70文字以内に収めること。`
+          '送信するSMS本文。課金は文字数ではなく「セグメント」単位で発生する。' +
+            '1セグメントは英数字のみなら160文字、日本語など非ASCIIを含むと70文字（連結時はそれぞれ153文字・67文字）。' +
+            '既定では3セグメントまで許可される。費用を抑えたい場合は日本語で67文字以内に収めること。' +
+            'dry_run のレスポンスに推定セグメント数が含まれるので、送信前にユーザーへ提示すること。'
         ),
       from: z
         .string()
@@ -186,16 +249,27 @@ const toolImplementations: ToolImplementation[] = [
         }
       }
 
+      const segments = guardMessageSegments(message);
+      if ('outcome' in segments) {
+        return segments.outcome;
+      }
+
       if (dry_run) {
         return dryRunOutcome({
           tool: 'send_sms',
           to: guarded.normalized,
           from: from ?? 'VonageMCP',
-          characters: message.length,
+          characters: segments.estimate.characters,
+          // 課金はセグメント単位。承認の材料になるのは文字数ではなくこちら。
+          encoding: segments.estimate.encoding,
+          segments: segments.estimate.segments,
         });
       }
 
-      const limited = consumeRateLimit('send_sms', 'sms');
+      const limited = consumeRateLimit('send_sms', 'sms', {
+        messages: 1,
+        segments: segments.estimate.segments,
+      });
       if (limited) {
         return limited;
       }
@@ -224,13 +298,16 @@ const toolImplementations: ToolImplementation[] = [
     capability: 'ENABLE_BULK_SMS',
     title: 'CSV一括SMS送信',
     description:
-      `CSV（ヘッダー: phone,from,message）から複数のSMSをまとめて送信する。無効な行はスキップされる。1行あたりの本文は${SMS_MAX_LENGTH}文字まで。多数の課金が発生するため、必ず dry_run: true で件数を確認し、ユーザーの承認を得てから実行すること。送信件数の分だけレートリミットを消費する。`,
+      'CSV（ヘッダー: phone,from,message）から複数のSMSをまとめて送信する。無効な行はスキップされる。' +
+      '課金はセグメント単位で、1行あたり既定3セグメントまで（日本語なら約200文字）。' +
+      '多数の課金が発生するため、必ず dry_run: true で件数と推定セグメント数を確認し、ユーザーの承認を得てから実行すること。',
     schema: {
       csv_content: z
         .string()
         .min(1)
         .describe(
-          `CSVの内容。1行目は phone,from,message のヘッダーであること。message列は1行あたり${SMS_MAX_LENGTH}文字以内に収めること。`
+          'CSVの内容。1行目は phone,from,message のヘッダーであること。' +
+            'message列は1行あたり3セグメント以内（日本語なら約200文字、英数字なら約450文字）に収めること。'
         ),
       dry_run: dryRunField,
     },
@@ -266,16 +343,20 @@ const toolImplementations: ToolImplementation[] = [
         );
       }
 
-      // ALLOWED_NUMBERS と本文長による絞り込み
+      // ALLOWED_NUMBERS とセグメント数による絞り込み
       const allowed: typeof parseResult.validRows = [];
       const blocked: string[] = [];
-      const tooLong: Array<{ to: string; characters: number }> = [];
+      const tooLong: Array<{ to: string; segments: number; characters: number }> = [];
+      let totalSegments = 0;
+
+      const maxSegments = getSmsMaxSegments();
 
       for (const row of parseResult.validRows) {
-        // 単発の send_sms と同じ本文長制限を適用する。
-        // ここを掛けないと bulk 経由でスキーマの maxLength を完全に迂回できる。
-        if (row.message.length > SMS_MAX_LENGTH) {
-          tooLong.push({ to: row.phone, characters: row.message.length });
+        // 単発の send_sms と同じ制限を適用する。
+        // ここを掛けないと bulk 経由でスキーマの制限を完全に迂回できる。
+        const estimate = estimateSmsSegments(row.message);
+        if (estimate.segments > maxSegments) {
+          tooLong.push({ to: row.phone, segments: estimate.segments, characters: estimate.characters });
           continue;
         }
 
@@ -284,6 +365,7 @@ const toolImplementations: ToolImplementation[] = [
           blocked.push(row.phone);
         } else {
           allowed.push({ ...row, phone: guarded.normalized });
+          totalSegments += estimate.segments;
         }
       }
 
@@ -296,8 +378,8 @@ const toolImplementations: ToolImplementation[] = [
 
       if (allowed.length === 0) {
         return errorOutcome(
-          `送信可能な行がありません（総行数: ${parseResult.totalRows}、無効: ${parseResult.invalidRows.length}、ブロック: ${blocked.length}、本文超過: ${tooLong.length}）。`,
-          `電話番号・送信者名・本文の各列を見直してください。本文が${SMS_MAX_LENGTH}文字を超える行は要約してください。ブロックされた行は ALLOWED_NUMBERS の制限によるものなので、再試行しても結果は変わりません。`,
+          `送信可能な行がありません（総行数: ${parseResult.totalRows}、無効: ${parseResult.invalidRows.length}、ブロック: ${blocked.length}、セグメント超過: ${tooLong.length}）。`,
+          `電話番号・送信者名・本文の各列を見直してください。${maxSegments}セグメントを超える行は要約してください（日本語なら約${approximateCharsForSegments('UCS-2', maxSegments)}文字）。ブロックされた行は ALLOWED_NUMBERS の制限によるものなので、再試行しても結果は変わりません。`,
           skipCounts
         );
       }
@@ -307,13 +389,19 @@ const toolImplementations: ToolImplementation[] = [
           tool: 'bulk_sms_from_csv',
           sendable_rows: allowed.length,
           rate_limit_cost: allowed.length,
+          // 実際に課金されるのは行数ではなくセグメント数の合計。
+          // 行数だけを見せると、日本語の長文で費用が数倍になる。
+          estimated_segments: totalSegments,
           ...skipCounts,
           ...(tooLong.length > 0 ? { too_long_examples: tooLong.slice(0, 5) } : {}),
         });
       }
 
-      // 送信件数分のレート枠を消費する。足りなければ1件も送らない
-      const limited = consumeRateLimit('bulk_sms_from_csv', 'sms', allowed.length);
+      // 送信件数とセグメント数の分だけレート枠を消費する。足りなければ1件も送らない
+      const limited = consumeRateLimit('bulk_sms_from_csv', 'sms', {
+        messages: allowed.length,
+        segments: totalSegments,
+      });
       if (limited) {
         return limited;
       }
@@ -398,7 +486,7 @@ const toolImplementations: ToolImplementation[] = [
         });
       }
 
-      const limited = consumeRateLimit('make_voice_call', 'voice');
+      const limited = consumeRateLimit('make_voice_call', 'voice', { messages: 1 });
       if (limited) {
         return limited;
       }

@@ -43,6 +43,8 @@ describe('tools registry', () => {
     clearMessageStatusStore();
     delete process.env.ALLOWED_NUMBERS;
     delete process.env.SMS_RATE_LIMIT_PER_HOUR;
+    delete process.env.SMS_SEGMENT_LIMIT_PER_HOUR;
+    delete process.env.SMS_MAX_SEGMENTS;
     delete process.env.VOICE_RATE_LIMIT_PER_HOUR;
     delete process.env.ALLOWED_COUNTRY_CODES;
     delete process.env.ALLOW_PREMIUM_NUMBERS;
@@ -78,17 +80,18 @@ describe('tools registry', () => {
       }
     });
 
-    it('send_sms の to に電話番号パターン、message に maxLength 160 が設定されている', () => {
+    it('send_sms の to に電話番号パターン、message に絶対上限が設定されている', () => {
       const schema = listTools().find((t) => t.name === 'send_sms')!.inputSchema as any;
       expect(schema.properties.to.pattern).toBeDefined();
-      expect(schema.properties.message.maxLength).toBe(160);
-      expect(schema.properties.message.description).toContain('要約');
+      // 実際の制限はセグメント数で掛ける。ここは日本の連結上限という外枠
+      expect(schema.properties.message.maxLength).toBe(660);
+      expect(schema.properties.message.description).toContain('セグメント');
       expect(schema.properties.dry_run.type).toBe('boolean');
       expect(schema.required).toEqual(expect.arrayContaining(['to', 'message']));
       expect(schema.required).not.toContain('dry_run');
     });
 
-    it('make_voice_call の message には160文字制限を課さない', () => {
+    it('make_voice_call の message にはSMSの制限を課さない', () => {
       const schema = listTools().find((t) => t.name === 'make_voice_call')!.inputSchema as any;
       expect(schema.properties.message.maxLength).toBe(1000);
       expect(schema.properties.voice.enum).toEqual(['女性', '男性']);
@@ -108,11 +111,26 @@ describe('tools registry', () => {
       expect(payload.suggestion).toContain('send_sms');
     });
 
-    it('160文字を超える本文は拒否される', async () => {
-      const payload = await invoke('send_sms', { to: '09012345678', message: 'あ'.repeat(161) });
+    // 日本語は UCS-2 なので 1セグメント70文字(連結時67文字)。250文字で4セグメント
+    it('セグメント上限を超える本文は拒否される', async () => {
+      const payload = await invoke('send_sms', { to: '09012345678', message: 'あ'.repeat(250) });
+
       expect(payload.status).toBe('error');
-      expect(payload.reason).toContain('message');
+      expect(payload.reason).toContain('セグメント');
+      expect(payload.segments).toBe(4);
+      expect(payload.max_segments).toBe(3);
+      expect(payload.encoding).toBe('UCS-2');
+      expect(payload.suggestion).toContain('SMS_MAX_SEGMENTS');
       expect(mockSendSMS).not.toHaveBeenCalled();
+    });
+
+    // 従来の 160 文字上限では、英数字だけの本文でも1セグメントしか使わないのに弾かれていた
+    it('英数字だけなら160文字を超えても送れる', async () => {
+      mockSendSMS.mockResolvedValue({ success: true, messageId: 'm' });
+
+      const payload = await invoke('send_sms', { to: '09012345678', message: 'a'.repeat(400) });
+
+      expect(payload.status).toBe('success');
     });
 
     it('パターンに合わない電話番号は拒否される', async () => {
@@ -163,6 +181,8 @@ describe('tools registry', () => {
         to: '+819012345678',
         from: 'VonageMCP',
         characters: 5,
+        encoding: 'GSM-7',
+        segments: 1,
       });
       expect(mockSendSMS).not.toHaveBeenCalled();
     });
@@ -321,6 +341,79 @@ describe('tools registry', () => {
       expect(mockSendBulkSMS).not.toHaveBeenCalled();
     });
 
+    // 課金はセグメント単位。RATE_LIMIT_PER_HOUR=5 のつもりでも、
+    // 日本語の長文なら実際の課金は5通分では済まない
+    describe('セグメント数の上限', () => {
+      it('SMS_SEGMENT_LIMIT_PER_HOUR はセグメント数で消費される', async () => {
+        process.env.RATE_LIMIT_PER_HOUR = '10';
+        process.env.SMS_SEGMENT_LIMIT_PER_HOUR = '5';
+        mockSendSMS.mockResolvedValue({ success: true, messageId: 'm' });
+
+        // 3セグメントの本文を1通 → 残り2セグメント
+        const first = await invoke('send_sms', { to: '09012345678', message: 'あ'.repeat(160) });
+        expect(first.status).toBe('success');
+
+        // もう1通送ると3セグメント必要で、残り2では足りない
+        const second = await invoke('send_sms', { to: '09012345678', message: 'あ'.repeat(160) });
+        expect(second.status).toBe('error');
+        expect(second.exceeded_bucket).toBe('segments');
+        expect(second.reason).toContain('SMS_SEGMENT_LIMIT_PER_HOUR');
+
+        // 1セグメントに収まる本文なら通る
+        const third = await invoke('send_sms', { to: '09012345678', message: 'hi' });
+        expect(third.status).toBe('success');
+      });
+
+      it('未設定ならセグメント数では制限しない', async () => {
+        process.env.RATE_LIMIT_PER_HOUR = '10';
+        mockSendSMS.mockResolvedValue({ success: true, messageId: 'm' });
+
+        for (let i = 0; i < 5; i++) {
+          const payload = await invoke('send_sms', { to: '09012345678', message: 'あ'.repeat(160) });
+          expect(payload.status).toBe('success');
+        }
+      });
+
+      it('架電はセグメントのバケットを消費しない', async () => {
+        process.env.RATE_LIMIT_PER_HOUR = '10';
+        process.env.SMS_SEGMENT_LIMIT_PER_HOUR = '0';
+        mockMakeVoiceCall.mockResolvedValue({ success: true, callId: 'c' });
+
+        const payload = await invoke('make_voice_call', { to: '09012345678', message: 'テスト' });
+
+        expect(payload.status).toBe('success');
+      });
+
+      it('bulk はセグメント数の合計を消費する', async () => {
+        process.env.RATE_LIMIT_PER_HOUR = '10';
+        process.env.SMS_SEGMENT_LIMIT_PER_HOUR = '4';
+
+        // 3セグメント + 1セグメント = 4セグメント。ちょうど収まる
+        const csv =
+          `phone,from,message\n09012345678,VonageMCP,${'あ'.repeat(160)}\n09087654321,VonageMCP,hi\n`;
+
+        const preview = await invoke('bulk_sms_from_csv', { csv_content: csv, dry_run: true });
+        expect(preview.estimated_segments).toBe(4);
+
+        mockSendBulkSMS.mockResolvedValue({
+          totalRequests: 2,
+          successCount: 2,
+          failureCount: 0,
+          results: [
+            { to: '+819012345678', success: true, messageId: 'm1' },
+            { to: '+819087654321', success: true, messageId: 'm2' },
+          ],
+        });
+
+        expect((await invoke('bulk_sms_from_csv', { csv_content: csv })).status).toBe('success');
+
+        // 枠を使い切ったので次は通らない
+        const blocked = await invoke('bulk_sms_from_csv', { csv_content: csv });
+        expect(blocked.status).toBe('error');
+        expect(blocked.exceeded_bucket).toBe('segments');
+      });
+    });
+
     describe('チャネル別の上限', () => {
       it('SMS_RATE_LIMIT_PER_HOUR は global より先に効く', async () => {
         process.env.RATE_LIMIT_PER_HOUR = '10';
@@ -400,8 +493,8 @@ describe('tools registry', () => {
   describe('bulk_sms_from_csv', () => {
     const csv = 'phone,from,message\n09012345678,VonageMCP,hello\n09087654321,VonageMCP,hello2\n';
 
-    it('160文字を超える行は送信されない（単発と同じ本文長制限を適用）', async () => {
-      const long = 'あ'.repeat(161);
+    it('セグメント上限を超える行は送信されない（単発と同じ制限を適用）', async () => {
+      const long = 'あ'.repeat(250);
       mockSendBulkSMS.mockResolvedValue({
         totalRequests: 1,
         successCount: 1,
@@ -419,8 +512,8 @@ describe('tools registry', () => {
       ]);
     });
 
-    it('全行が160文字超ならAPIを呼ばずエラーを返す', async () => {
-      const long = 'あ'.repeat(161);
+    it('全行がセグメント上限超ならAPIを呼ばずエラーを返す', async () => {
+      const long = 'あ'.repeat(250);
       const payload = await invoke('bulk_sms_from_csv', {
         csv_content: `phone,from,message\n09012345678,VonageMCP,${long}\n`,
       });
@@ -711,6 +804,27 @@ describe('tools registry', () => {
     it('CSV でも日本宛の数値送信元は弾かれる', async () => {
       const errors = await bulkRowErrors('09087654321');
       expect(errors.join()).toContain('送信可能な行がありません');
+    });
+  });
+
+  describe('セグメント上限の設定', () => {
+    it('SMS_MAX_SEGMENTS で1通あたりの上限を変更できる', async () => {
+      process.env.SMS_MAX_SEGMENTS = '1';
+
+      const payload = await invoke('send_sms', { to: '09012345678', message: 'あ'.repeat(100) });
+
+      expect(payload.status).toBe('error');
+      expect(payload.max_segments).toBe(1);
+      expect(mockSendSMS).not.toHaveBeenCalled();
+    });
+
+    it('緩めることもできる', async () => {
+      process.env.SMS_MAX_SEGMENTS = '10';
+      mockSendSMS.mockResolvedValue({ success: true, messageId: 'm' });
+
+      const payload = await invoke('send_sms', { to: '09012345678', message: 'あ'.repeat(600) });
+
+      expect(payload.status).toBe('success');
     });
   });
 

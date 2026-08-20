@@ -19,6 +19,7 @@ import {
   type RateLimitBucket,
 } from './config.js';
 import { getCallingCode } from './callingCodes.js';
+import { JP_MAX_CONCATENATED_CHARS } from './smsSegments.js';
 
 // 既存の import 元を変えずに済むよう、設定系のシンボルはここからも再公開する。
 export {
@@ -46,8 +47,17 @@ export const E164_DIALABLE_PATTERN = /^\+[1-9]\d{9,14}$/;
  */
 export const PHONE_INPUT_PATTERN = '^(?:\\+[1-9][0-9\\s-]{6,20}|0[0-9\\s-]{8,20}|[1-9][0-9]{2})$';
 
-/** send_sms の本文長上限（SMSの1通あたりの上限に合わせる） */
-export const SMS_MAX_LENGTH = 160;
+/**
+ * ツールのスキーマに載せる本文長の絶対上限。
+ *
+ * 実際の制限はセグメント数 (`SMS_MAX_SEGMENTS`) で掛ける。ここは
+ * 「日本の連結メッセージの上限を超える本文は受け取らない」という外枠にすぎない。
+ *
+ * 文字数で縛るのをやめたのは、**課金がセグメント単位**であり、文字数が費用と
+ * 対応しないため。従来の 160 は GSM-7 の1通分という意味しか持たず、日本語では
+ * 3通分に相当していた (VONAGE_MCP-25)。
+ */
+export const SMS_INPUT_MAX_LENGTH = JP_MAX_CONCATENATED_CHARS;
 
 /** make_voice_call の読み上げメッセージ長上限（通話時間の暴走を防ぐ） */
 export const VOICE_MESSAGE_MAX_LENGTH = 1000;

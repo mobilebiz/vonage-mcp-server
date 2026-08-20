@@ -54,7 +54,7 @@ export const CAPABILITY_ENV_VARS = ['ENABLE_SMS', 'ENABLE_BULK_SMS', 'ENABLE_VOI
  * 繰り返すことで上限を素通りできてしまう（VONAGE_MCP-17）。課金は送信手段では
  * なく件数で発生するので、バケットも送信手段ではなく件数に対して置く。
  */
-export const RATE_LIMIT_BUCKETS = ['global', 'sms', 'voice'] as const;
+export const RATE_LIMIT_BUCKETS = ['global', 'sms', 'voice', 'segments'] as const;
 
 /** レートリミットのバケット名 */
 export type RateLimitBucket = (typeof RATE_LIMIT_BUCKETS)[number];
@@ -64,7 +64,14 @@ export const RATE_LIMIT_ENV_VARS: Record<RateLimitBucket, string> = {
   global: 'RATE_LIMIT_PER_HOUR',
   sms: 'SMS_RATE_LIMIT_PER_HOUR',
   voice: 'VOICE_RATE_LIMIT_PER_HOUR',
+  segments: 'SMS_SEGMENT_LIMIT_PER_HOUR',
 };
+
+/** 1通のSMSに許すセグメント数の既定値 */
+export const DEFAULT_SMS_MAX_SEGMENTS = 3;
+
+/** セグメント数の上限に指定できる最大値 */
+export const MAX_SMS_MAX_SEGMENTS = 10;
 
 /**
  * MCP_AUTH_TOKEN に要求する最小の長さ。
@@ -197,7 +204,7 @@ export function getRateLimitPerHour(): number {
  * 意図（合計で何件まで）をそのまま満たすため。チャネルごとに絞りたい組織だけが
  * 明示的に設定する。
  */
-function getChannelRateLimit(bucket: 'sms' | 'voice'): number {
+function getChannelRateLimit(bucket: 'sms' | 'voice' | 'segments'): number {
   const name = RATE_LIMIT_ENV_VARS[bucket];
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === '') {
@@ -212,14 +219,30 @@ function getChannelRateLimit(bucket: 'sms' | 'voice'): number {
  */
 export function getRateLimits(): Record<RateLimitBucket, number> {
   if (isRateLimitDisabled()) {
-    return { global: Infinity, sms: Infinity, voice: Infinity };
+    return { global: Infinity, sms: Infinity, voice: Infinity, segments: Infinity };
   }
 
   return {
     global: getRateLimitPerHour(),
     sms: getChannelRateLimit('sms'),
     voice: getChannelRateLimit('voice'),
+    segments: getChannelRateLimit('segments'),
   };
+}
+
+/**
+ * 1通のSMSに許すセグメント数の上限。
+ *
+ * 文字数ではなくセグメント数で縛るのは、**課金がセグメント単位**だから。
+ * 「160文字まで」は GSM-7 の1通分という意味しか持たず、日本語では3通分に相当する。
+ * 上限をセグメント数で書けば、エンコーディングが変わっても意図した費用のまま。
+ */
+export function getSmsMaxSegments(): number {
+  return parseIntegerEnv('SMS_MAX_SEGMENTS', {
+    min: 1,
+    max: MAX_SMS_MAX_SEGMENTS,
+    defaultValue: DEFAULT_SMS_MAX_SEGMENTS,
+  });
 }
 
 /**
@@ -520,6 +543,8 @@ export function validateStartupConfig(): string[] {
   );
   collect(() => getChannelRateLimit('sms'));
   collect(() => getChannelRateLimit('voice'));
+  collect(() => getChannelRateLimit('segments'));
+  collect(() => getSmsMaxSegments());
   collect(() => parseBooleanEnv('ALLOW_PREMIUM_NUMBERS'));
   collect(() => getWebhookMaxAgeSeconds());
   collect(() => getMcpAuthToken());
@@ -630,10 +655,15 @@ export function validateStartupConfig(): string[] {
       'ALLOW_PREMIUM_NUMBERS=true が設定されています。0990 などの高額課金番号への送信・架電が許可されます。'
     );
   }
-  for (const bucket of ['sms', 'voice'] as const) {
+  const zeroBucketLabels: Record<'sms' | 'voice' | 'segments', string> = {
+    sms: 'SMS送信',
+    voice: '架電',
+    segments: 'SMS送信',
+  };
+  for (const bucket of ['sms', 'voice', 'segments'] as const) {
     if (process.env[RATE_LIMIT_ENV_VARS[bucket]]?.trim() === '0') {
       warnings.push(
-        `${RATE_LIMIT_ENV_VARS[bucket]}=0 のため、${bucket === 'sms' ? 'SMS送信' : '架電'}はすべて拒否されます（無制限ではありません）。`
+        `${RATE_LIMIT_ENV_VARS[bucket]}=0 のため、${zeroBucketLabels[bucket]}はすべて拒否されます（無制限ではありません）。`
       );
     }
   }
