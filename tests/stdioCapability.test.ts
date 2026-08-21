@@ -131,8 +131,22 @@ const baseEnv = {
 
 describe('stdio トランスポートの capability 強制', () => {
   beforeAll(() => {
-    // dist が古いと検証にならないので、必ずビルドしてから起動する
-    execSync('npm run build', { cwd: projectRoot, stdio: 'ignore' });
+    // dist が古いと検証にならないので、必ずビルドしてから起動する。
+    //
+    // ビルドが落ちると、このスイートの7件は「失敗」ではなく「スキップ」として
+    // 計上される（スイート自体は FAIL になるが、サマリ行だけを読むと
+    // capability 強制の検証が走らなかったことを見落とす）。
+    // stdio を捨てると原因も出ないので、出力を握って例外に載せる。
+    try {
+      execSync('npm run build', { cwd: projectRoot, stdio: 'pipe' });
+    } catch (error) {
+      const detail = error as { stdout?: Buffer; stderr?: Buffer };
+      throw new Error(
+        'ビルドに失敗したため、stdio の capability 強制を検証できませんでした。\n' +
+          'このスイートがスキップされている場合、ガードレールは未検証です。\n' +
+          `${detail.stdout?.toString() ?? ''}${detail.stderr?.toString() ?? ''}`
+      );
+    }
   }, 180_000);
 
   it('SMS のみ有効なら tools/list に SMS 系だけが現れる', async () => {
