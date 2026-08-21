@@ -103,8 +103,20 @@ export interface BulkSMSResult {
   }>;
 }
 
-// バルクSMS送信関数
-export async function sendBulkSMS(requests: SMSParams[]): Promise<BulkSMSResult> {
+/**
+ * バルクSMS送信関数
+ *
+ * @param onSent 1件送るたびに、その結果で**即座に**呼ばれる。全件終わってから
+ *   まとめて処理してはいけない理由は、この関数が1行ごとに100ms待って逐次
+ *   送信するため。200件なら数十秒かかり、その間に前半のDLRが届く。呼び出し
+ *   側が送信を記録するのが全件完了後だと、先に届いたDLRは「知らない
+ *   message_id」として隔離バッファ（200件・5分）へ回され、大きなCSVでは
+ *   そこから溢れて**配信ステータスが永久に取れなくなる**（VONAGE_MCP-4）。
+ */
+export async function sendBulkSMS(
+  requests: SMSParams[],
+  onSent?: (result: BulkSMSResult['results'][number]) => void
+): Promise<BulkSMSResult> {
   const results: BulkSMSResult['results'] = [];
   let successCount = 0;
   let failureCount = 0;
@@ -112,23 +124,33 @@ export async function sendBulkSMS(requests: SMSParams[]): Promise<BulkSMSResult>
   // 並列実行ではなく順次実行でAPI制限を回避
   for (const params of requests) {
     const result = await sendSMS(params);
-    
+
+    let entry: BulkSMSResult['results'][number];
     if (result.success) {
       successCount++;
-      results.push({
+      entry = {
         to: params.to,
         from: params.from || 'VonageMCP',
         success: true,
         messageId: result.messageId
-      });
+      };
     } else {
       failureCount++;
-      results.push({
+      entry = {
         to: params.to,
         from: params.from || 'VonageMCP',
         success: false,
         error: result.error
-      });
+      };
+    }
+    results.push(entry);
+
+    // 記録側の失敗で送信ループを止めない。ここで throw すると、残りの行が
+    // 送られないまま「一部だけ送信済み」の状態でエラーになる。
+    try {
+      onSent?.(entry);
+    } catch {
+      // 記録できなくても送信自体は成功している
     }
     
     // API制限を回避するため、送信間隔を設ける（100ms）

@@ -475,15 +475,17 @@ const toolImplementations: ToolImplementation[] = [
         return limited;
       }
 
+      // 記録は**1件送るたび**に行う。全件終わってからまとめて記録すると、
+      // 逐次送信の途中で届いたDLRが未登録IDとして隔離バッファへ回り、
+      // 大きなCSVではそこから溢れて配信ステータスを取れなくなる。
       const bulkResult = await sendBulkSMS(
-        allowed.map((row) => ({ to: row.phone, message: row.message, from: row.from }))
-      );
-
-      for (const item of bulkResult.results) {
-        if (item.success && item.messageId) {
-          recordSubmitted(item.messageId, item.to, item.from);
+        allowed.map((row) => ({ to: row.phone, message: row.message, from: row.from })),
+        (item) => {
+          if (item.success && item.messageId) {
+            recordSubmitted(item.messageId, item.to, item.from);
+          }
         }
-      }
+      );
 
       // 失敗の詳細は先頭10件までに絞り、コンテキスト消費を抑える
       const failures = bulkResult.results

@@ -610,9 +610,11 @@ describe('tools registry', () => {
       });
 
       expect(payload.too_long_rows).toBe(1);
-      expect(mockSendBulkSMS).toHaveBeenCalledWith([
-        { to: '+819087654321', message: 'ok', from: 'VonageMCP' },
-      ]);
+      // 第2引数は「1件送るたびに recordSubmitted する」コールバック
+      expect(mockSendBulkSMS).toHaveBeenCalledWith(
+        [{ to: '+819087654321', message: 'ok', from: 'VonageMCP' }],
+        expect.any(Function)
+      );
     });
 
     it('全行がセグメント上限超ならAPIを呼ばずエラーを返す', async () => {
@@ -750,9 +752,10 @@ describe('tools registry', () => {
       expect(payload.status).toBe('success');
       expect(payload.sent).toBe(1);
       expect(payload.blocked_rows).toBe(1);
-      expect(mockSendBulkSMS).toHaveBeenCalledWith([
-        { to: '+819012345678', message: 'hello', from: 'VonageMCP' },
-      ]);
+      expect(mockSendBulkSMS).toHaveBeenCalledWith(
+        [{ to: '+819012345678', message: 'hello', from: 'VonageMCP' }],
+        expect.any(Function)
+      );
     });
 
     it('送信可能な行が無ければエラーを返す', async () => {
@@ -1002,9 +1005,10 @@ describe('tools registry', () => {
       });
 
       expect(payload.blocked_rows).toBe(2);
-      expect(mockSendBulkSMS).toHaveBeenCalledWith([
-        { to: '+819012345678', message: 'hi', from: 'VonageMCP' },
-      ]);
+      expect(mockSendBulkSMS).toHaveBeenCalledWith(
+        [{ to: '+819012345678', message: 'hi', from: 'VonageMCP' }],
+        expect.any(Function)
+      );
     });
   });
 
