@@ -15,7 +15,7 @@ import { toMcpResult, unexpectedErrorOutcome, type ToolOutcome } from './toolRes
 
 /** サーバー名とバージョン（package.json と揃える） */
 export const SERVER_NAME = 'vonage-mcp-server';
-export const SERVER_VERSION = '1.3.0';
+export const SERVER_VERSION = '2.0.0';
 
 /** ツール呼び出しを観測するためのフック（デバッグログ用） */
 export interface McpServerHooks {

@@ -3,7 +3,7 @@
   "manifest_version": "0.2",
   "name": "@mobilebiz/vonage-mcp-server",
   "display_name": "Vonage MCP Server",
-  "version": "1.3.0",
+  "version": "2.0.0",
   "description": "Vonage SMS and Voice MCP Server - Send SMS and make voice calls using Vonage API",
   "long_description": "This extension provides Model Context Protocol (MCP) server capabilities for Vonage, allowing AI assistants to send SMS messages and make voice calls through the Vonage API.",
   "author": {
