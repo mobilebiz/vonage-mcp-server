@@ -411,6 +411,13 @@ npm run test:coverage
 #### インストール手順
 
 1. **MCPBファイルの作成**
+
+   `mcpb` CLI が必要です（未インストールなら一度だけ）。
+
+   ```bash
+   npm install -g @anthropic-ai/mcpb
+   ```
+
    ```bash
    npm run build:mcpb
    ```

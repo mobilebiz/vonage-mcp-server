@@ -13,6 +13,24 @@ npm test
 
 Node.js 22 以降が必要です。
 
+### MCPB バンドルをビルドする場合 / Building the MCPB bundle
+
+`npm run build:mcpb` は **`mcpb` CLI をグローバルに要求します**。通常の開発では不要で、
+リリース時にだけ必要になります。
+
+```sh
+npm install -g @anthropic-ai/mcpb
+```
+
+依存として `package.json` に入れていないのは、リリース時にしか使わないツールのために
+43パッケージ・566行を `package-lock.json` へ載せることになるためです。
+未インストールのまま実行すると、スクリプトがこのコマンドを案内して停止します。
+
+> **リリース時は、バージョンを `package.json` / `manifest.json` / `src/mcpServer.ts` の
+> `SERVER_VERSION` の3箇所で揃えてから**バンドルを作り直してください。
+> バンドルの中の `manifest.json` は**ビルド時点のもの**が固まるため、
+> 設定項目を変えたら再ビルドしないと利用者に届きません。
+
 ## 変更を送る前に / Before you submit
 
 ```sh
