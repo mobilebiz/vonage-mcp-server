@@ -29,6 +29,9 @@
       "env": {
         "VONAGE_APPLICATION_ID": "${user_config.vonage_application_id}",
         "VONAGE_PRIVATE_KEY_PATH": "${user_config.vonage_private_key_path}",
+        "ENABLE_SMS": "${user_config.enable_sms}",
+        "ENABLE_BULK_SMS": "${user_config.enable_bulk_sms}",
+        "ENABLE_VOICE": "${user_config.enable_voice}",
         "VONAGE_VOICE_FROM": "${user_config.vonage_voice_from}",
         "ALLOWED_NUMBERS": "${user_config.allowed_numbers}",
         "RATE_LIMIT_PER_HOUR": "${user_config.rate_limit_per_hour}",
@@ -49,11 +52,32 @@
       "description": "Full path to your Vonage private key file (e.g., /Users/your-name/vonage/private.key)",
       "required": true
     },
+    "enable_sms": {
+      "type": "string",
+      "title": "Enable SMS",
+      "description": "Enable send_sms and get_sms_status. Must be exactly \"true\" or \"false\" (lowercase). Every capability is OFF by default: with all three left as \"false\" this server exposes no tools at all. Turn on only what you intend to use — these tools spend money and reach real people.",
+      "required": false,
+      "default": "false"
+    },
+    "enable_bulk_sms": {
+      "type": "string",
+      "title": "Enable Bulk SMS",
+      "description": "Enable bulk_sms_from_csv (one call can send hundreds of messages). Must be exactly \"true\" or \"false\" (lowercase). Every capability is OFF by default: with all three left as \"false\" this server exposes no tools at all. Turn on only what you intend to use — these tools spend money and reach real people.",
+      "required": false,
+      "default": "false"
+    },
+    "enable_voice": {
+      "type": "string",
+      "title": "Enable Voice",
+      "description": "Enable make_voice_call and get_call_status. Must be exactly \"true\" or \"false\" (lowercase). Every capability is OFF by default: with all three left as \"false\" this server exposes no tools at all. Turn on only what you intend to use — these tools spend money and reach real people.",
+      "required": false,
+      "default": "false"
+    },
     "vonage_voice_from": {
       "type": "string",
       "title": "Voice Call From Number",
-      "description": "Phone number to use for voice calls in E.164 format (e.g., 81345438093)",
-      "required": true
+      "description": "Phone number to use for voice calls in E.164 format (e.g., 81345438093). Required only when Enable Voice is \"true\".",
+      "required": false
     },
     "allowed_numbers": {
       "type": "string",
@@ -65,14 +89,14 @@
     "rate_limit_per_hour": {
       "type": "string",
       "title": "Rate Limit Per Hour",
-      "description": "Maximum number of SMS/voice messages per hour, per tool. Bulk sending consumes one unit per message. Set to 0 to disable.",
+      "description": "Maximum number of messages per hour, counted across SMS and voice together (not per tool). Bulk sending consumes one unit per message. Set to 0 to reject every send (0 is an emergency stop, NOT \"no limit\").",
       "required": false,
       "default": "5"
     },
     "bulk_max_rows": {
       "type": "string",
       "title": "Bulk CSV Max Rows",
-      "description": "Maximum number of rows accepted by bulk_sms_from_csv in a single call. Set to 0 for no limit.",
+      "description": "Maximum number of rows accepted by bulk_sms_from_csv in a single call. Set to 0 to reject every bulk send (0 is an emergency stop, NOT \"no limit\").",
       "required": false,
       "default": "100"
     }
