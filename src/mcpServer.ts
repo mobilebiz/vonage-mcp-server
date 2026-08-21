@@ -40,6 +40,12 @@ export function createMcpServer(hooks: McpServerHooks = {}): McpServer {
         title: tool.title,
         description: tool.description,
         inputSchema: tool.schema,
+        // 注釈を送らないと、クライアントは「破壊的かどうか不明」なツールとして
+        // 扱う。Gemini Enterprise はその場合に安全側（確認UIを出す）へ倒すが、
+        // それは基盤の既定に助けられているだけで、こちらが要求した結果では
+        // ない。送信系は destructiveHint を明示し、参照系は readOnlyHint で
+        // 不要な確認を省く（VONAGE_MCP-4）。
+        annotations: tool.annotations,
       },
       async (args: any) => {
         hooks.onCall?.(tool.name, args);

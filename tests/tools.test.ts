@@ -104,6 +104,35 @@ describe('tools registry', () => {
     });
   });
 
+  // 注釈は Gemini Enterprise などの確認UIを直接左右する。readOnlyHint を
+  // 課金対象のツールに付けると、実行前の確認が黙って省かれる（VONAGE_MCP-4）。
+  describe('ツール注釈', () => {
+    it('課金対象のツールは破壊的として宣言され、確認を省く注釈を持たない', () => {
+      for (const name of ['send_sms', 'bulk_sms_from_csv', 'make_voice_call']) {
+        const annotations = toolDefinitions.find((t) => t.name === name)!.annotations;
+        expect(annotations.readOnlyHint).toBe(false);
+        expect(annotations.destructiveHint).toBe(true);
+        // 同じ引数で2回呼べば2通送られ、2回課金される
+        expect(annotations.idempotentHint).toBe(false);
+        expect(annotations.openWorldHint).toBe(true);
+      }
+    });
+
+    it('参照系のツールは読み取り専用として宣言される', () => {
+      for (const name of ['get_sms_status', 'get_call_status']) {
+        const annotations = toolDefinitions.find((t) => t.name === name)!.annotations;
+        expect(annotations.readOnlyHint).toBe(true);
+      }
+    });
+
+    it('全ツールが注釈を持つ（付け忘れると確認UIが基盤の既定任せになる）', () => {
+      for (const tool of toolDefinitions) {
+        expect(tool.annotations, tool.name).toBeDefined();
+        expect(typeof tool.annotations.readOnlyHint, tool.name).toBe('boolean');
+      }
+    });
+  });
+
   describe('引数バリデーション', () => {
     it('未知のツールは自己修復可能なエラーを返す', async () => {
       const payload = await invoke('no_such_tool', {});

@@ -5,6 +5,7 @@
  * ツールのスキーマ・ハンドラ・ガードレールを1箇所に集約する。
  */
 
+import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { z, type ZodRawShape } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 
@@ -86,6 +87,19 @@ export interface ToolDefinition {
   schema: ZodRawShape;
   /** このツールを有効化する環境変数 */
   capability: CapabilityName;
+  /**
+   * MCP のツール注釈。**これがクライアント側の確認UIを左右する。**
+   *
+   * Gemini Enterprise は注釈が無いツールを「破壊的かもしれない」と仮定して
+   * 実行前の確認を出す。つまり現状の安全側の挙動は、こちらが要求した結果では
+   * なく基盤の既定に助けられているだけであり、既定が変われば黙って承認が
+   * 消える。破壊的なツールには destructiveHint を明示し、読み取り専用の
+   * ツールには readOnlyHint を付けて不要な確認を省く（VONAGE_MCP-4）。
+   *
+   * **注釈は仕様上ヒントであって強制ではない。** 無視するクライアントも
+   * ありうるため、ALLOWED_NUMBERS やレートリミットの代わりにはならない。
+   */
+  annotations: ToolAnnotations;
 }
 
 /** ツール定義 + ハンドラ。このモジュールの外へは出さない */
@@ -208,10 +222,43 @@ function guardMessageSegments(
   };
 }
 
+/**
+ * 課金と実世界への副作用があるツールの注釈。
+ *
+ * MCP 仕様の destructiveHint は本来「破壊的な更新」を意味し、SMS 送信は
+ * 厳密には additive（何も壊さない）とも読める。それでも true を選ぶのは、
+ * **送ってしまったものは取り消せず、課金と実在の相手への通知が確定する**
+ * ためで、注釈の実用上の役目はクライアントに確認を出させることにある。
+ * Gemini Enterprise は destructiveHint を「既定の確認挙動を維持する」印として
+ * 解釈する。
+ *
+ * idempotentHint: false — 同じ引数で2回呼べば2通送られ、2回課金される。
+ * openWorldHint: true — 電話網という外部システムに作用する。
+ */
+const SENDING_TOOL_ANNOTATIONS: ToolAnnotations = Object.freeze({
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: false,
+  openWorldHint: true,
+});
+
+/**
+ * 状態を問い合わせるだけのツールの注釈。
+ *
+ * readOnlyHint を解釈する基盤（Gemini Enterprise など）では確認UIが省かれる。
+ * 送信系と同じ確認を毎回出すのは、防いでいるものが何も無いのに摩擦だけを
+ * 増やす。
+ */
+const READ_ONLY_TOOL_ANNOTATIONS: ToolAnnotations = Object.freeze({
+  readOnlyHint: true,
+  openWorldHint: true,
+});
+
 const toolImplementations: ToolImplementation[] = [
   {
     name: 'send_sms',
     capability: 'ENABLE_SMS',
+    annotations: SENDING_TOOL_ANNOTATIONS,
     title: 'SMS送信ツール',
     description:
       'VonageのMessages APIでSMSを1件送信する。送信は課金対象のため、実行前に必ず dry_run: true で検証し、宛先と本文をユーザーに提示して承認を得ること。' +
@@ -317,6 +364,7 @@ const toolImplementations: ToolImplementation[] = [
   {
     name: 'bulk_sms_from_csv',
     capability: 'ENABLE_BULK_SMS',
+    annotations: SENDING_TOOL_ANNOTATIONS,
     title: 'CSV一括SMS送信',
     description:
       'CSV（ヘッダー: phone,from,message）から複数のSMSをまとめて送信する。無効な行はスキップされる。' +
@@ -472,6 +520,7 @@ const toolImplementations: ToolImplementation[] = [
   {
     name: 'make_voice_call',
     capability: 'ENABLE_VOICE',
+    annotations: SENDING_TOOL_ANNOTATIONS,
     title: '音声通話',
     description:
       '指定した番号へ発信し、テキストを合成音声で読み上げる。課金対象かつ相手を呼び出す行為のため、実行前に必ず dry_run: true で検証し、通話の要件と読み上げ内容をユーザーとすり合わせて承認を得ること。',
@@ -535,6 +584,7 @@ const toolImplementations: ToolImplementation[] = [
   {
     name: 'get_call_status',
     capability: 'ENABLE_VOICE',
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     title: '通話ステータス取得',
     description:
       'Vonage Voice APIで通話のステータス（completed / busy / failed など）と料金・通話時間を取得する。make_voice_call が返した call_id を指定すること。',
@@ -575,6 +625,7 @@ const toolImplementations: ToolImplementation[] = [
   {
     name: 'get_sms_status',
     capability: 'ENABLE_SMS',
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     title: 'SMS配信ステータス取得',
     description:
       'send_sms が返した message_id のSMS配信ステータス（submitted / delivered / failed など）を取得する。Vonage Messages APIはステータスをWebhookで非同期通知する仕様のため、delivered まで進むにはこのサーバーのHTTP版で Status Webhook を受信している必要がある。',
@@ -663,11 +714,19 @@ export function toolInputJsonSchema(tool: ToolDefinition): Record<string, unknow
  * 無効なツールは含めない。理由は2つで、(a) エージェントが存在しないツールを
  * 呼ぼうとして迷走しない (b) 使わないツール定義がコンテキストを食わない。
  */
-export function listTools(): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
+export function listTools(): Array<{
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  annotations: ToolAnnotations;
+}> {
   return enabledToolDefinitions().map((tool) => ({
     name: tool.name,
     description: tool.description,
     inputSchema: toolInputJsonSchema(tool),
+    // MCP の tools/list は annotations を含む。ここで落とすと、この関数を
+    // 使って自前の層を組む利用者だけが確認UIを失う。
+    annotations: tool.annotations,
   }));
 }
 

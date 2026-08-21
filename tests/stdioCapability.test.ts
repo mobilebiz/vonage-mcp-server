@@ -145,6 +145,35 @@ describe('stdio トランスポートの capability 強制', () => {
     expect(names).toEqual(['get_sms_status', 'send_sms']);
   });
 
+  // 注釈は SDK の registerTool に渡してから tools/list に載るまでに1段
+  // 挟まっている。定義側だけをユニットテストで確認しても、SDK が落として
+  // いれば確認UIは出ない。実際にワイヤーへ出ることを確かめる（VONAGE_MCP-4）。
+  it('tools/list の応答にツール注釈が載る', async () => {
+    const { responses } = await talkToServer(
+      { ...baseEnv, ENABLE_SMS: 'true', ENABLE_VOICE: 'true' },
+      [...handshake, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }]
+    );
+
+    const tools: any[] = responses.find((r) => r.id === 2)!.result.tools;
+    const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
+
+    // 送信系: 確認UIを持つ基盤に対して、こちらから確認を要求する
+    for (const name of ['send_sms', 'make_voice_call']) {
+      expect(byName[name].annotations).toMatchObject({
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      });
+    }
+
+    // 参照系: 確認UIを省いてよい
+    for (const name of ['get_sms_status', 'get_call_status']) {
+      expect(byName[name].annotations).toMatchObject({ readOnlyHint: true });
+      expect(byName[name].annotations.destructiveHint).toBeUndefined();
+    }
+  });
+
   it('全 OFF（既定）ならツールが1つも公開されない', async () => {
     const { responses } = await talkToServer({ ...baseEnv }, [
       ...handshake,
