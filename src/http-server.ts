@@ -9,6 +9,7 @@ import { ingestStatusWebhook } from './messageStatusStore.js';
 import { authenticateWebhook, isWebhookAuthConfigured, safeEqual } from './webhookAuth.js';
 import {
   applyStartupConfig,
+  getMaxRequestBodyBytes,
   extractHostname,
   getAllowedHostnames,
   getAllowedOrigins,
@@ -56,8 +57,13 @@ app.use((req, res, next) => {
   cors({ origin: origins, credentials: false })(req, res, next);
 });
 // Webhookの署名検証（payload_hash）に生のボディが必要なため、パース時に保持しておく
+//
+// 上限は express.json() の既定（100KB）ではなく、現在の BULK_MAX_ROWS から
+// 算出する。既定の100行でも、日本語の本文が並べば100KBを超えてしまい、stdio
+// では通る CSV が HTTP でだけ 413 になる（VONAGE_MCP-4）。
 app.use(
   express.json({
+    limit: getMaxRequestBodyBytes(),
     verify: (req, _res, buf) => {
       (req as express.Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf);
     },

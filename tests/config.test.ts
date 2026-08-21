@@ -22,6 +22,8 @@ import {
   parseBooleanEnv,
   parseIntegerEnv,
   validateStartupConfig,
+  getMaxRequestBodyBytes,
+  MIN_REQUEST_BODY_BYTES,
 } from '../src/config.js';
 
 /** このモジュールが読む環境変数（テストごとに完全にクリアする） */
@@ -290,6 +292,46 @@ describe('config', () => {
       expect(warnings).toContain('すべての機能が無効です');
     });
 
+    // 鍵は送信のたびに読まれる。起動時に確かめないと、パスの誤記でも起動でき、
+    // 各呼び出しは**レート枠を消費してから**失敗する（VONAGE_MCP-4）
+    it('capability が有効で秘密鍵を読めなければ起動エラー', () => {
+      process.env.ENABLE_SMS = 'true';
+      process.env.VONAGE_APPLICATION_ID = 'app-id';
+      process.env.VONAGE_PRIVATE_KEY_PATH = './does-not-exist.key';
+
+      expect(() => validateStartupConfig()).toThrow(/秘密鍵を読み取れません/);
+    });
+
+    it('capability が全 OFF なら秘密鍵の有無は問わない', () => {
+      process.env.VONAGE_PRIVATE_KEY_PATH = './does-not-exist.key';
+
+      expect(() => validateStartupConfig()).not.toThrow();
+    });
+
+    // 共有シークレットの webhook エンドポイントは公開されていて試行制限も無い
+    it('VONAGE_WEBHOOK_SECRET が短く、実際に使われる構成なら起動エラー', () => {
+      process.env.VONAGE_WEBHOOK_SECRET = 'x';
+
+      expect(() => validateStartupConfig()).toThrow(/VONAGE_WEBHOOK_SECRET/);
+    });
+
+    it('署名検証が優先される構成なら、短い共有シークレットは警告に留める', () => {
+      process.env.VONAGE_WEBHOOK_SECRET = 'x';
+      process.env.VONAGE_API_SIGNATURE_SECRET = 'signature-secret';
+
+      const warnings = validateStartupConfig().join('\n');
+      expect(warnings).toContain('VONAGE_WEBHOOK_SECRET');
+      expect(warnings).toContain('署名シークレットを外すと');
+    });
+
+    it('十分な長さの共有シークレットは問題にならない', () => {
+      process.env.VONAGE_WEBHOOK_SECRET = 'a'.repeat(16);
+
+      const warnings = validateStartupConfig().join('\n');
+      expect(() => validateStartupConfig()).not.toThrow();
+      expect(warnings).not.toContain('VONAGE_WEBHOOK_SECRET');
+    });
+
     it('capability を1つでも有効にすれば全 OFF 警告は出ない', () => {
       process.env.ENABLE_SMS = 'true';
       process.env.VONAGE_APPLICATION_ID = 'app-id';
@@ -350,5 +392,40 @@ describe('config', () => {
         delete process.env[name];
       }
     });
+  });
+});
+
+// express.json() の既定 100KB は BULK_MAX_ROWS の既定値 100 でも足りない。
+// 日本語の本文は3バイト/文字なので、660文字の行が100本並ぶと200KBを超え、
+// stdio では通る CSV が HTTP でだけ 413 になる（VONAGE_MCP-4）
+describe('getMaxRequestBodyBytes', () => {
+  const originalEnv = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it('既定の BULK_MAX_ROWS で、想定される最大のCSVが収まる', () => {
+    // 660文字の日本語 = 1980バイト。100行で約198KB
+    const worstCaseCsvBytes = 100 * 660 * 3;
+
+    expect(getMaxRequestBodyBytes()).toBeGreaterThan(worstCaseCsvBytes);
+  });
+
+  it('express.json() の既定 100KB より大きい', () => {
+    expect(getMaxRequestBodyBytes()).toBeGreaterThan(100 * 1024);
+  });
+
+  it('BULK_MAX_ROWS を増やせば上限も増える', () => {
+    const atDefault = getMaxRequestBodyBytes();
+    process.env.BULK_MAX_ROWS = '1000';
+
+    expect(getMaxRequestBodyBytes()).toBeGreaterThan(atDefault);
+  });
+
+  it('BULK_MAX_ROWS=0（bulk 停止）でも他のツールが使える下限は残る', () => {
+    process.env.BULK_MAX_ROWS = '0';
+
+    expect(getMaxRequestBodyBytes()).toBe(MIN_REQUEST_BODY_BYTES);
   });
 });

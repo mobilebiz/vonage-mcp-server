@@ -10,7 +10,10 @@
  *   - 緊急停止のつもりの `RATE_LIMIT_PER_HOUR=0` が「無制限」に解釈される
  */
 
+import { accessSync, constants } from 'fs';
+
 import { isAssignedCallingCode } from './callingCodes.js';
+import { JP_MAX_CONCATENATED_CHARS } from './smsSegments.js';
 
 /** 設定エラー。1度の起動で見つかった問題をまとめて報告する */
 export class ConfigError extends Error {
@@ -78,6 +81,22 @@ export const MAX_SMS_MAX_SEGMENTS = 10;
  * 短い共有シークレットは総当たりで破られるため、設定の時点で弾く。
  */
 export const MIN_MCP_AUTH_TOKEN_LENGTH = 16;
+
+/**
+ * VONAGE_WEBHOOK_SECRET に要求する最小の長さ。
+ *
+ * 共有シークレット方式の webhook エンドポイントは公開されていて試行回数の
+ * 制限も無いため、短い値はオンライン総当たりで割れる。割られると配信結果を
+ * 偽装できる。MCP_AUTH_TOKEN と同じ基準を課す（VONAGE_MCP-4）。
+ */
+export const MIN_WEBHOOK_SECRET_LENGTH = 16;
+
+/**
+ * HTTP のリクエストボディに常に許すサイズ（バイト）。
+ *
+ * bulk を無効にしていても、他のツールの引数や JSON-RPC の枠でこの程度は要る。
+ */
+export const MIN_REQUEST_BODY_BYTES = 1024 * 1024;
 
 /** ループバックとみなすホスト */
 const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['127.0.0.1', '::1', 'localhost']);
@@ -243,6 +262,27 @@ export function getSmsMaxSegments(): number {
     max: MAX_SMS_MAX_SEGMENTS,
     defaultValue: DEFAULT_SMS_MAX_SEGMENTS,
   });
+}
+
+/**
+ * HTTP のリクエストボディに許す最大サイズ（バイト）を、現在の設定から求める。
+ *
+ * express.json() の既定は 100KB で、これは `BULK_MAX_ROWS` の既定値 100 でも
+ * 足りない。日本語の本文は1文字3バイトなので、660文字の行が並ぶと 100 行で
+ * 200KB を超える。上限を上げずに放置すると、stdio では通る CSV が HTTP でだけ
+ * 413 で弾かれ、**トランスポートによって挙動が変わる**（VONAGE_MCP-4）。
+ *
+ * 逆に無制限にすると、認証済みの相手とはいえメモリを好きなだけ使わせられる。
+ * そこで「設定上ありうる最大の入力」から算出する。
+ */
+export function getMaxRequestBodyBytes(): number {
+  // 1行の最悪ケース: 本文（UTF-8で最大3バイト/文字）+ 宛先 + 送信者ID + 区切り
+  const worstCaseBytesPerRow = JP_MAX_CONCATENATED_CHARS * 3 + 128;
+  // CSV 以外のリクエスト（JSON-RPC の枠、他ツールの引数）に使う余裕
+  const overheadBytes = 64 * 1024;
+  const rows = getBulkMaxRows();
+
+  return Math.max(MIN_REQUEST_BODY_BYTES, rows * worstCaseBytesPerRow + overheadBytes);
 }
 
 /**
@@ -576,12 +616,48 @@ export function validateStartupConfig(): string[] {
         'VONAGE_PRIVATE_KEY_PATH が未設定のため既定値 ./private.key を使用します。意図した鍵か確認してください。'
       );
     }
+
+    // 鍵は送信のたびに readFileSync される（vonage.ts / voiceCall.ts）。存在を
+    // 起動時に確かめないと、パスの誤記やマウント漏れでも起動でき、各呼び出しは
+    // **レート枠を消費してから**鍵の読み込みで失敗する。bulk では1件も送らずに
+    // 大量の枠を失う。
+    const privateKeyPath = process.env.VONAGE_PRIVATE_KEY_PATH?.trim() || './private.key';
+    try {
+      accessSync(privateKeyPath, constants.R_OK);
+    } catch {
+      problems.push(
+        `VONAGE_PRIVATE_KEY_PATH の秘密鍵を読み取れません（${privateKeyPath}）。` +
+          `${enabled.join(' / ')} を有効にする場合、このファイルが存在して読み取り可能である必要があります。` +
+          'パスはプロセスの作業ディレクトリから解決されます。'
+      );
+    }
   }
 
   if (capabilities?.ENABLE_VOICE && isBlank(process.env.VONAGE_VOICE_FROM)) {
     problems.push(
       'ENABLE_VOICE=true ですが VONAGE_VOICE_FROM が未設定です。発信元番号が無いと make_voice_call は必ず失敗します。'
     );
+  }
+
+  // 共有シークレット方式は VONAGE_API_SIGNATURE_SECRET が未設定のときだけ使わ
+  // れる（ダウングレードを防ぐためフォールバックしない）。実際に使われる構成
+  // でだけ起動を止め、使われないなら警告に留める。
+  const sharedSecret = process.env.VONAGE_WEBHOOK_SECRET?.trim();
+  if (sharedSecret && sharedSecret.length < MIN_WEBHOOK_SECRET_LENGTH) {
+    const message =
+      `VONAGE_WEBHOOK_SECRET が短すぎます（${sharedSecret.length}文字）。` +
+      `${MIN_WEBHOOK_SECRET_LENGTH}文字以上のランダムな文字列を指定してください` +
+      '（例: openssl rand -hex 32）。';
+    if (isBlank(process.env.VONAGE_API_SIGNATURE_SECRET)) {
+      problems.push(
+        `${message}この値は webhook 認証に実際に使われており、破られると配信結果を偽装されます。`
+      );
+    } else {
+      warnings.push(
+        `${message}現在は VONAGE_API_SIGNATURE_SECRET による署名検証が優先されるため使われていませんが、` +
+          '署名シークレットを外すとこの弱い値が有効になります。'
+      );
+    }
   }
 
   // 外部インターフェースに bind するなら認証は必須。ここを警告で済ませると、
