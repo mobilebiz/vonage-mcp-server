@@ -245,12 +245,12 @@ Security issues: **do not open a public issue.** See [SECURITY.md](SECURITY.md).
 ## Vonage accounts
 
 You need your own Vonage application. Sign up at
-[developer.vonage.com](https://developer.vonage.com/).
+[developer.vonage.com](https://developer.vonage.com/sign-up).
 
-Customers in Japan may prefer to go through
-[Global Internet Japan, Inc.](https://www.gij.com/), a Vonage reseller offering
-Japanese-language support and local billing. **This server works identically
-either way.**
+Customers in Japan can sign up through a
+[Japanese-language application page](https://kwcplus.kddi-web.com/application/vonage)
+offering local support and billing. **This server works identically either
+way** — no signup route is required or enforced.
 
 ## License
 

@@ -73,7 +73,8 @@ npm install
 ### Vonage設定
 
 1. **Vonageアカウントの作成**
-   - [Vonage Developer Portal](https://developer.vonage.com/) でアカウントを作成
+   - 日本国内でご利用の場合は [日本語での申し込みページ](https://kwcplus.kddi-web.com/application/vonage) から作成できます（[詳細](#vonage-アカウントについて)）
+   - 海外の場合は [Vonage Developer Portal](https://developer.vonage.com/sign-up) から作成します
    - アプリケーションを作成し、Application IDを取得
 
 2. **秘密鍵の準備**
@@ -976,10 +977,11 @@ AIエージェントに設定すべき System Instruction（承認フロー、`d
 
 このサーバーを使うには Vonage の Application ID と秘密鍵が必要です。
 
-<!-- TODO(VONAGE_MCP-5): 自社の申込導線 URL に差し替える。計測可能な URL にすること -->
-**日本国内でご利用の場合**、[グローバル・インターネット・ジャパン株式会社](https://www.gij.com/) 経由でのお申し込みをご検討ください。日本語でのサポートと請求に対応しています。
+**日本国内でご利用の場合**は、[日本語での申し込みページ](https://kwcplus.kddi-web.com/application/vonage) からのお申し込みをご検討ください。日本語でのサポートと請求に対応しています。
 
-Vonage 本体から直接開設することもできます（[developer.vonage.com](https://developer.vonage.com/)）。**このサーバーはどちらの経路で開設したアカウントでも同じように動作します。**
+海外からご利用の場合は [Vonage Developer Portal](https://developer.vonage.com/sign-up) から直接開設してください。
+
+**このサーバーはどちらの経路で開設したアカウントでも同じように動作します。** 特定の経路を強制することはありません。
 
 ## 提供元
 
