@@ -34,7 +34,16 @@ export function createMcpServer(hooks: McpServerHooks = {}): McpServer {
   const tools = enabledToolDefinitions();
 
   for (const tool of tools) {
-    server.registerTool(
+    // SDK 1.30 の registerTool はジェネリクスの展開が深く、ツールの shape を
+    // そのまま渡すと TS2589 で落ちる。**実行時の登録内容は変わらない**ので、
+    // 呼び出し口で型の展開だけを止める。
+    const register = server.registerTool.bind(server) as (
+      name: string,
+      config: Record<string, unknown>,
+      handler: (args: any) => Promise<unknown>
+    ) => unknown;
+
+    register(
       tool.name,
       {
         title: tool.title,

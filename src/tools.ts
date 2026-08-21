@@ -705,7 +705,19 @@ function disabledToolOutcome(tool: ToolDefinition): ToolOutcome {
 
 /** ツールのJSON Schema（MCPの inputSchema 形式）を生成する */
 export function toolInputJsonSchema(tool: ToolDefinition): Record<string, unknown> {
-  const schema = zodToJsonSchema(z.object(tool.schema), { $refStrategy: 'none' }) as Record<string, unknown>;
+  // zod-to-json-schema 3.25 系はジェネリクスの展開が深く、ツールの shape を
+  // 渡すと TS2589（型の展開が深すぎる）でコンパイルが落ちる。3.24 系では
+  // 通っていた。**実行時の挙動と生成される JSON Schema は変わらない**ので、
+  // 呼び出し口で型の展開だけを止める。
+  //
+  // ここを直さないと build が失敗し、tests/stdioCapability.test.ts の
+  // beforeAll が投げてスイートごとスキップされる（＝capability 強制の
+  // E2E 検証が黙って止まる）。
+  const toJsonSchema = zodToJsonSchema as (
+    schema: unknown,
+    options?: unknown
+  ) => Record<string, unknown>;
+  const schema = toJsonSchema(z.object(tool.schema), { $refStrategy: 'none' });
   delete schema.$schema;
   return schema;
 }

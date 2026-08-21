@@ -250,11 +250,16 @@ describe('HTTP MCP Wrapper', () => {
     // スキーマ違反は SDK が inputSchema で弾くため、ハンドラに届く前に
     // JSON-RPC エラーになる。エラーメッセージにはスキーマに書いた
     // 日本語の説明がそのまま入る。
-    it('スキーマに反する電話番号は送信せず JSON-RPC エラーになる', async () => {
+    // SDK 1.26 以降、スキーマ違反は JSON-RPC の error ではなく
+    // isError: true の result として返る。**ハンドラに届かない点は変わらない**
+    // ので、送信されないことが本質。エージェントにとっては、プロトコル
+    // エラーよりツール結果のほうが自己修復しやすい
+    it('スキーマに反する電話番号は送信せずエラーとして返る', async () => {
       const res = await callTool('send_sms', { to: 'invalid', message: 'Hello' });
 
-      expect(res.body.error.code).toBe(-32602);
-      expect(res.body.error.message).toContain('E.164');
+      expect(res.body.result.isError).toBe(true);
+      // スキーマに書いた説明文がそのまま届くので、エージェントは直し方が分かる
+      expect(res.body.result.content[0].text).toContain('E.164');
       expect(mockSendSMS).not.toHaveBeenCalled();
     });
 
@@ -318,7 +323,10 @@ describe('HTTP MCP Wrapper', () => {
 
       const res = await callTool('make_voice_call', { to: '09012345678', message: 'テスト' });
 
-      expect(res.body.error).toBeTruthy();
+      // 登録されていないので「存在しないツール」として拒否される（D-8）。
+      // 肝心なのは、Vonage に到達しないこと
+      expect(res.body.result.isError).toBe(true);
+      expect(res.body.result.content[0].text).toContain('make_voice_call');
       expect(mockMakeVoiceCall).not.toHaveBeenCalled();
     });
   });
@@ -489,11 +497,11 @@ describe('HTTP MCP Wrapper', () => {
       expect(resultPayload(res)).toMatchObject({ status: 'success' });
     });
 
-    it('tools/call は未知のツールで JSON-RPC エラーを返す', async () => {
+    it('tools/call は未知のツールをエラーとして返す', async () => {
       const res = await callTool('nope', {});
 
-      expect(res.body.error).toBeTruthy();
-      expect(res.body.error.message).toContain('nope');
+      expect(res.body.result.isError).toBe(true);
+      expect(res.body.result.content[0].text).toContain('nope');
     });
 
     it('未知のメソッドは JSON-RPC のエラーを返す', async () => {
