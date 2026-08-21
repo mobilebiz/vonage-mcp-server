@@ -14,7 +14,8 @@
     "test": "vitest --run",
     "test:watch": "vitest --watch",
     "test:coverage": "vitest --coverage --run",
-    "build:mcpb": "sh scripts/build-mcpb.sh"
+    "build:mcpb": "sh scripts/build-mcpb.sh",
+    "build:docs": "sh scripts/build-docs.sh"
   },
   "keywords": [
     "mcp",
