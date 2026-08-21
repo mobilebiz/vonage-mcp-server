@@ -477,6 +477,64 @@ describe('guardrails', () => {
     });
   });
 
+  // retry_after は「最古の1件」ではなく「あと何件空けば足りるか」で決まる。
+  // 誤ると、エージェントは案内された時刻に再試行してまた弾かれる（VONAGE_MCP-4）。
+  describe('cost > 1 のときの retryAfterSeconds', () => {
+    it('要求が上限そのものを超えるなら、待機ではなく分割を案内する', () => {
+      const limiter = new RateLimiter(60_000);
+
+      // 上限5・使用0件。枠が全部空いていても10件は通らない
+      const result = limiter.check('bulk_sms_from_csv', 5, 1_000_000, 10);
+
+      expect(result.allowed).toBe(false);
+      expect(result.unsatisfiable).toBe(true);
+      expect(result.retryAfterSeconds).toBeUndefined();
+    });
+
+    it('必要な件数が解放される時刻を返す（最古の1件ではない）', () => {
+      const limiter = new RateLimiter(60_000);
+      const start = 1_000_000;
+
+      // 5件を10秒ずつずらして消費する
+      for (let i = 0; i < 5; i++) {
+        limiter.consume('send_sms', 5, start + i * 10_000);
+      }
+
+      // 現在時刻は最後の消費と同じ。残り0件のところへ3件を要求する
+      const now = start + 40_000;
+      const result = limiter.check('send_sms', 5, now, 3);
+
+      expect(result.allowed).toBe(false);
+      expect(result.unsatisfiable).toBeUndefined();
+      // 3件目（start+20_000 に消費）が失効するのは start+80_000 = now+40秒。
+      // 最古の1件（start）で答えると now+20秒となり、そこで再試行すると
+      // 1件しか空いておらず再び弾かれる
+      expect(result.retryAfterSeconds).toBe(40);
+    });
+
+    it('分割すれば通る場合は待機時間を案内する', () => {
+      const limiter = new RateLimiter(60_000);
+      const result = limiter.check('bulk_sms_from_csv', 5, 1_000_000, 5);
+
+      // 使用0件・上限5なのでちょうど通る
+      expect(result.allowed).toBe(true);
+    });
+
+    it('上限超過のエラー文面は待機を促さない', () => {
+      const error = buildRateLimitError(
+        'bulk_sms_from_csv',
+        { allowed: false, limit: 5, remaining: 5, unsatisfiable: true },
+        10,
+        'global'
+      );
+
+      expect(error.retry_after_seconds).toBe(0);
+      expect(error.suggestion).toContain('待っても解決しません');
+      expect(error.suggestion).toContain('5行以下');
+      expect(error.suggestion).not.toContain('待ってから再試行');
+    });
+  });
+
   describe('RATE_LIMIT_PER_HOUR=0（全拒否）', () => {
     it('1件目から拒否され、retryAfterSeconds を返さない', () => {
       const limiter = new RateLimiter(60_000);

@@ -464,6 +464,13 @@ export interface RateLimitResult {
   remaining: number;
   /** 上限に達している場合、次に呼び出せるようになるまでの秒数 */
   retryAfterSeconds?: number;
+  /**
+   * 要求件数が上限そのものを超えていて、**待っても永久に通らない**場合に true。
+   *
+   * `limit === 0`（全拒否）と同じく、待機を促すと誤誘導になる。呼び出し側は
+   * 分割を案内すること。
+   */
+  unsatisfiable?: boolean;
 }
 
 /**
@@ -504,12 +511,23 @@ export class RateLimiter {
     const timestamps = this.prune(key, now);
     const remaining = Math.max(0, limit - timestamps.length);
 
+    // 要求が上限そのものを超えていたら、枠が全部空いても通らない。待機を
+    // 案内すると、エージェントは待っては失敗するのを繰り返す。
+    if (cost > limit) {
+      return { allowed: false, limit, remaining, unsatisfiable: true };
+    }
+
     if (cost > remaining) {
-      // 空きが無いときは最古のエントリが期限切れになるまでの秒数を返す
-      const retryAfterSeconds =
-        timestamps.length > 0
-          ? Math.max(1, Math.ceil((this.windowMs - (now - Math.min(...timestamps))) / 1000))
-          : 1;
+      // 何秒待てば通るかは「最古の1件」ではなく「あと何件空けば足りるか」で
+      // 決まる。cost 件必要なら (cost - remaining) 件目が失効する時刻まで
+      // 待つ必要がある。最古の1件で答えると、その時刻に再試行してまた弾かれる。
+      const needed = cost - remaining;
+      const sorted = [...timestamps].sort((a, b) => a - b);
+      const freeingAt = sorted[needed - 1];
+      const retryAfterSeconds = Math.max(
+        1,
+        Math.ceil((this.windowMs - (now - freeingAt)) / 1000)
+      );
       return { allowed: false, limit, remaining, retryAfterSeconds };
     }
 
@@ -600,6 +618,21 @@ export function buildRateLimitError(
         `再試行しても結果は変わりません。利用を再開するには、管理者に ${envVar} の設定変更を依頼してください。`,
       retry_after_seconds: 0,
       remaining: 0,
+    };
+  }
+
+  // 上限そのものを超える要求は、待っても通らない。limit === 0 と同じ理由で
+  // 待機を案内しない。
+  if (result.unsatisfiable) {
+    return {
+      reason:
+        `${toolName} は${cost}件の送信を要求しましたが、${envVar} の上限が1時間あたり${result.limit}件です。` +
+        `枠が全部空いても1回では通りません。1件も送信していません。`,
+      suggestion:
+        `待っても解決しません。CSVを${result.limit}行以下に分割して、1時間あたり${result.limit}件を超えないように送信してください。` +
+        `まとめて送る必要がある場合は、管理者に ${envVar} の引き上げを依頼してください。`,
+      retry_after_seconds: 0,
+      remaining: result.remaining,
     };
   }
 
