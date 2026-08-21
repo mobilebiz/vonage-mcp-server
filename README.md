@@ -39,6 +39,33 @@ SMS 送信と音声通話は**取り消せず、課金が発生し、相手に�
 >
 > Cloud Run なら `--max-instances=1` を指定してください。外部ストア対応は現時点のスコープ外です。
 
+## 対応プラットフォーム
+
+本サーバーは MCP 仕様に準拠した **stdio** と **Streamable HTTP** の2形態を実装しており、プラットフォーム固有の分岐は持ちません。以下は各基盤の**公開ドキュメントに基づく**対応状況です。
+
+凡例: ✅ 実機で確認済み / 📄 ドキュメント上は対応（未検証）/ ⚠️ 制約あり
+
+| プラットフォーム | 接続方法 | 送れる認証 | ツール実行前の承認 | 状態 |
+| --- | --- | --- | --- | --- |
+| [Claude Desktop（ローカル）](#claude-desktopでの利用) | stdio / MCPB | 不要 | あり | 📄 |
+| [Claude Code](https://code.claude.com/docs/en/mcp) | stdio / HTTP | `--header` で Bearer | あり | 📄 |
+| [Claude.ai / Desktop（リモート）](https://claude.com/docs/connectors/building/authentication) | Streamable HTTP | OAuth、または静的ヘッダ（beta・組織管理者が設定） | あり | 📄 |
+| [Gemini Enterprise（コネクタ）](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server) | Streamable HTTP | **OAuth 2.0 か「認証なし」のみ** | あり（既定で必ず出る） | ⚠️ |
+| [Gemini Enterprise（ADK で自作）](https://google.github.io/adk-docs/tools-custom/mcp-tools/) | Streamable HTTP | 任意ヘッダで Bearer | 自前実装 | 📄 |
+| [AWS Bedrock AgentCore Gateway](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-target-MCPservers.html) | Streamable HTTP | OAuth / IAM SigV4 / API キー | ゲートウェイには無い | 📄 |
+| [Dify](https://docs.dify.ai/en/cloud/use-dify/build/mcp) | HTTP | 任意ヘッダで Bearer、または OAuth | Human Input ノードを置けば可 | 📄 |
+| [n8n（MCP Client Tool）](https://docs.n8n.io/integrations/builtin/cluster-nodes/sub-nodes/n8n-nodes-langchain.toolmcp/) | HTTP Streamable / stdio | Bearer / 任意ヘッダ / OAuth2 | AI Agent ノードで有効化すれば可 | 📄 |
+
+> [!NOTE]
+> 「📄」は**まだ実機で確認していない**という意味です。各基盤のドキュメント上は接続できるはずですが、動作報告をいただけると助かります。
+
+### ツール実行前の承認について
+
+`send_sms` / `make_voice_call` / `bulk_sms_from_csv` には、MCP のツール注釈で `destructiveHint: true` を付けています。これを解釈する基盤（Gemini Enterprise など）では、実行前に確認が表示されます。`get_sms_status` / `get_call_status` は `readOnlyHint: true` なので確認は省かれます。
+
+> [!WARNING]
+> **注釈は仕様上ヒントであり、強制ではありません。** 無視する基盤もあり、「常に許可」を選べる基盤もあります。上の表で承認が「無い」基盤を使う場合は、[`ALLOWED_NUMBERS` と `RATE_LIMIT_PER_HOUR`](#安全機能guardrailsの環境変数) を必ず設定してください。**承認UIもプロンプトも、実効的な防御にはなりません。**
+
 ## インストール方法
 
 ### 方法1: MCPB Bundle（推奨 - ワンクリックインストール）
@@ -943,7 +970,37 @@ curl -X POST http://localhost:3000/webhooks/message-status \
 
 AIエージェントに設定すべき System Instruction（承認フロー、`dry_run` の使い方、エラー対処方針）を [`docs/gemini_system_instruction.md`](docs/gemini_system_instruction.md) にまとめています。そのまま貼り付けられる形式です。
 
-あわせて、サーバー側で [`ALLOWED_NUMBERS` と `RATE_LIMIT_PER_HOUR`](#安全機能guardrailsの環境変数) を設定することを強く推奨します。
+あわせて、サーバー側で [`ALLOWED_NUMBERS` と `RATE_LIMIT_PER_HOUR`](#安全機能guardrailsの環境変数) を設定することを強く推奨します。**System Instruction はプロンプトインジェクションで破られる前提で読んでください。** 実効的な防御はサーバー側の設定だけです。
+
+### ⚠️ Gemini Enterprise のカスタム MCP サーバーコネクタを使う場合
+
+[公式ドキュメント](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server)によれば、このコネクタが送れる認証は **「認証なし」と「OAuth 2.0」の2つだけ**で、任意のヘッダを設定する欄がありません。つまり **`MCP_AUTH_TOKEN` はこの経路では使えません。**
+
+かつコネクタは、MCP サーバーが**公開インターネット上の HTTPS エンドポイントで到達可能**であることを要求します。
+
+> [!CAUTION]
+> ここで「認証なし」を選ぶと、**課金を発生させられるサーバーが無認証で全世界に公開されます。** 選ばないでください。
+
+取りうる構成は次の2つです。
+
+**構成A: 上流で OAuth 2.0 を終端する**
+
+API Gateway や Identity-Aware Proxy をこのサーバーの手前に置いて OAuth 2.0 を処理し、本サーバーには `TRUST_UPSTREAM_AUTH=true` を設定します。認証の実装をこのサーバーから切り離せるうえ、監査ログもプラットフォーム側の仕組みに乗せられます。詳しくは[推奨構成: 認証は手前の層に置く](#推奨構成-認証は手前の層に置く)を参照してください。
+
+**構成B: ADK でエージェントを書く**
+
+コネクタを使わず、[Agent Development Kit](https://google.github.io/adk-docs/tools-custom/mcp-tools/) の `McpToolset` から `StreamableHTTPConnectionParams` で接続します。任意のヘッダを送れるので `MCP_AUTH_TOKEN` がそのまま使えます。ただし**ツール実行前の承認UIは自分で実装する必要があります**（コネクタ経由なら既定で表示されます）。
+
+```python
+from google.adk.tools.mcp_tool import McpToolset, StreamableHTTPConnectionParams
+
+toolset = McpToolset(
+    connection_params=StreamableHTTPConnectionParams(
+        url="https://your-server.example.com/mcp",
+        headers={"Authorization": f"Bearer {MCP_AUTH_TOKEN}"},
+    )
+)
+```
 
 ## プロジェクト構造（続き）
 

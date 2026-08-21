@@ -89,6 +89,61 @@ Every billable tool takes `dry_run`. Call it first: it runs the full validation
 path, reports what would happen — including the **estimated segment count** for
 SMS and the **enforced maximum duration** for calls — and consumes no quota.
 
+### Tool annotations
+
+`send_sms`, `make_voice_call` and `bulk_sms_from_csv` are annotated
+`destructiveHint: true`; `get_sms_status` and `get_call_status` are annotated
+`readOnlyHint: true`. Platforms that honour these annotations (Gemini Enterprise,
+for one) prompt the user before running a billable tool and skip the prompt for
+the read-only ones.
+
+**Annotations are hints, not enforcement.** A client may ignore them, and users
+can often choose "always allow". If your platform does not prompt, set
+`ALLOWED_NUMBERS` and `RATE_LIMIT_PER_HOUR` — those are the only effective
+defences.
+
+---
+
+## Platform support
+
+The server implements MCP's **stdio** and **Streamable HTTP** transports with no
+platform-specific branches. The table below reflects each platform's **public
+documentation**.
+
+Legend: ✅ verified on real hardware / 📄 documented as supported (not yet verified) / ⚠️ constrained
+
+| Platform | Transport | Authentication it can send | Approval before a tool runs | Status |
+| --- | --- | --- | --- | --- |
+| [Claude Desktop (local)](https://support.claude.com/en/articles/11175166-about-custom-connectors-via-remote-mcp) | stdio / MCPB | not needed | yes | 📄 |
+| [Claude Code](https://code.claude.com/docs/en/mcp) | stdio / HTTP | Bearer via `--header` | yes | 📄 |
+| [Claude.ai / Desktop (remote)](https://claude.com/docs/connectors/building/authentication) | Streamable HTTP | OAuth, or static headers (beta, set by an org admin) | yes | 📄 |
+| [Gemini Enterprise (connector)](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server) | Streamable HTTP | **OAuth 2.0 or "no authentication" only** | yes, by default | ⚠️ |
+| [Gemini Enterprise (your own ADK agent)](https://google.github.io/adk-docs/tools-custom/mcp-tools/) | Streamable HTTP | Bearer via arbitrary headers | you build it | 📄 |
+| [AWS Bedrock AgentCore Gateway](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-target-MCPservers.html) | Streamable HTTP | OAuth / IAM SigV4 / API key | none at the gateway | 📄 |
+| [Dify](https://docs.dify.ai/en/cloud/use-dify/build/mcp) | HTTP | Bearer via arbitrary headers, or OAuth | only if you add a Human Input node | 📄 |
+| [n8n (MCP Client Tool)](https://docs.n8n.io/integrations/builtin/cluster-nodes/sub-nodes/n8n-nodes-langchain.toolmcp/) | HTTP Streamable / stdio | Bearer / arbitrary headers / OAuth2 | only if enabled on the AI Agent node | 📄 |
+
+📄 means **we have not tried it yet**. The documentation says it should connect;
+reports either way are welcome.
+
+### ⚠️ Gemini Enterprise custom MCP server connector
+
+Per [Google's documentation](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server),
+this connector can send **only "no authentication" or OAuth 2.0** — there is no
+field for arbitrary headers. **`MCP_AUTH_TOKEN` cannot be used on this path.**
+The connector also requires the server to be reachable at a public HTTPS
+endpoint.
+
+Choosing "no authentication" therefore **exposes a server that can spend your
+money to the entire internet. Do not do it.** Two workable setups:
+
+1. **Terminate OAuth 2.0 upstream** — put an API gateway or Identity-Aware Proxy
+   in front and set `TRUST_UPSTREAM_AUTH=true` on this server.
+2. **Write an ADK agent instead of using the connector** — `McpToolset` with
+   `StreamableHTTPConnectionParams` can send arbitrary headers, so
+   `MCP_AUTH_TOKEN` works as-is. You then have to build the approval step
+   yourself.
+
 ---
 
 ## Configuration
