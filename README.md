@@ -985,7 +985,7 @@ AIエージェントに設定すべき System Instruction（承認フロー、`d
 
 ## 提供元
 
-このプロジェクトは [グローバル・インターネット・ジャパン株式会社](https://www.gij.com/) が Vonage のリセラーとして開発・公開しています。
+このプロジェクトは **株式会社KDDIウェブコミュニケーションズ** が Vonage のリセラーとして開発・公開しています。
 
 私たちは**このサーバーをサービスとして運営していません。** OSS のリファレンス実装として提供しており、利用者の資格情報を預かることはありません。
 
@@ -993,7 +993,7 @@ AIエージェントに設定すべき System Instruction（承認フロー、`d
 
 [Apache License 2.0](LICENSE)
 
-Copyright 2026 Global Internet Japan, Inc.
+Copyright 2026 KDDI Web Communications Inc.
 
 ## 関連ドキュメント
 

@@ -256,7 +256,7 @@ way** — no signup route is required or enforced.
 
 [Apache License 2.0](LICENSE)
 
-Copyright 2026 Global Internet Japan, Inc.
+Copyright 2026 KDDI Web Communications Inc.
 
-Maintained by [Global Internet Japan, Inc.](https://www.gij.com/) as a Vonage
-reseller. We do **not** operate this as a hosted service.
+Maintained by **KDDI Web Communications Inc.** as a Vonage reseller. We do
+**not** operate this as a hosted service.
