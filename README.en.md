@@ -117,6 +117,7 @@ Legend: ✅ verified on real hardware / 📄 documented as supported (not yet ve
 | --- | --- | --- | --- | --- |
 | [Claude Desktop (local)](https://support.claude.com/en/articles/11175166-about-custom-connectors-via-remote-mcp) | stdio / MCPB | not needed | **yes, including read-only tools** | ✅ |
 | [Claude Code](https://code.claude.com/docs/en/mcp) | stdio / HTTP | Bearer via `--header` | yes | 📄 |
+| **Streamable HTTP in general** (Cloud Run, etc.) | Streamable HTTP | Bearer / upstream IAM | depends on the client | ✅ |
 | [Claude.ai / Desktop (remote)](https://claude.com/docs/connectors/building/authentication) | Streamable HTTP | OAuth, or static headers (beta, set by an org admin) | yes | 📄 |
 | [Gemini Enterprise (connector)](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server) | Streamable HTTP | **OAuth 2.0 or "no authentication" only** | yes, by default | ⚠️ |
 | [Gemini Enterprise (your own ADK agent)](https://google.github.io/adk-docs/tools-custom/mcp-tools/) | Streamable HTTP | Bearer via arbitrary headers | you build it | 📄 |
@@ -133,6 +134,12 @@ arriving, a voice call being placed and its status read back, and the approval
 prompt before each send all work. Note that **`readOnlyHint` is not honoured —
 `get_sms_status` and `get_call_status` prompt too.** That errs on the safe side,
 so nothing is at risk; it is one extra confirmation.
+
+**Streamable HTTP was checked the same day on Cloud Run.** Bearer auth (401
+without it), `ALLOWED_NUMBERS`, SMS and voice all behave as designed, and
+**`get_sms_status` returns `delivered`** once the status webhook is registered.
+That last one is unreachable over stdio, where the server has nowhere to receive
+a delivery receipt.
 
 ### ⚠️ Gemini Enterprise custom MCP server connector
 

@@ -49,6 +49,7 @@ SMS 送信と音声通話は**取り消せず、課金が発生し、相手に�
 | --- | --- | --- | --- | --- |
 | [Claude Desktop（ローカル）](#claude-desktopでの利用) | stdio / MCPB | 不要 | **あり（読み取り系にも出ます）** | ✅ |
 | [Claude Code](https://code.claude.com/docs/en/mcp) | stdio / HTTP | `--header` で Bearer | あり | 📄 |
+| **Streamable HTTP 全般**（Cloud Run 等） | Streamable HTTP | Bearer / 上流 IAM | クライアント次第 | ✅ |
 | [Claude.ai / Desktop（リモート）](https://claude.com/docs/connectors/building/authentication) | Streamable HTTP | OAuth、または静的ヘッダ（beta・組織管理者が設定） | あり | 📄 |
 | [Gemini Enterprise（コネクタ）](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server) | Streamable HTTP | **OAuth 2.0 か「認証なし」のみ** | あり（既定で必ず出る） | ⚠️ |
 | [Gemini Enterprise（ADK で自作）](https://google.github.io/adk-docs/tools-custom/mcp-tools/) | Streamable HTTP | 任意ヘッダで Bearer | 自前実装 | 📄 |
@@ -61,6 +62,10 @@ SMS 送信と音声通話は**取り消せず、課金が発生し、相手に�
 >
 > **Claude Desktop は 2026-08-24 に v1.34493 で確認しました。** MCPB のインストール、capability トグル、`ALLOWED_NUMBERS` によるブロック、**SMS の実配信と音声通話の実発信**、通話ステータスの取得、実行前の承認プロンプトまで動作しています。
 > ただし **`readOnlyHint` は尊重されず、`get_sms_status` や `get_call_status` のような読み取り専用ツールでも承認プロンプトが出ます**（安全側の挙動なので実害はありません）。
+>
+> **Streamable HTTP（Cloud Run）も同日に確認しました。** Bearer 認証（未認証は 401）、`ALLOWED_NUMBERS` によるブロック、SMS と音声通話の実行に加えて、
+> **`get_sms_status` が `delivered` を返すこと**（Status Webhook 経由）と、`get_call_status` が通話時間・料金を返すことを確認しています。
+> **配信ステータスは stdio では取得できません。** 受け取るには HTTP で待ち受け、Vonage に Status URL を登録する必要があります。
 
 ### ツール実行前の承認について
 
