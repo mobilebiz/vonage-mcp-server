@@ -129,9 +129,10 @@ reports either way are welcome.
 
 **Claude Desktop was checked on 2026-08-24 against v1.34493.** Installing the
 bundle, the capability toggles, `ALLOWED_NUMBERS` blocking a destination, an SMS
-actually arriving and the approval prompt before a send all work. Note that
-**`readOnlyHint` is not honoured — `get_sms_status` prompts too.** That errs on
-the safe side, so nothing is at risk; it is one extra confirmation.
+arriving, a voice call being placed and its status read back, and the approval
+prompt before each send all work. Note that **`readOnlyHint` is not honoured —
+`get_sms_status` and `get_call_status` prompt too.** That errs on the safe side,
+so nothing is at risk; it is one extra confirmation.
 
 ### ⚠️ Gemini Enterprise custom MCP server connector
 

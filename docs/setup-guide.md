@@ -258,6 +258,8 @@ dry_run の内容に納得したら、送信します。
 
 つまり `get_sms_status` が本領を発揮するのは HTTP 構成のときで、**Claude Desktop 単体では「Vonage が受理した」以上の情報は原理的に取得できません。**
 
+> **音声通話は事情が異なります。** `get_call_status` は Vonage の API を直接照会するため、**Claude Desktop 単体でも実際の状態（通話時間・料金を含む）が取得できます。** Webhook を待つ SMS とは仕組みが違う点に注意してください。
+
 ---
 
 # 第4部　うまくいかないとき
@@ -359,6 +361,8 @@ grep 'method="tools/call"' ~/Library/Logs/Claude/mcp-server-*.log | tail -3
 - [x] ~~`get_sms_status` では承認プロンプトが出ない~~ → **Claude Desktop は `readOnlyHint` を尊重しません。読み取り系にも出るのが実際の挙動です**
 - [ ] dry_run が想定どおりの `to` / `segments` を返す
 - [ ] **実際に SMS が自分の携帯に届く**
+- [ ] **音声通話が発信され、読み上げられる**
+- [ ] **`get_call_status` が実際のステータスを返す**（SMS と違い API を直接照会するため、stdio でも取得できます）
 - [ ] `Allowed Numbers` に別の番号だけを入れると、自分の番号への送信が**ブロックされる**
 - [ ] **手順0 で `generate_jwt` が「無い」と答える**（旧版に繋がっていないこと）
 
