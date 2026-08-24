@@ -47,21 +47,75 @@ VONAGE_API_SIGNATURE_SECRET=...
 ### 前提
 
 ```bash
-gcloud services enable run.googleapis.com secretmanager.googleapis.com
+gcloud services enable run.googleapis.com secretmanager.googleapis.com cloudbuild.googleapis.com
 export PROJECT_ID="your-project-id"
 export REGION="asia-northeast1"
 export SERVICE_NAME="vonage-mcp-server"
 ```
 
-### 1. 秘密鍵を Secret Manager に登録
+### 1. 秘密鍵を Secret Manager に登録する
 
 ```bash
 gcloud secrets create vonage-private-key --data-file="./private.key" --project=$PROJECT_ID
 ```
 
-### 方式A: Cloud Run IAM で認証する（推奨）
+### 2. 認証方式を決める
 
-`--no-allow-unauthenticated` を指定し、認証をプラットフォームに任せます。
+**先に決めてください。後から変えると URL の再登録が必要になります。**
+
+| | 方式A: Cloud Run IAM | 方式B: Bearer トークン |
+| --- | --- | --- |
+| デプロイ | `--no-allow-unauthenticated` | `--allow-unauthenticated` |
+| 認証を担うもの | Google の IAM | このサーバー（`MCP_AUTH_TOKEN`） |
+| **配信ステータス (DLR)** | **受け取れません** | 受け取れます |
+| 使える MCP クライアント | **IAM トークンを付けられるものだけ** | ほぼすべて |
+
+> [!IMPORTANT]
+> **方式A では Vonage からの Webhook が届きません。**
+>
+> Cloud Run の IAM は**サービス全体**に掛かり、パスごとに外せません。Vonage は Google の IAM トークンを付けられないので、`--no-allow-unauthenticated` にすると **Status Webhook が 403 で弾かれます。** その結果 `get_sms_status` は永久に `submitted` のままになります。
+>
+> また **Claude / Gemini Enterprise / Dify / n8n はいずれも IAM トークンを付けられません。** 方式A が使えるのは、自作のクライアントやサービスアカウント経由で呼ぶ場合に限られます。
+>
+> **迷ったら方式B を選んでください。**
+
+### 3. デプロイする
+
+#### 方式B: Bearer トークン（通常はこちら）
+
+```bash
+# トークンを生成して Secret Manager に登録する
+openssl rand -hex 32 | gcloud secrets create mcp-auth-token --data-file=- --project=$PROJECT_ID
+
+gcloud run deploy $SERVICE_NAME \
+  --source . \
+  --project $PROJECT_ID \
+  --region $REGION \
+  --allow-unauthenticated \
+  --max-instances=1 \
+  --min-instances=1 \
+  --set-env-vars="ENABLE_SMS=true" \
+  --set-env-vars="RATE_LIMIT_PER_HOUR=5" \
+  --set-env-vars="ALLOWED_NUMBERS=+819012345678" \
+  --set-env-vars="VONAGE_APPLICATION_ID=YOUR_APPLICATION_ID" \
+  --set-env-vars="VONAGE_PRIVATE_KEY_PATH=/secrets/private.key" \
+  --set-secrets="/secrets/private.key=vonage-private-key:latest" \
+  --set-secrets="MCP_AUTH_TOKEN=mcp-auth-token:latest"
+```
+
+デプロイ後、**サービスのホスト名を `ALLOWED_HOSTS` に設定して再デプロイ**してください（DNS rebinding 対策）。URL はデプロイしないと確定しないため、2段階になります。
+
+```bash
+HOST=$(gcloud run services describe $SERVICE_NAME --region=$REGION \
+  --format='value(status.url)' | sed 's|https://||')
+
+gcloud run services update $SERVICE_NAME --region=$REGION \
+  --update-env-vars="ALLOWED_HOSTS=$HOST"
+```
+
+#### 方式A: Cloud Run IAM
+
+**Webhook を使わず、呼び出し側が IAM トークンを付けられる場合のみ**です。
 
 ```bash
 gcloud run deploy $SERVICE_NAME \
@@ -70,17 +124,14 @@ gcloud run deploy $SERVICE_NAME \
   --region $REGION \
   --no-allow-unauthenticated \
   --max-instances=1 \
+  --min-instances=1 \
   --set-env-vars="TRUST_UPSTREAM_AUTH=true" \
   --set-env-vars="ENABLE_SMS=true" \
   --set-env-vars="RATE_LIMIT_PER_HOUR=5" \
   --set-env-vars="VONAGE_APPLICATION_ID=YOUR_APPLICATION_ID" \
   --set-env-vars="VONAGE_PRIVATE_KEY_PATH=/secrets/private.key" \
   --set-secrets="/secrets/private.key=vonage-private-key:latest"
-```
 
-呼び出す側には `roles/run.invoker` を付与します。
-
-```bash
 gcloud run services add-iam-policy-binding $SERVICE_NAME \
   --region=$REGION \
   --member="serviceAccount:CALLER@$PROJECT_ID.iam.gserviceaccount.com" \
@@ -91,57 +142,74 @@ gcloud run services add-iam-policy-binding $SERVICE_NAME \
 > **`TRUST_UPSTREAM_AUTH=true` はサーバー自身の認証を無効にします。**
 > `--allow-unauthenticated` と組み合わせると**誰でも SMS を送れる状態**になります。起動のたびに警告が出るのはこのためです。
 
-### 方式B: Bearer トークンで認証する
+### 4. インスタンス数の指定について
 
-Cloud Run IAM を使えない場合（外部の MCP クライアントが IAM トークンを付けられないなど）はこちらです。
+**`--max-instances=1` と `--min-instances=1` を両方指定してください。** 理由が別々にあります。
 
-```bash
-# トークンを生成して Secret Manager に登録
-openssl rand -hex 32 | gcloud secrets create mcp-auth-token --data-file=- --project=$PROJECT_ID
+| 設定 | 理由 |
+| --- | --- |
+| `--max-instances=1` | レートリミットはプロセス内メモリなので、**インスタンスが増えると上限がその数だけ緩みます**（毎時5件を3インスタンスで動かせば15件） |
+| `--min-instances=1` | **インスタンスがゼロに落ちるとメモリが消えます** |
 
-gcloud run deploy $SERVICE_NAME \
-  --source . \
-  --project $PROJECT_ID \
-  --region $REGION \
-  --allow-unauthenticated \
-  --max-instances=1 \
-  --set-env-vars="ENABLE_SMS=true" \
-  --set-env-vars="RATE_LIMIT_PER_HOUR=5" \
-  --set-env-vars="VONAGE_APPLICATION_ID=YOUR_APPLICATION_ID" \
-  --set-env-vars="VONAGE_PRIVATE_KEY_PATH=/secrets/private.key" \
-  --set-env-vars="ALLOWED_HOSTS=YOUR_SERVICE.a.run.app" \
-  --set-secrets="/secrets/private.key=vonage-private-key:latest" \
-  --set-secrets="MCP_AUTH_TOKEN=mcp-auth-token:latest"
-```
+**`--min-instances` を省くとレートリミットが実質無効になります。** Cloud Run は既定でアイドル時にインスタンスを停止するため、次のことが起きます。
 
-`ALLOWED_HOSTS` にサービスのホスト名を設定しておくと、`Host` ヘッダーの検証が効きます（DNS rebinding 対策）。
+- **レートリミットの計数がリセットされます。** 5件送って停止し、再起動後にまた5件送れます
+- **送信記録が消えます。** その後に届いた DLR は「知らない `message_id`」として隔離バッファに回され、`get_sms_status` で取得できなくなります
 
-### 3. 動作確認
+> [!NOTE]
+> `--min-instances=1` は**インスタンスが常時起動する**ため課金が発生します。それが許容できない場合は、レートリミットが上限として機能しないことを前提に、**Vonage アカウント側の利用額上限を主たる防御としてください。**
+
+### 5. 動作確認
 
 ```bash
+URL=$(gcloud run services describe $SERVICE_NAME --region=$REGION --format='value(status.url)')
+
 # ヘルスチェック（認証不要）
-curl https://YOUR_SERVICE_URL/health
-# => {"status":"ok","connected":true,"version":"..."}
+curl "$URL/health"
+# => {"status":"ok","connected":true,"version":"2.0.0"}
 
 # ツール一覧（Accept ヘッダーが必要）
-curl -X POST https://YOUR_SERVICE_URL/mcp \
-  -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
+TOKEN=$(gcloud secrets versions access latest --secret=mcp-auth-token)
+curl -X POST "$URL/mcp" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Accept: application/json, text/event-stream" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
-`tools` が空の場合、**capability が有効になっていません。** 起動ログの警告を確認してください。
+**`version` が期待どおりか確認してください。** 古いリビジョンが動いていることに気づかず調査を続けるのは、よくある時間の浪費です。
 
-### 4. Webhook の登録
+`tools` が空の場合、**capability が有効になっていません。** 起動ログを確認してください。
 
-Vonage Dashboard の Application 設定で **Status URL** に次を登録します。
+```bash
+gcloud run services logs read $SERVICE_NAME --region=$REGION --limit=50
+```
+
+### 6. Webhook を登録する（方式B のみ）
+
+Vonage Dashboard の Application 設定で **Status URL** に登録します。
 
 ```
 https://YOUR_SERVICE_URL/webhooks/message-status
 ```
 
-`VONAGE_API_SIGNATURE_SECRET` が未設定だと、このエンドポイントは `503` を返して無効化されます（fail-closed）。
+**`VONAGE_API_SIGNATURE_SECRET` を設定してください。** 未設定だとこのエンドポイントは `503` を返して無効化されます（fail-closed）。
+
+```bash
+echo -n "YOUR_SIGNATURE_SECRET" | gcloud secrets create vonage-signature-secret --data-file=-
+gcloud run services update $SERVICE_NAME --region=$REGION \
+  --set-secrets="VONAGE_API_SIGNATURE_SECRET=vonage-signature-secret:latest"
+```
+
+### Cloud Run 固有のつまずき
+
+| 症状 | 原因 |
+| --- | --- |
+| Webhook が届かない | **`--no-allow-unauthenticated` になっていませんか。** 方式A では届きません |
+| `403 Forbidden` | `ALLOWED_HOSTS` にサービスのホスト名が入っていません |
+| `406 Not Acceptable` | POST に `Accept: application/json, text/event-stream` が必要です |
+| 起動直後にコンテナが落ちる | 設定値の検証エラーです。ログに理由がまとめて出ています |
+| レートリミットが効いていないように見える | `--min-instances=1` が無く、インスタンスが再起動しています |
 
 ---
 
