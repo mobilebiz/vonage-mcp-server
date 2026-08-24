@@ -47,7 +47,7 @@ SMS 送信と音声通話は**取り消せず、課金が発生し、相手に�
 
 | プラットフォーム | 接続方法 | 送れる認証 | ツール実行前の承認 | 状態 |
 | --- | --- | --- | --- | --- |
-| [Claude Desktop（ローカル）](#claude-desktopでの利用) | stdio / MCPB | 不要 | あり | 📄 |
+| [Claude Desktop（ローカル）](#claude-desktopでの利用) | stdio / MCPB | 不要 | **あり（読み取り系にも出ます）** | ✅ |
 | [Claude Code](https://code.claude.com/docs/en/mcp) | stdio / HTTP | `--header` で Bearer | あり | 📄 |
 | [Claude.ai / Desktop（リモート）](https://claude.com/docs/connectors/building/authentication) | Streamable HTTP | OAuth、または静的ヘッダ（beta・組織管理者が設定） | あり | 📄 |
 | [Gemini Enterprise（コネクタ）](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server) | Streamable HTTP | **OAuth 2.0 か「認証なし」のみ** | あり（既定で必ず出る） | ⚠️ |
@@ -58,13 +58,17 @@ SMS 送信と音声通話は**取り消せず、課金が発生し、相手に�
 
 > [!NOTE]
 > 「📄」は**まだ実機で確認していない**という意味です。各基盤のドキュメント上は接続できるはずですが、動作報告をいただけると助かります。
+>
+> **Claude Desktop は 2026-08-24 に v1.34493 で確認しました。** MCPB のインストール、capability トグル、`ALLOWED_NUMBERS` によるブロック、実際の SMS 配信、実行前の承認プロンプトまで動作しています。
+> ただし **`readOnlyHint` は尊重されず、`get_sms_status` のような読み取り専用ツールでも承認プロンプトが出ます**（安全側の挙動なので実害はありません）。
 
 ### ツール実行前の承認について
 
 `send_sms` / `make_voice_call` / `bulk_sms_from_csv` には、MCP のツール注釈で `destructiveHint: true` を付けています。これを解釈する基盤（Gemini Enterprise など）では、実行前に確認が表示されます。`get_sms_status` / `get_call_status` は `readOnlyHint: true` なので確認は省かれます。
 
 > [!WARNING]
-> **注釈は仕様上ヒントであり、強制ではありません。** 無視する基盤もあり、「常に許可」を選べる基盤もあります。上の表で承認が「無い」基盤を使う場合は、[`ALLOWED_NUMBERS` と `RATE_LIMIT_PER_HOUR`](#安全機能guardrailsの環境変数) を必ず設定してください。**承認UIもプロンプトも、実効的な防御にはなりません。**
+> **注釈は仕様上ヒントであり、強制ではありません。** 無視する基盤もあり、「常に許可」を選べる基盤もあります。**実測でも、Claude Desktop は `readOnlyHint` を尊重せず、読み取り専用ツールにも承認プロンプトを出しました。**
+> 上の表で承認が「無い」基盤を使う場合は、[`ALLOWED_NUMBERS` と `RATE_LIMIT_PER_HOUR`](#安全機能guardrailsの環境変数) を必ず設定してください。**承認UIもプロンプトも、実効的な防御にはなりません。**
 
 ## インストール方法
 

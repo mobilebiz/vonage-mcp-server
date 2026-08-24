@@ -98,9 +98,10 @@ for one) prompt the user before running a billable tool and skip the prompt for
 the read-only ones.
 
 **Annotations are hints, not enforcement.** A client may ignore them, and users
-can often choose "always allow". If your platform does not prompt, set
-`ALLOWED_NUMBERS` and `RATE_LIMIT_PER_HOUR` — those are the only effective
-defences.
+can often choose "always allow". Claude Desktop, measured, ignores
+`readOnlyHint` and prompts for read-only tools as well. If your platform does
+not prompt, set `ALLOWED_NUMBERS` and `RATE_LIMIT_PER_HOUR` — those are the only
+effective defences.
 
 ---
 
@@ -114,7 +115,7 @@ Legend: ✅ verified on real hardware / 📄 documented as supported (not yet ve
 
 | Platform | Transport | Authentication it can send | Approval before a tool runs | Status |
 | --- | --- | --- | --- | --- |
-| [Claude Desktop (local)](https://support.claude.com/en/articles/11175166-about-custom-connectors-via-remote-mcp) | stdio / MCPB | not needed | yes | 📄 |
+| [Claude Desktop (local)](https://support.claude.com/en/articles/11175166-about-custom-connectors-via-remote-mcp) | stdio / MCPB | not needed | **yes, including read-only tools** | ✅ |
 | [Claude Code](https://code.claude.com/docs/en/mcp) | stdio / HTTP | Bearer via `--header` | yes | 📄 |
 | [Claude.ai / Desktop (remote)](https://claude.com/docs/connectors/building/authentication) | Streamable HTTP | OAuth, or static headers (beta, set by an org admin) | yes | 📄 |
 | [Gemini Enterprise (connector)](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server) | Streamable HTTP | **OAuth 2.0 or "no authentication" only** | yes, by default | ⚠️ |
@@ -125,6 +126,12 @@ Legend: ✅ verified on real hardware / 📄 documented as supported (not yet ve
 
 📄 means **we have not tried it yet**. The documentation says it should connect;
 reports either way are welcome.
+
+**Claude Desktop was checked on 2026-08-24 against v1.34493.** Installing the
+bundle, the capability toggles, `ALLOWED_NUMBERS` blocking a destination, an SMS
+actually arriving and the approval prompt before a send all work. Note that
+**`readOnlyHint` is not honoured — `get_sms_status` prompts too.** That errs on
+the safe side, so nothing is at risk; it is one extra confirmation.
 
 ### ⚠️ Gemini Enterprise custom MCP server connector
 
