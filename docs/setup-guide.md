@@ -13,11 +13,6 @@ Vonage MCP Server を **Claude Desktop に導入し、実際に SMS が届くと
 - **利用者**が自分の環境に導入するとき（第1部〜第4部）
 - **開発側**がリリース前に実機で検証するとき（第5部のチェックリスト）
 
-> **この版について（リリース後は削除してください）**
->
-> 2026-08-21 時点で GitHub の Release は **v1.2.1** のままです。**第2部 A（Release からのダウンロード）はまだ使えません。**
-> リリース前に検証する場合は **第2部 B（自分でビルドする）**を使ってください。
-
 ## 0.1 このサーバーの前提を先に把握してください
 
 **SMS 送信と音声通話は取り消せません。** 課金が発生し、実在の相手に届きます。
@@ -72,7 +67,7 @@ Vonage MCP Server を **Claude Desktop に導入し、実際に SMS が届くと
 
 # 第2部　インストール
 
-方法は2つあります。**通常は A、リリース前の検証では B** を使ってください。
+方法は2つあります。**通常は A** で十分です。
 
 ## 2-A. MCPB バンドルを使う（推奨）
 
@@ -90,12 +85,13 @@ Vonage MCP Server を **Claude Desktop に導入し、実際に SMS が届くと
 
 5. **Claude Desktop を再起動する**
 
-## 2-B. 自分でビルドする（リリース前の検証用）
+## 2-B. 自分でビルドする
+
+改変して使う場合や、リリース前の内容を試す場合はこちらです。
 
 ```sh
 git clone https://github.com/mobilebiz/vonage-mcp-server.git
 cd vonage-mcp-server
-git checkout feature/guardrails-v1.3.0    # リリース後は不要
 npm install
 npm install -g @anthropic-ai/mcpb          # 初回のみ
 npm run build:mcpb
