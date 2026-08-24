@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: セキュリティ上の問題 / Security issue
+    url: https://github.com/mobilebiz/vonage-mcp-server/security/advisories/new
+    about: 脆弱性は公開の Issue ではなく、こちらから非公開で報告してください。
+  - name: Vonage アカウントに関する問い合わせ / Vonage account questions
+    url: https://developer.vonage.com/
+    about: Vonage の API 仕様・料金・アカウントについては Vonage にお問い合わせください。

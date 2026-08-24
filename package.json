@@ -1,7 +1,7 @@
 {
   "name": "vonage-mcp-server",
-  "version": "1.2.1",
-  "description": "",
+  "version": "2.0.0",
+  "description": "MCP server exposing Vonage SMS and Voice to AI agents, with guardrails for the prompt-injection threat model.",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
@@ -14,25 +14,42 @@
     "test": "vitest --run",
     "test:watch": "vitest --watch",
     "test:coverage": "vitest --coverage --run",
-    "build:mcpb": "sh scripts/build-mcpb.sh"
+    "build:mcpb": "sh scripts/build-mcpb.sh",
+    "build:docs": "sh scripts/build-docs.sh"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "vonage",
+    "sms",
+    "voice",
+    "ai-agent"
+  ],
+  "author": "KDDI Web Communications Inc.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mobilebiz/vonage-mcp-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mobilebiz/vonage-mcp-server/issues"
+  },
+  "homepage": "https://github.com/mobilebiz/vonage-mcp-server#readme",
   "type": "module",
   "engines": {
     "node": ">=22.0.0"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.15.0",
-    "@vonage/jwt": "^1.11.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@vonage/jwt": "^1.16.0",
     "@vonage/server-sdk": "^3.22.0",
     "@vonage/voice": "^1.18.1",
     "cors": "^2.8.5",
     "csv-parse": "^6.1.0",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
-    "zod": "^3.25.72"
+    "zod": "^3.25.72",
+    "zod-to-json-schema": "^3.24.6"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",

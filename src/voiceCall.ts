@@ -103,7 +103,8 @@ export async function makeVoiceCall(params: VoiceCallParams): Promise<{ success:
         number: fromNumber
       },
       machine_detection: 'continue' as const,
-      length_timer: 7200,
+      // 見積もりに連動させる。dry_run で提示した時間と実際の上限を一致させるため。
+      length_timer: callLengthTimer(params.message),
       ringing_timer: 60
     };
     
@@ -162,12 +163,42 @@ export function normalizeVoiceName(voice: string): string {
   return validVoices.includes(voice) ? voice : '女性';
 }
 
+/** 通話時間の見積もりの下限（秒） */
+export const MIN_CALL_DURATION_SECONDS = 10;
+
+/** 通話時間の絶対上限（秒）。これを超えて課金されることはない */
+export const MAX_CALL_DURATION_SECONDS = 300;
+
+/**
+ * 見積もりに上乗せする余裕（秒）。
+ *
+ * 読み上げ速度は文字の内容で変わるうえ、応答直後の無音や機械検出の分もある。
+ * 見積もりちょうどで切ると、正常な通話が途中で切断される。
+ */
+export const CALL_DURATION_MARGIN_SECONDS = 30;
+
 // 通話時間の見積もり（文字数から概算）
 export function estimateCallDuration(message: string): number {
   // 日本語の読み上げ速度: 約300文字/分
   const charsPerMinute = 300;
   const duration = Math.ceil(message.length / charsPerMinute * 60); // 秒単位
-  
-  // 最小10秒、最大300秒
-  return Math.max(10, Math.min(300, duration));
+
+  return Math.max(MIN_CALL_DURATION_SECONDS, Math.min(MAX_CALL_DURATION_SECONDS, duration));
+}
+
+/**
+ * Vonage に渡す `length_timer`（通話の強制切断までの秒数）を求める。
+ *
+ * 見積もりに連動させる。以前は固定で 7200 秒（2時間）を送っており、
+ * **dry_run が「約300秒」と表示して承認を得ても、実際には最大2時間まで
+ * 課金され得た**。音声は分課金なので、SMS と違って金額の跳ね方が大きい。
+ *
+ * NCCO の挙動、機械検出の結果、Vonage 側の異常などで通話が期待どおり
+ * 終了しなかった場合の歯止めであり、正常系では到達しない値。
+ */
+export function callLengthTimer(message: string): number {
+  return Math.min(
+    MAX_CALL_DURATION_SECONDS,
+    estimateCallDuration(message) + CALL_DURATION_MARGIN_SECONDS
+  );
 }

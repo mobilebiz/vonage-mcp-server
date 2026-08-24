@@ -2,237 +2,154 @@ import express from 'express';
 import cors from 'cors';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { z } from 'zod';
-import { sendSMS, validatePhoneNumber, sendBulkSMS } from './vonage.js';
-import { makeVoiceCall, validateVoiceName, estimateCallDuration, normalizeVoiceName } from './voiceCall.js';
-import { parseAndValidateCSV, generateCSVSummary } from './csvUtils.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+
+import { SERVER_VERSION, createMcpServer, enabledToolNames } from './mcpServer.js';
+import { ingestStatusWebhook } from './messageStatusStore.js';
+import { authenticateWebhook, isWebhookAuthConfigured, safeEqual } from './webhookAuth.js';
+import {
+  applyStartupConfig,
+  getMaxRequestBodyBytes,
+  extractHostname,
+  getAllowedHostnames,
+  getAllowedOrigins,
+  getBindHost,
+  getMcpAuthToken,
+  getPort,
+  isLoopbackHost,
+  isUpstreamAuthTrusted,
+} from './config.js';
 
 // 環境変数の読み込み
 dotenv.config();
 
+// このファイルが直接実行されたか（テストが app を import しただけか）。
+// モジュールのトップレベルでツールを登録する前に判定しておく必要がある。
+const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
+
+// 環境変数の検証。不正な設定はツールを1つでも登録する前にプロセスを落とす。
+// ここより後ろに置くと、capability のパースエラーが ConfigError の
+// スタックトレースとして表面化し、[FATAL] の読みやすいメッセージが出ない。
+if (isMainModule) {
+  applyStartupConfig();
+}
+
 export const app = express();
-const port = process.env.PORT || 3000;
 
-// ミドルウェアの設定
-app.use(cors());
-app.use(express.json());
-
-// ツール定義
-const tools = [
-  {
-    name: 'send_sms',
-    description: 'Vonageを使用してSMSを送信します。日本の電話番号（0から始まる）は自動的にE.164形式に変換されます。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        to: { type: 'string', description: '送信先の電話番号（必須）' },
-        message: { type: 'string', description: '送信するメッセージ（必須）' },
-        from: { type: 'string', description: '送信元（省略時はVonageMCP）' }
-      },
-      required: ['to', 'message']
-    }
-  },
-  {
-    name: 'make_voice_call',
-    description: '指定した番号に発信してメッセージを読み上げます。日本の電話番号（0から始まる）は自動的にE.164形式に変換されます。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        to: { type: 'string', description: '発信先電話番号（0ABJ形式）' },
-        message: { type: 'string', description: '読み上げるメッセージ' },
-        voice: { type: 'string', description: '音声タイプ（デフォルト: 女性）' }
-      },
-      required: ['to', 'message']
-    }
-  },
-  {
-    name: 'bulk_sms_from_csv',
-    description: 'CSVファイル（phone,from,message）から一括SMS送信を行います。無効な行はスキップされ、処理結果がまとめて返されます。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        csv_content: { type: 'string', description: 'CSVファイルの内容（phone,from,messageのヘッダー付き）' }
-      },
-      required: ['csv_content']
-    }
+/**
+ * CORS は既定で閉じる。
+ *
+ * 以前は `app.use(cors())` で全オリジンを許可していた。Bearer トークン認証が
+ * あっても、ブラウザ側がトークンを持っている構成（ブラウザ拡張やWeb版の
+ * MCPクライアント）では、悪意あるページが /mcp を呼んで**レスポンスまで
+ * 読み取れる**。generate_jwt が有効なら、生成したトークンの窃取に直結する。
+ *
+ * MCP クライアントの多くはブラウザではないので、開ける必要があるのは
+ * 例外的なケースだけ。必要な運用者だけが ALLOWED_ORIGINS で明示する。
+ */
+app.use((req, res, next) => {
+  const origins = getAllowedOrigins();
+  if (origins === null) {
+    next();
+    return;
   }
-];
 
-// Create MCP server instance
-const mcpServer = new McpServer({
-  name: 'vonage-mcp-server',
-  version: '1.1.0'
+  cors({ origin: origins, credentials: false })(req, res, next);
 });
-
-// Register send_sms tool
-mcpServer.registerTool('send_sms',
-  {
-    title: 'SMS送信ツール',
-    description: 'Vonageを使用してSMSを送信します。日本の電話番号（0から始まる）は自動的にE.164形式に変換されます。',
-    inputSchema: {
-      to: z.string().describe('送信先の電話番号（必須）'),
-      message: z.string().describe('送信するメッセージ（必須）'),
-      from: z.string().optional().describe('送信元（省略時はVonageMCP）')
-    }
-  },
-  async ({ to, message, from }) => {
-    if (!validatePhoneNumber(to)) {
-      return {
-        content: [{
-          type: 'text',
-          text: 'エラー: 無効な電話番号形式です。正しい形式で入力してください。'
-        }]
-      };
-    }
-
-    const result = await sendSMS({ to, message, from });
-
-    if (result.success) {
-      return {
-        content: [{
-          type: 'text',
-          text: `SMS送信成功！\n送信先: ${to}\nメッセージID: ${result.messageId}`
-        }]
-      };
-    } else {
-      return {
-        content: [{
-          type: 'text',
-          text: `SMS送信失敗: ${result.error}`
-        }]
-      };
-    }
-  }
-);
-
-// Register make_voice_call tool
-mcpServer.registerTool('make_voice_call',
-  {
-    title: '音声通話',
-    description: '指定した番号に発信してメッセージを読み上げます。日本の電話番号（0から始まる）は自動的にE.164形式に変換されます。',
-    inputSchema: {
-      to: z.string().describe('発信先電話番号（0ABJ形式）'),
-      message: z.string().describe('読み上げるメッセージ'),
-      voice: z.string().optional().describe('音声タイプ（デフォルト: 女性）')
-    }
-  },
-  async ({ to, message, voice }) => {
-    if (!validatePhoneNumber(to)) {
-      return {
-        content: [{
-          type: 'text',
-          text: 'エラー: 無効な電話番号形式です。正しい形式で入力してください。'
-        }]
-      };
-    }
-
-    if (voice && !validateVoiceName(voice)) {
-      return {
-        content: [{
-          type: 'text',
-          text: 'エラー: 無効な音声タイプです。利用可能: 女性、男性'
-        }]
-      };
-    }
-
-    const estimatedDuration = estimateCallDuration(message);
-    const result = await makeVoiceCall({ to, message, voice });
-
-    if (result.success) {
-      const finalVoice = normalizeVoiceName(voice || '女性');
-      return {
-        content: [{
-          type: 'text',
-          text: `音声通話を開始しました！\n発信先: ${to}\n通話ID: ${result.callId}\nメッセージ: ${message}\n音声: ${finalVoice}\n推定通話時間: ${estimatedDuration}秒`
-        }]
-      };
-    } else {
-      return {
-        content: [{
-          type: 'text',
-          text: `音声通話の発信に失敗しました: ${result.error}`
-        }]
-      };
-    }
-  }
-);
-
-// Register bulk_sms_from_csv tool
-mcpServer.registerTool('bulk_sms_from_csv',
-  {
-    title: 'CSV一括SMS送信',
-    description: 'CSVファイル（phone,from,message）から一括SMS送信を行います。無効な行はスキップされ、処理結果がまとめて返されます。',
-    inputSchema: {
-      csv_content: z.string().describe('CSVファイルの内容（phone,from,messageのヘッダー付き）')
-    }
-  },
-  async ({ csv_content }) => {
-    try {
-      const parseResult = parseAndValidateCSV(csv_content);
-      const summary = generateCSVSummary(parseResult);
-
-      if (parseResult.validRows.length === 0) {
-        return {
-          content: [{
-            type: 'text',
-            text: `エラー: 送信可能な有効な行がありませんでした。\n\n${summary}`
-          }]
-        };
-      }
-
-      const smsParams = parseResult.validRows.map(row => ({
-        to: row.phone,
-        message: row.message,
-        from: row.from
-      }));
-
-      const bulkResult = await sendBulkSMS(smsParams);
-
-      let resultText = `CSV一括SMS送信完了！\n\n`;
-      resultText += `${summary}\n`;
-      resultText += `送信結果:\n`;
-      resultText += `- 送信成功: ${bulkResult.successCount}件\n`;
-      resultText += `- 送信失敗: ${bulkResult.failureCount}件\n`;
-
-      const failures = bulkResult.results.filter(r => !r.success);
-      if (failures.length > 0) {
-        resultText += `\n失敗した送信:\n`;
-        failures.forEach(failure => {
-          resultText += `- ${failure.to}: ${failure.error}\n`;
-        });
-      }
-
-      return {
-        content: [{
-          type: 'text',
-          text: resultText
-        }]
-      };
-    } catch (error) {
-      return {
-        content: [{
-          type: 'text',
-          text: `CSV一括SMS送信エラー: ${error instanceof Error ? error.message : String(error)}`
-        }]
-      };
-    }
-  }
+// Webhookの署名検証（payload_hash）に生のボディが必要なため、パース時に保持しておく
+//
+// 上限は express.json() の既定（100KB）ではなく、現在の BULK_MAX_ROWS から
+// 算出する。既定の100行でも、日本語の本文が並べば100KBを超えてしまい、stdio
+// では通る CSV が HTTP でだけ 413 になる（VONAGE_MCP-4）。
+app.use(
+  express.json({
+    limit: getMaxRequestBodyBytes(),
+    verify: (req, _res, buf) => {
+      (req as express.Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf);
+    },
+  })
 );
 
 /**
- * APIキー認証ミドルウェア
+ * MCP エンドポイントの認証ミドルウェア。
+ *
+ * `app.use('/mcp', ...)` として**パス単位**で適用する。メソッドごとに書くと、
+ * Streamable HTTP が使う GET (SSE) や DELETE (セッション終了) を書き漏らして
+ * そこだけ無認証になる（VONAGE_MCP-9 / -10）。
+ *
+ * 認証が未設定の場合は素通しする。この構成ではサーバー自体が 127.0.0.1 にしか
+ * bind されておらず（getBindHost 参照）、外部からは到達できない。リクエストごとに
+ * 接続元を見て localhost か判定する方式は、プロキシ配下で誤判定するため採らない。
  */
-const authenticateApiKey = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-  const apiKey = req.headers['x-api-key'];
-  const validApiKey = process.env.VONAGE_APPLICATION_ID;
-
-  if (!apiKey || apiKey !== validApiKey) {
-    res.status(401).json({ error: 'Unauthorized: Invalid or missing API Key' });
+function requireMcpAuth(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+): void {
+  if (isUpstreamAuthTrusted()) {
+    next();
     return;
   }
+
+  const expected = getMcpAuthToken();
+  if (expected === null) {
+    next();
+    return;
+  }
+
+  const header = req.headers['authorization'];
+  const value = Array.isArray(header) ? header[0] : header;
+  const match = typeof value === 'string' ? /^Bearer\s+(.+)$/i.exec(value.trim()) : null;
+
+  if (!match || !safeEqual(match[1].trim(), expected)) {
+    res.status(401).json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'Unauthorized: missing or invalid bearer token' },
+      id: null,
+    });
+    return;
+  }
+
   next();
-};
+}
+
+/**
+ * DNS rebinding 対策の Host 検証。
+ *
+ * ループバック運用では、攻撃者のドメインを 127.0.0.1 に解決させることで、
+ * ブラウザから同一オリジン扱いでローカルのサーバーを叩ける。CORS では防げない
+ * （ブラウザから見て同一オリジンになるため）。このとき Host ヘッダーには
+ * 攻撃者のドメインが入るので、そこで弾く。
+ *
+ * SDK の enableDnsRebindingProtection は Host をポート込みで比較するため使わない。
+ * リバースプロキシ配下では Host のポートが待ち受けポートと一致しないのが普通で、
+ * 正規のリクエストまで落ちる。
+ */
+function requireAllowedHost(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+): void {
+  const allowed = getAllowedHostnames();
+  if (allowed === null) {
+    next();
+    return;
+  }
+
+  const header = req.headers.host;
+  if (typeof header !== 'string' || !allowed.includes(extractHostname(header))) {
+    res.status(403).json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: `Forbidden: host not allowed (${header ?? 'missing Host'})` },
+      id: null,
+    });
+    return;
+  }
+
+  next();
+}
+
+app.use('/mcp', requireAllowedHost, requireMcpAuth);
 
 /**
  * ヘルスチェック用エンドポイント
@@ -240,403 +157,144 @@ const authenticateApiKey = (req: express.Request, res: express.Response, next: e
  * 認証不要
  */
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', connected: true });
+  // version を含めるのは、デプロイしたつもりのものが動いているかを
+  // 認証なしで確かめられるようにするため。
+  res.json({ status: 'ok', connected: true, version: SERVER_VERSION });
 });
 
 /**
- * MCP protocol endpoint
- * POST /mcp
- * Handles MCP JSON-RPC requests with authentication
+ * Vonage Messages API の Status Webhook 受信エンドポイント
+ * POST /webhooks/message-status
+ *
+ * Messages API には配信ステータスを同期的に取得するAPIが無いため、
+ * ここで受け取ったDLRをオンメモリに保持し、get_sms_status ツールから参照する。
+ * Vonage Dashboard の Application 設定で Status URL にこのURLを登録すること。
+ *
+ * 認証: Vonageから呼ばれるため x-api-key 認証の対象外だが、必ず「Vonage由来であること」を
+ *       検証する。VONAGE_API_SIGNATURE_SECRET による署名付きJWT検証を推奨。
+ *       どちらの認証手段も未設定の場合はエンドポイントを無効化する（fail-closed）。
  */
-app.post('/mcp', async (req, res) => {
-  // Check API key authentication
-  const apiKey = req.headers['x-api-key'];
-  const validApiKey = process.env.VONAGE_APPLICATION_ID;
-
-  if (!apiKey || apiKey !== validApiKey) {
-    res.status(401).json({ 
-      jsonrpc: '2.0',
-      error: {
-        code: -32000,
-        message: 'Unauthorized: Invalid or missing API Key'
-      },
-      id: null
-    });
+app.post('/webhooks/message-status', (req, res) => {
+  const auth = authenticateWebhook(req.headers, (req as express.Request & { rawBody?: Buffer }).rawBody);
+  if (!auth.authorized) {
+    res.status(auth.status ?? 401).json({ error: auth.reason });
     return;
   }
 
+  const result = ingestStatusWebhook(req.body);
+
+  if (!result) {
+    // Vonageのリトライを防ぐため 200 は返さず、不正なペイロードとして 400 を返す
+    res.status(400).json({ error: 'Invalid status webhook payload: message_uuid and status are required' });
+    return;
+  }
+
+  res.status(200).json({
+    status: 'ok',
+    message_id: result.record.messageId,
+    delivery_status: result.record.status,
+    // 再送・順序逆転で古い通知が届いた場合は取り込まず、既存の状態を維持する
+    ignored: result.ignored,
+    // このサーバーの送信履歴に無いIDは隔離バッファに置く。同じ Vonage
+    // Application を他システムと共用している場合に true になる。
+    pending: result.pending,
+  });
+});
+
+/**
+ * Vonage Messages API の Inbound Webhook 受信エンドポイント
+ * POST /webhooks/inbound
+ *
+ * 受信メッセージは現時点で利用しないが、Vonage側の設定必須項目のため 200 を返すだけのスタブを用意する。
+ */
+app.post('/webhooks/inbound', (_req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
+
+/**
+ * MCP Streamable HTTP エンドポイント
+ * ALL /mcp
+ *
+ * POST (JSON-RPC) / GET (SSE) / DELETE (セッション終了) を MCP SDK の
+ * StreamableHTTPServerTransport がすべて処理する。以前は JSON-RPC を手書きし、
+ * initialize / tools/list / tools/call / ping にだけ応答していた。仕様の
+ * 取りこぼしを自前で追いかけないために、トランスポートは SDK に任せる。
+ *
+ * ## ステートレスにしている理由
+ *
+ * リクエストごとにサーバーとトランスポートを作り、セッションIDを発行しない。
+ * セッションを持つとその状態がプロセスのメモリに載るため、Cloud Run のように
+ * 複数レプリカへ分散する環境では**同じセッションが別のレプリカに届いた時点で
+ * 壊れる**。スティッキーセッションを前提にすると動く基盤が減る。
+ *
+ * このサーバーのツールはどれも1リクエストで完結し、サーバー起点の通知を
+ * 送らないので、セッションを持つ理由がない。
+ *
+ * `enableJsonResponse` を有効にしているのも同じ理由で、POST の応答を SSE では
+ * なく通常の JSON で返す。SSE はプロキシやゲートウェイにバッファされることが
+ * あり、環境依存の不具合を持ち込みやすい。仕様上どちらで返してもよい。
+ */
+app.all('/mcp', async (req, res) => {
+  const server = createMcpServer();
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
+
+  // リクエストが終わったら必ず片付ける。残すとレプリカあたりの
+  // トランスポートが際限なく増える。
+  res.on('close', () => {
+    void transport.close();
+    void server.close();
+  });
+
   try {
-    const { jsonrpc, id, method, params } = req.body;
-
-    // Validate JSON-RPC 2.0 format
-    if (jsonrpc !== '2.0') {
-      res.status(400).json({
-        jsonrpc: '2.0',
-        error: {
-          code: -32600,
-          message: 'Invalid Request: jsonrpc must be "2.0"'
-        },
-        id: id ?? null
-      });
-      return;
-    }
-
-    // Handle MCP methods
-    let result: any;
-
-    switch (method) {
-      case 'initialize':
-        result = {
-          protocolVersion: '2024-11-05',
-          capabilities: {
-            tools: {}
-          },
-          serverInfo: {
-            name: 'vonage-mcp-server',
-            version: '1.1.0'
-          }
-        };
-        break;
-
-      case 'tools/list':
-        result = {
-          tools: tools.map(tool => ({
-            name: tool.name,
-            description: tool.description,
-            inputSchema: tool.inputSchema
-          }))
-        };
-        break;
-
-      case 'tools/call': {
-        const { name, arguments: args } = params;
-        
-        // Execute the tool directly (same logic as /mcp-invoke)
-        try {
-          switch (name) {
-            case 'send_sms': {
-              const { to, message, from } = args;
-              if (!validatePhoneNumber(to)) {
-                result = {
-                  content: [{
-                    type: 'text',
-                    text: 'エラー: 無効な電話番号形式です。正しい形式で入力してください。'
-                  }]
-                };
-              } else {
-                const smsResult = await sendSMS({ to, message, from });
-                if (smsResult.success) {
-                  result = {
-                    content: [{
-                      type: 'text',
-                      text: `SMS送信成功！\n送信先: ${to}\nメッセージID: ${smsResult.messageId}`
-                    }]
-                  };
-                } else {
-                  result = {
-                    content: [{
-                      type: 'text',
-                      text: `SMS送信失敗: ${smsResult.error}`
-                    }]
-                  };
-                }
-              }
-              break;
-            }
-
-            case 'make_voice_call': {
-              const { to, message, voice } = args;
-              if (!validatePhoneNumber(to)) {
-                result = {
-                  content: [{
-                    type: 'text',
-                    text: 'エラー: 無効な電話番号形式です。正しい形式で入力してください。'
-                  }]
-                };
-              } else if (voice && !validateVoiceName(voice)) {
-                result = {
-                  content: [{
-                    type: 'text',
-                    text: 'エラー: 無効な音声タイプです。利用可能: 女性、男性'
-                  }]
-                };
-              } else {
-                const estimatedDuration = estimateCallDuration(message);
-                const callResult = await makeVoiceCall({ to, message, voice });
-                if (callResult.success) {
-                  const finalVoice = normalizeVoiceName(voice || '女性');
-                  result = {
-                    content: [{
-                      type: 'text',
-                      text: `音声通話を開始しました！\n発信先: ${to}\n通話ID: ${callResult.callId}\nメッセージ: ${message}\n音声: ${finalVoice}\n推定通話時間: ${estimatedDuration}秒`
-                    }]
-                  };
-                } else {
-                  result = {
-                    content: [{
-                      type: 'text',
-                      text: `音声通話の発信に失敗しました: ${callResult.error}`
-                    }]
-                  };
-                }
-              }
-              break;
-            }
-
-            case 'bulk_sms_from_csv': {
-              const { csv_content } = args;
-              const parseResult = parseAndValidateCSV(csv_content);
-              const summary = generateCSVSummary(parseResult);
-
-              if (parseResult.validRows.length === 0) {
-                result = {
-                  content: [{
-                    type: 'text',
-                    text: `エラー: 送信可能な有効な行がありませんでした。\n\n${summary}`
-                  }]
-                };
-              } else {
-                const smsParams = parseResult.validRows.map(row => ({
-                  to: row.phone,
-                  message: row.message,
-                  from: row.from
-                }));
-
-                const bulkResult = await sendBulkSMS(smsParams);
-
-                let resultText = `CSV一括SMS送信完了！\n\n`;
-                resultText += `${summary}\n`;
-                resultText += `送信結果:\n`;
-                resultText += `- 送信成功: ${bulkResult.successCount}件\n`;
-                resultText += `- 送信失敗: ${bulkResult.failureCount}件\n`;
-
-                const failures = bulkResult.results.filter(r => !r.success);
-                if (failures.length > 0) {
-                  resultText += `\n失敗した送信:\n`;
-                  failures.forEach(failure => {
-                    resultText += `- ${failure.to}: ${failure.error}\n`;
-                  });
-                }
-
-                result = {
-                  content: [{
-                    type: 'text',
-                    text: resultText
-                  }]
-                };
-              }
-              break;
-            }
-
-            default:
-              res.json({
-                jsonrpc: '2.0',
-                error: {
-                  code: -32601,
-                  message: `Unknown tool: ${name}`
-                },
-                id: id ?? null
-              });
-              return;
-          }
-        } catch (toolError: any) {
-          res.json({
-            jsonrpc: '2.0',
-            error: {
-              code: -32603,
-              message: toolError.message || 'Tool execution failed'
-            },
-            id: id ?? null
-          });
-          return;
-        }
-        break;
-      }
-
-      case 'ping':
-        result = {};
-        break;
-
-      default:
-        res.json({
-          jsonrpc: '2.0',
-          error: {
-            code: -32601,
-            message: `Method not found: ${method}`
-          },
-          id: id ?? null
-        });
-        return;
-    }
-
-    // Return successful response
-    res.json({
-      jsonrpc: '2.0',
-      result,
-      id: id ?? null
-    });
-
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
   } catch (error: any) {
     console.error('MCP endpoint error:', error);
-    res.status(500).json({
-      jsonrpc: '2.0',
-      error: {
-        code: -32603,
-        message: 'Internal server error',
-        data: error.message
-      },
-      id: null
-    });
-  }
-});
-
-// これ以降のエンドポイントには認証を適用
-app.use(authenticateApiKey);
-
-/**
- * MCPツールを実行するためのエンドポイント
- * POST /mcp-invoke
- * Body: { "tool": "tool_name", "params": { ... } }
- */
-app.post('/mcp-invoke', async (req, res) => {
-  const { tool, params } = req.body;
-
-  // ツール名が指定されていない場合は400エラーを返す
-  if (!tool) {
-    res.status(400).json({ error: 'Missing "tool" parameter' });
-    return;
-  }
-
-  try {
-    console.log(`Invoking tool: ${tool} with params:`, params);
-    
-    // ツールを直接実行
-    let result;
-    
-    switch (tool) {
-      case 'send_sms': {
-        const { to, message, from } = params;
-        if (!validatePhoneNumber(to)) {
-          res.status(400).json({ 
-            content: [{ type: 'text', text: 'エラー: 無効な電話番号形式です。正しい形式で入力してください。' }]
-          });
-          return;
-        }
-        const smsResult = await sendSMS({ to, message, from });
-        if (smsResult.success) {
-          result = {
-            content: [{ 
-              type: 'text', 
-              text: `SMS送信成功！\n送信先: ${to}\nメッセージID: ${smsResult.messageId}` 
-            }]
-          };
-        } else {
-          result = {
-            content: [{ type: 'text', text: `SMS送信失敗: ${smsResult.error}` }]
-          };
-        }
-        break;
-      }
-      
-      case 'make_voice_call': {
-        const { to, message, voice } = params;
-        if (!validatePhoneNumber(to)) {
-          res.status(400).json({ 
-            content: [{ type: 'text', text: 'エラー: 無効な電話番号形式です。正しい形式で入力してください。' }]
-          });
-          return;
-        }
-        if (voice && !validateVoiceName(voice)) {
-          res.status(400).json({ 
-            content: [{ type: 'text', text: 'エラー: 無効な音声タイプです。利用可能: 女性、男性' }]
-          });
-          return;
-        }
-        const estimatedDuration = estimateCallDuration(message);
-        const callResult = await makeVoiceCall({ to, message, voice });
-        if (callResult.success) {
-          const finalVoice = normalizeVoiceName(voice || '女性');
-          result = {
-            content: [{ 
-              type: 'text', 
-              text: `音声通話を開始しました！\n発信先: ${to}\n通話ID: ${callResult.callId}\nメッセージ: ${message}\n音声: ${finalVoice}\n推定通話時間: ${estimatedDuration}秒` 
-            }]
-          };
-        } else {
-          result = {
-            content: [{ type: 'text', text: `音声通話の発信に失敗しました: ${callResult.error}` }]
-          };
-        }
-        break;
-      }
-      
-      case 'bulk_sms_from_csv': {
-        const { csv_content } = params;
-        const parseResult = parseAndValidateCSV(csv_content);
-        const summary = generateCSVSummary(parseResult);
-        
-        if (parseResult.validRows.length === 0) {
-          result = {
-            content: [{ type: 'text', text: `エラー: 送信可能な有効な行がありませんでした。\n\n${summary}` }]
-          };
-        } else {
-          const smsParams = parseResult.validRows.map(row => ({
-            to: row.phone,
-            message: row.message,
-            from: row.from
-          }));
-          
-          const bulkResult = await sendBulkSMS(smsParams);
-          
-          let resultText = `CSV一括SMS送信完了！\n\n`;
-          resultText += `${summary}\n`;
-          resultText += `送信結果:\n`;
-          resultText += `- 送信成功: ${bulkResult.successCount}件\n`;
-          resultText += `- 送信失敗: ${bulkResult.failureCount}件\n`;
-          
-          const failures = bulkResult.results.filter(r => !r.success);
-          if (failures.length > 0) {
-            resultText += `\n失敗した送信:\n`;
-            failures.forEach(failure => {
-              resultText += `- ${failure.to}: ${failure.error}\n`;
-            });
-          }
-          
-          result = {
-            content: [{ type: 'text', text: resultText }]
-          };
-        }
-        break;
-      }
-      
-      default:
-        res.status(404).json({ error: `Unknown tool: ${tool}` });
-        return;
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: '2.0',
+        error: { code: -32603, message: 'Internal server error', data: error?.message },
+        id: null,
+      });
     }
-    
-    res.json(result);
-  } catch (error: any) {
-    console.error(`Error invoking tool ${tool}:`, error);
-    res.status(500).json({ 
-      error: 'Internal Server Error', 
-      details: error.message 
-    });
   }
 });
 
-/**
- * 利用可能なツールの一覧を取得するエンドポイント
- * GET /mcp-tools
+/*
+ * 削除したエンドポイント (VONAGE_MCP-9)
+ *
+ * - POST /mcp-invoke
+ * - GET  /mcp-tools
+ *
+ * MCP と等価な機能を独自のインターフェースで二重に公開していた。/mcp だけ認証や
+ * ガードレールを直しても、こうした別経路が残っていればそこから全部迂回できる。
+ * ツールの実行経路は /mcp（MCP プロトコル）1本に絞る。
  */
-app.get('/mcp-tools', async (_req, res) => {
-  res.json({ tools });
-});
 
 // メインモジュールとして実行された場合のみサーバーを起動
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isMainModule) {
   // HTTPサーバーの起動
-  const server = app.listen(port, () => {
-    console.log(`HTTP MCP Wrapper listening on port ${port}`);
+  const host = getBindHost();
+  const port = getPort();
+
+  const server = app.listen(port, host, () => {
+    console.log(`Vonage MCP Server (Streamable HTTP) listening on ${host}:${port}`);
+    console.log(`有効なツール: ${enabledToolNames().join(', ') || '(なし)'}`);
+    if (isLoopbackHost(host)) {
+      console.warn(
+        '[WARN] ループバックアドレスで待ち受けています。外部からは接続できません。' +
+          ' 外部公開する場合は MCP_AUTH_TOKEN を設定してください。'
+      );
+    }
+    if (!isWebhookAuthConfigured()) {
+      console.warn(
+        '[WARN] Webhook認証が未設定のため POST /webhooks/message-status は無効です。' +
+          ' VONAGE_API_SIGNATURE_SECRET（推奨）または VONAGE_WEBHOOK_SECRET を設定してください。'
+      );
+    }
   });
 
   // プロセス終了時のクリーンアップ処理
@@ -646,4 +304,3 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     process.exit(0);
   });
 }
-
