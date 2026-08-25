@@ -42,8 +42,42 @@ Vonage MCP Server on Cloud Run
 `mcp` パッケージが入らず、`McpToolset` の import が失敗します。** ADK は `mcp>=1.24,<2` を
 要求するので、`pip install mcp` で最新を入れても `ImportError` になります。
 
+### ファイル構成
+
+デプロイ時に `extra_packages` へ渡すため、**エージェントは Python パッケージにします。**
+
+```text
+gemini-adk-agent/
+├── vonage_agent/
+│   ├── __init__.py            # from . import agent
+│   ├── agent.py               # 下記のコード。root_agent を定義する
+│   └── system_instruction.md  # 生成物（下記）
+├── deploy.py
+└── requirements.txt
+```
+
+`system_instruction.md` は、このリポジトリの
+[`gemini_system_instruction.md`](gemini_system_instruction.md) にある
+「そのまま貼り付ける System Instruction」の本文を書き出したものです。
+**文書側を正とし、スクリプトで取り込んでください**（手でコピーすると必ずずれます）。
+
+### `vonage_agent/agent.py`
+
+**このコードは import された時点で環境変数を読みます。** 実行する前に、次を用意してください。
+
+| 変数 | 用途 |
+|---|---|
+| `VONAGE_MCP_URL` | 接続先（`https://<host>/mcp`） |
+| `MCP_AUTH_TOKEN_SECRET` または `MCP_AUTH_TOKEN` | 認証トークンの取得元、または値そのもの |
+
+Secret Manager を使う場合は、**ローカルの ADC に `secretmanager.secretAccessor` が必要**です
+（`gcloud auth application-default login`）。デプロイ時だけはトークンを解決させたくないので、
+`VONAGE_DEFER_TOKEN=1` で後回しにできるようにしてあります（理由は 3. を参照）。
+
 ```python
 import os
+from pathlib import Path
+
 from google.adk.agents import Agent
 from google.adk.tools.mcp_tool import McpToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
@@ -53,12 +87,29 @@ READ_ONLY = ["get_sms_status", "get_call_status"]
 
 
 def resolve_auth_token() -> str:
-    """Secret Manager から MCP_AUTH_TOKEN を取る（環境変数に平文を置かない）。"""
-    from google.cloud import secretmanager
+    """MCP_AUTH_TOKEN を解決する。
 
-    client = secretmanager.SecretManagerServiceClient()
-    name = os.environ["MCP_AUTH_TOKEN_SECRET"]  # projects/<P>/secrets/<S>/versions/latest
-    return client.access_secret_version(name=name).payload.data.decode().strip()
+    優先順位:
+      1. MCP_AUTH_TOKEN_SECRET（Secret Manager のリソース名）— デプロイ後はこれ
+      2. MCP_AUTH_TOKEN — ローカル実行用
+      3. VONAGE_DEFER_TOKEN=1 — 解決せず空文字を返す（デプロイ時のみ）
+    """
+    secret_name = os.environ.get("MCP_AUTH_TOKEN_SECRET", "").strip()
+    if secret_name:  # projects/<P>/secrets/<S>/versions/latest
+        from google.cloud import secretmanager
+
+        client = secretmanager.SecretManagerServiceClient()
+        response = client.access_secret_version(name=secret_name)
+        return response.payload.data.decode().strip()
+
+    token = os.environ.get("MCP_AUTH_TOKEN", "").strip()
+    if token:
+        return token
+
+    if os.environ.get("VONAGE_DEFER_TOKEN") == "1":
+        return ""
+
+    raise RuntimeError("MCP_AUTH_TOKEN_SECRET か MCP_AUTH_TOKEN を設定してください。")
 
 
 def confirm_unless_dry_run(**kwargs) -> bool:
@@ -92,7 +143,8 @@ root_agent = Agent(
     model="gemini-2.5-flash",
     name="vonage_sms_voice_agent",
     description="Vonage 経由で SMS を送信し、音声通話を発信し、配信状況を確認します。",
-    instruction=open("system_instruction.md").read(),  # ← 下記参照
+    # cwd 依存で読むと adk web やデプロイ先で壊れる。パッケージからの相対で解決する
+    instruction=(Path(__file__).parent / "system_instruction.md").read_text(encoding="utf-8"),
     tools=[
         VonageMcpToolset(url, tool_filter=DESTRUCTIVE, require_confirmation=True),
         VonageMcpToolset(url, tool_filter=READ_ONLY),
@@ -124,11 +176,22 @@ root_agent = Agent(
 
 確認方法:
 
+**確認はトークンの解決経路を通して行ってください。** `MCP_AUTH_TOKEN_SECRET` を残したまま
+`MCP_AUTH_TOKEN=CANARY` を足しても、リゾルバは Secret Manager 側を見るので、
+**カナリアが出ないのは当たり前**になり、何も確かめたことになりません。
+環境変数フォールバックだけを使う状態にしてから実行します。
+
 ```sh
-MCP_AUTH_TOKEN=CANARY python -c "
-import cloudpickle; from agent import root_agent
+env -u MCP_AUTH_TOKEN_SECRET -u VONAGE_DEFER_TOKEN \
+  MCP_AUTH_TOKEN=CANARY VONAGE_MCP_URL=https://example.invalid/mcp \
+  python -c "
+import cloudpickle
+from vonage_agent.agent import root_agent
 print(b'CANARY' in cloudpickle.dumps(root_agent))"   # False であること
 ```
+
+`True` になったら、ヘッダのトークンが pickle に載っています。`__reduce__` が
+効いていないので、そのままデプロイしてはいけません。
 
 ### サービスアカウントは先に作る
 
@@ -210,9 +273,37 @@ gcloud logging read 'resource.type="aiplatform.googleapis.com/ReasoningEngine"' 
 | `get_sms_status` | ✅ `delivered`（Status Webhook 経由の DLR まで到達） |
 | 読み取り専用ツール | ✅ 承認なしで即実行（312ms） |
 
-**ツール呼び出しの引数が Apps の画面にそのまま表示されます。**
-`send_sms(to='+81...', text='...', dry_run=True)` のように見えるため、
-利用者は「AI が意図した宛先」と「実際に送られる宛先」を目視できます。
+### 画面に出る `tool_code` は、実際の呼び出しと一致しないことがあります
+
+Apps の画面にはツール呼び出しらしきコードが表示されます。**ただしこれを承認の根拠に
+してはいけません。** 実測で2回、実際の呼び出しと食い違いました。
+
+| 画面の表示 | 実際 |
+|---|---|
+| `send_sms(to=..., text='...', dry_run=True)` | このサーバーの引数名は **`text` ではなく `message`** |
+| `send_sms(to='+819045678901', ...)` | ツール出力の `to` は **`+819045327751`**（別の番号） |
+
+**見るべきは「ツール出力」の JSON です。**
+
+```json
+{"status":"dry_run_success","to":"+819045327751","from":"VonageMCP",
+ "characters":3,"encoding":"UCS-2","segments":1}
+```
+
+こちらはサーバーが正規化して返した値なので、**「AI が意図した宛先」ではなく
+「実際に送られる宛先」**です。dry_run の一番の価値がここにあります。
+
+### チャットからの呼び出し方
+
+エージェントは2通りの方法で呼べます。
+
+- **`@` で指名する** — どのチャットからでも。`@` を打つとエージェントの一覧が出ます。会話の途中でも指名できます
+- **左メニューから開く** — そのエージェント専用のチャットになります
+
+**Core Assistant は、明示的に指名しない限りカスタムエージェントに振りません。** 指名し忘れると
+「そのような連携はセットアップされていません」といった、事実に基づかない回答が返ることがあります
+（Core Assistant は構成を調べる手段を持っていません）。応答にツール実行のステップが出ているかで
+見分けられます。
 
 ### 既知の引っかかり
 
