@@ -199,6 +199,13 @@ export function ingestCallEvent(payload: unknown): CallEventIngestResult | null 
   }
 
   const timestamp = typeof body.timestamp === 'string' ? body.timestamp : new Date().toISOString();
+  const now = Date.now();
+
+  // **順序判定より先に期限切れを落とす。** 24時間前のレコードを残したまま比較すると、
+  // 古い再送イベントが「巻き戻し」と見なされて弾かれ、期限切れのレコードが
+  // そのまま生き延びる（Webhook のレスポンスにも古い値が乗る）。
+  pruneExpired(now);
+
   const known = knownCallIds.has(callId) || store.has(callId);
   const existing = known ? store.get(callId) : unknownStore.get(callId);
 
@@ -214,7 +221,6 @@ export function ingestCallEvent(payload: unknown): CallEventIngestResult | null 
         ? Number(sipCodeRaw)
         : undefined;
 
-  const now = Date.now();
   const record: CallEventRecord = {
     callId,
     status,
@@ -228,8 +234,6 @@ export function ingestCallEvent(payload: unknown): CallEventIngestResult | null 
     recordedAt: now,
     known,
   };
-
-  pruneExpired(now);
 
   // 上書き時も挿入順を最新にするため、いったん削除してから追加する
   const target = known ? store : unknownStore;

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 import {
   callEventStoreSize,
@@ -108,6 +108,30 @@ describe('callEventStore', () => {
 
     expect(result!.ignored).toBe(false);
     expect(getCallEvent('call-8')!.status).toBe('something_new');
+  });
+
+  // 期限切れを先に落とさないと、24時間前のレコードとの比較で新しいイベントが
+  // 「巻き戻し」と見なされ、期限切れのレコードが生き延びる
+  it('保持期間を過ぎたレコードは、順序判定より先に捨てられる', () => {
+    vi.useFakeTimers();
+    try {
+      ingestCallEvent({ uuid: 'aged', status: 'completed', timestamp: at(0) });
+
+      // 24時間 + 1分 進める
+      vi.advanceTimersByTime(24 * 60 * 60 * 1000 + 60 * 1000);
+
+      // 進行順では completed → ringing で「巻き戻し」に当たる更新
+      const result = ingestCallEvent({
+        uuid: 'aged',
+        status: 'ringing',
+        timestamp: new Date(Date.now()).toISOString(),
+      });
+
+      expect(result!.ignored).toBe(false);
+      expect(getCallEvent('aged')!.status).toBe('ringing');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('存在しない call_id は null', () => {

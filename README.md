@@ -1003,7 +1003,8 @@ curl -X POST http://localhost:3000/webhooks/message-status \
 
 | status | detail | 意味 | 掛け直す意味があるか |
 | --- | --- | --- | --- |
-| `failed` | `cannot_route` / `number_out_of_service` / `internal_error` | 宛先がこのアカウントで未対応、ブロック、または不通 | ない |
+| `failed` | `cannot_route` / `number_out_of_service` | 宛先がこのアカウントで未対応、ブロック、または不通 | ない |
+| `failed` | `internal_error` | **Vonage 側の内部エラー。宛先については何も分からない** | 時間をおけばある |
 | `rejected` | `invalid_number` / `restricted` / `declined` | 番号が無効、キャリアまたは着信者が拒否 | 同じ条件では期待できない |
 | `unanswered` | `unavailable` / `timeout` | **相手が一時的に応答できない** | 時間をおけばある |
 
