@@ -5,6 +5,7 @@ import {
   clearCallEventStore,
   getCallEvent,
   ingestCallEvent,
+  knownCallEventStoreSize,
   recordOutboundCall,
 } from '../src/callEventStore.js';
 
@@ -144,13 +145,31 @@ describe('callEventStore', () => {
       expect(getCallEvent('theirs-0')).toBeNull();
     });
 
+    // 枠を共有していると、未知が専用枠に収まっていても合計が上限を超えた時点で
+    // 「古い順」の退避が走り、結局いちばん古い自分の記録から消えていく
+    it('自分の通話が上限まであっても、未知の流入で1件も失わない', () => {
+      for (let i = 0; i < 1000; i++) {
+        recordOutboundCall(`mine-${i}`);
+        ingestCallEvent({ uuid: `mine-${i}`, status: 'completed', timestamp: at(i) });
+      }
+      expect(knownCallEventStoreSize()).toBe(1000);
+
+      // 専用枠いっぱいの未知のイベントを流し込む
+      for (let i = 0; i < 200; i++) {
+        ingestCallEvent({ uuid: `theirs-${i}`, status: 'completed', timestamp: at(2000 + i) });
+      }
+
+      expect(knownCallEventStoreSize()).toBe(1000);
+      expect(getCallEvent('mine-0')).not.toBeNull();
+    });
+
     it('自分の通話だけで上限を超えたら、古いものから捨てる', () => {
       for (let i = 0; i < 1001; i++) {
         recordOutboundCall(`mine-${i}`);
         ingestCallEvent({ uuid: `mine-${i}`, status: 'completed', timestamp: at(i) });
       }
 
-      expect(callEventStoreSize()).toBe(1000);
+      expect(knownCallEventStoreSize()).toBe(1000);
       expect(getCallEvent('mine-0')).toBeNull();
       expect(getCallEvent('mine-1000')).not.toBeNull();
     });
