@@ -888,14 +888,43 @@ describe('tools registry', () => {
         expect(payload.note).not.toContain('相手の状態ではなく');
       });
 
-      // API が終端ステータスを返したあとに Webhook が届くことがある。
-      // 「未設定」と決めつけると、数秒待てば取れた理由を永久に取り逃す
-      it('理由が無い場合は、未設定と決めつけず一度だけの再確認を案内する', async () => {
+      // internal_error は failed に属するが、宛先について何も語っていない
+      it('internal_error は宛先の問題として扱わない', async () => {
+        ingestCallEvent({
+          uuid: 'call-internal',
+          status: 'failed',
+          detail: 'internal_error',
+          timestamp: new Date().toISOString(),
+        });
+
+        const payload = await invoke('get_call_status', { call_id: 'call-internal' });
+
+        expect(payload.note).toContain('Vonage 側の内部エラー');
+        expect(payload.note).not.toContain('未対応かブロック');
+        expect(payload.note).not.toContain('繰り返さないでください');
+      });
+
+      // 記録が無い理由は複数ある（未着・再起動・TTL・未設定）。区別できない以上、断定しない
+      it('記録が無い場合は、未設定と決めつけず一度だけの再確認を案内する', async () => {
         const payload = await invoke('get_call_status', { call_id: 'call-no-event' });
 
-        expect(payload.note).toContain('Event Webhook が未設定');
         expect(payload.note).toContain('一度だけ');
+        expect(payload.note).toContain('サーバー再起動');
+        expect(payload.note).not.toMatch(/Webhook が未設定です/);
         expect(payload.detail).toBeUndefined();
+      });
+
+      it('イベントは受信済みだが detail が無い場合は、そう述べる', async () => {
+        ingestCallEvent({
+          uuid: 'call-no-detail',
+          status: 'busy',
+          timestamp: new Date().toISOString(),
+        });
+
+        const payload = await invoke('get_call_status', { call_id: 'call-no-detail' });
+
+        expect(payload.note).toContain('受信していますが、理由（detail）は含まれていませんでした');
+        expect(payload.note).not.toContain('未設定');
       });
 
       it('成功した通話には注記を付けない', async () => {

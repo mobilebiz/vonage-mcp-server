@@ -158,11 +158,13 @@ const CALL_FAILURE_STATUSES = new Set([
  *
  * @see https://developer.vonage.com/en/voice/voice-api/webhook-reference
  */
-const DETAIL_CATEGORY: Record<string, 'unroutable' | 'rejected' | 'temporary'> = {
+const DETAIL_CATEGORY: Record<string, 'unroutable' | 'rejected' | 'temporary' | 'upstream'> = {
   // failed — 宛先そのものに届かない。相手の状態とは無関係
   cannot_route: 'unroutable',
   number_out_of_service: 'unroutable',
-  internal_error: 'unroutable',
+  // 同じ failed でも、これは宛先について何も語っていない。Vonage 側の障害なので
+  // 「その宛先には掛けるな」と言ってはいけない（一時的で、あとから通ることがある）
+  internal_error: 'upstream',
   // rejected — 誰か（キャリアか着信者）が拒否した。番号の不備も含む
   invalid_number: 'rejected',
   restricted: 'rejected',
@@ -182,7 +184,11 @@ const DETAIL_CATEGORY: Record<string, 'unroutable' | 'rejected' | 'temporary'> =
  * ただし**理由の断定は detail の分類に従う**。「経路が無い」と言えるのは
  * DETAIL_CATEGORY が unroutable のときだけで、それ以外に広げてはいけない。
  */
-function callFailureNote(status: string | undefined, detail: string | undefined): { note: string } | null {
+function callFailureNote(
+  status: string | undefined,
+  detail: string | undefined,
+  hasEventRecord: boolean
+): { note: string } | null {
   if (!status || !CALL_FAILURE_STATUSES.has(status.toLowerCase())) {
     return null;
   }
@@ -213,18 +219,39 @@ function callFailureNote(status: string | undefined, detail: string | undefined)
           'これは一時的な状態（相手が応答できない、または応答が時間内に得られない）を示します。' +
           '時間をおけば繋がる可能性がありますが、続けて掛け直さずユーザーの指示を仰いでください。',
       };
+    case 'upstream':
+      return {
+        note:
+          prefix +
+          'これは Vonage 側の内部エラーで、宛先や相手の状態について何も示していません。' +
+          '一時的な可能性があるため、時間をおいた再試行は妥当です。判断はユーザーに委ねてください。',
+      };
     case undefined:
       // detail はあるが分類表に無い（新しい値）。断定せず、値だけを伝える
       if (detail) {
         return { note: prefix + '理由の詳細は detail の値を確認してください。' };
       }
-      // detail が無い。Webhook 未設定か、通知がまだ届いていないかを区別できない
+      // detail が無い。**なぜ無いのかは、このサーバーからは分からない。**
+      // 通知が届く前、Vonage が detail を付けなかった、プロセス再起動で記録が消えた、
+      // 24時間の保持期間を過ぎた、Webhook が未設定 — どれも同じ「空」に見える。
+      // 断定できない以上、断定しない。
+      if (hasEventRecord) {
+        return {
+          note:
+            prefix +
+            'このサーバーは通話イベントを受信していますが、理由（detail）は含まれていませんでした。' +
+            '相手の状態を断定せず「接続できませんでした」と報告してください。',
+        };
+      }
+
       return {
         note:
           prefix +
-          '理由（detail）をまだ受信していません。Event Webhook が未設定か、通知が届く前にこの確認が実行された可能性があります。' +
+          '理由（detail）を受信していません。通知が届く前にこの確認が実行されたか、記録が失われた' +
+          '（サーバー再起動、または24時間の保持期間経過）か、Event Webhook が未設定の可能性があります。' +
           '相手の状態を断定せず「接続できませんでした」と報告し、理由が必要なら数十秒待ってから' +
-          '**一度だけ**確認し直してください（それでも空なら Webhook が未設定です）。',
+          '**一度だけ**確認し直してください。それでも空なら、Webhook の設定と配信ログの確認を' +
+          'ユーザーに依頼してください（このサーバー側からは原因を判別できません）。',
       };
   }
 }
@@ -728,7 +755,7 @@ const toolImplementations: ToolImplementation[] = [
         rate: result.rate,
         ...(event?.detail ? { detail: event.detail } : {}),
         ...(event?.sipCode !== undefined ? { sip_code: event.sipCode } : {}),
-        ...(callFailureNote(result.status, event?.detail) ?? {}),
+        ...(callFailureNote(result.status, event?.detail, event !== null) ?? {}),
       });
     },
   },

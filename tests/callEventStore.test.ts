@@ -113,15 +113,15 @@ describe('callEventStore', () => {
     expect(getCallEvent('missing')).toBeNull();
   });
 
-  it('件数上限を超えたら古いものから捨てる', () => {
-    // MAX_ENTRIES は 1000。上限を超えるまで入れて、先頭が消えることを確かめる
-    for (let i = 0; i < 1001; i++) {
+  // 自分が発信していない通話には専用枠（200件）がある。総枠 1000 とは別
+  it('自分が発信していない通話は、専用枠を超えたら古いものから捨てる', () => {
+    for (let i = 0; i < 300; i++) {
       ingestCallEvent({ uuid: `bulk-${i}`, status: 'completed', timestamp: at(i) });
     }
 
-    expect(callEventStoreSize()).toBe(1000);
+    expect(callEventStoreSize()).toBe(200);
     expect(getCallEvent('bulk-0')).toBeNull();
-    expect(getCallEvent('bulk-1000')).not.toBeNull();
+    expect(getCallEvent('bulk-299')).not.toBeNull();
   });
 
   // 1回の発信で折り返しの着信レグが立つことがあり、他システムと Application を
@@ -132,12 +132,13 @@ describe('callEventStore', () => {
       recordOutboundCall('mine');
       ingestCallEvent({ uuid: 'mine', status: 'failed', detail: 'cannot_route', timestamp: at(0) });
 
-      // 自分のものより後に、無関係なイベントで上限まで埋める
+      // 自分のものより後に、無関係なイベントを大量に流し込む
       for (let i = 0; i < 1000; i++) {
         ingestCallEvent({ uuid: `theirs-${i}`, status: 'completed', timestamp: at(i + 1) });
       }
 
-      expect(callEventStoreSize()).toBe(1000);
+      // 専用枠の 200 件 + 自分の 1 件
+      expect(callEventStoreSize()).toBe(201);
       // 最も古いのは 'mine' だが、残っているべきなのはこちら
       expect(getCallEvent('mine')).toMatchObject({ detail: 'cannot_route' });
       expect(getCallEvent('theirs-0')).toBeNull();
@@ -152,6 +153,25 @@ describe('callEventStore', () => {
       expect(callEventStoreSize()).toBe(1000);
       expect(getCallEvent('mine-0')).toBeNull();
       expect(getCallEvent('mine-1000')).not.toBeNull();
+    });
+
+    // 満杯のとき、レスポンス前に届いたイベントが唯一の「未知」として即消えすると、
+    // あとから recordOutboundCall しても戻せない
+    it('自分の通話で総枠が埋まっていても、レスポンス前に届いたイベントは残る', () => {
+      for (let i = 0; i < 1000; i++) {
+        recordOutboundCall(`known-${i}`);
+        ingestCallEvent({ uuid: `known-${i}`, status: 'completed', timestamp: at(i) });
+      }
+      expect(callEventStoreSize()).toBe(1000);
+
+      // 発信レスポンスより先に届いた新しい通話のイベント
+      ingestCallEvent({ uuid: 'racing', status: 'failed', detail: 'cannot_route', timestamp: at(2000) });
+
+      expect(getCallEvent('racing')).toMatchObject({ detail: 'cannot_route' });
+
+      // このあとレスポンスが返れば、自分のものとして昇格できる
+      recordOutboundCall('racing');
+      expect(getCallEvent('racing')!.known).toBe(true);
     });
 
     // 発信レスポンスより先にイベントが届く競合がある

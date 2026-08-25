@@ -139,28 +139,50 @@ function pruneExpired(now: number): void {
 }
 
 /**
+ * 自分が発信していない通話（着信レグ、他システムの通話）を保持する上限。
+ *
+ * **総枠とは別に切る。** 同じ枠を奪い合わせると、着信の多い環境で
+ * get_call_status から引ける自分の記録が押し出される。かといって未知の
+ * レコードを即座に捨てると、**make_voice_call のレスポンスより先に届いた
+ * イベント**（まだ known: false）まで消えてしまい、あとから
+ * recordOutboundCall() で昇格させることができなくなる。
+ *
+ * 枠を分けると、どちらの事故も起きない。未知どうしで押し出し合い、
+ * 自分の記録には触れない。
+ */
+const UNKNOWN_MAX_ENTRIES = 200;
+
+/**
  * 件数上限を超えていたら破棄する。
  *
- * **自分が発信していない通話（着信レグや他システムの通話）から先に捨てる。**
- * 単純に古い順で捨てると、get_call_status から引ける自分の記録が、引けない
- * 記録に押し出される。
+ * 1. 未知のレコードが専用枠を超えていれば、古い未知から捨てる
+ * 2. それでも総数が上限を超えていれば、古い順に捨てる
+ *
+ * 発信の直前に届いたイベントは、未知の中でいちばん新しいため 1. で残る。
+ * ストアが自分の通話だけで埋まっている場合は 2. で最も古い自分の記録が消えるが、
+ * これは24時間近く前のもので、既に参照済みと考えてよい。
  */
 function enforceCapacity(): void {
-  if (store.size <= MAX_ENTRIES) {
-    return;
-  }
-
-  // Map は挿入順を保持するため、先に回ったものほど古い
-  for (const [id, record] of store) {
-    if (store.size <= MAX_ENTRIES) {
-      return;
-    }
+  let unknownCount = 0;
+  for (const record of store.values()) {
     if (!record.known) {
-      store.delete(id);
+      unknownCount++;
     }
   }
 
-  // 自分のものだけで上限を超えている場合は、古い順に捨てる
+  if (unknownCount > UNKNOWN_MAX_ENTRIES) {
+    // Map は挿入順を保持するため、先に回ったものほど古い
+    for (const [id, record] of store) {
+      if (unknownCount <= UNKNOWN_MAX_ENTRIES) {
+        break;
+      }
+      if (!record.known) {
+        store.delete(id);
+        unknownCount--;
+      }
+    }
+  }
+
   while (store.size > MAX_ENTRIES) {
     const oldestKey = store.keys().next().value;
     if (oldestKey === undefined) {
