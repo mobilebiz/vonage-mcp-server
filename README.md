@@ -1012,15 +1012,28 @@ API Gateway や Identity-Aware Proxy をこのサーバーの手前に置いて 
 **手順は [Gemini Enterprise の Agent Apps から使う（ADK 経由）](docs/gemini-enterprise-adk.md) にまとめています。**
 
 ```python
-from google.adk.tools.mcp_tool import McpToolset, StreamableHTTPConnectionParams
+from google.adk.tools.mcp_tool import McpToolset
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 
-toolset = McpToolset(
+def confirm_unless_dry_run(**kwargs) -> bool:
+    """dry_run: true 以外の呼び出しに承認を要求する。"""
+    return kwargs.get("dry_run") is not True
+
+# 課金対象のツールだけを、承認を必須にして渡す
+sending = McpToolset(
     connection_params=StreamableHTTPConnectionParams(
         url="https://your-server.example.com/mcp",
         headers={"Authorization": f"Bearer {MCP_AUTH_TOKEN}"},
-    )
+    ),
+    tool_filter=["send_sms", "bulk_sms_from_csv", "make_voice_call"],
+    require_confirmation=confirm_unless_dry_run,
 )
 ```
+
+> [!WARNING]
+> **`require_confirmation` を省くと、課金対象のツールが承認なしで実行されます。** `require_confirmation` の callable にはツール名が渡らないため、読み取り専用のツールは**別の `McpToolset` として**渡してください（承認を掛けると不要な確認が毎回出ます）。
+>
+> このサンプルは要点だけです。**トークンをシリアライズに含めない書き方まで含めた完全な実装は [ADK 経由の手順](docs/gemini-enterprise-adk.md) にあります。**
 
 ## プロジェクト構造（続き）
 

@@ -29,9 +29,21 @@ Vonage MCP Server on Cloud Run
 
 | | |
 |---|---|
-| ロール | Gemini Enterprise Admin / Agent Platform User / Storage Admin |
 | API | Agent Platform (aiplatform) / Discovery Engine / Cloud Storage |
 | ライセンス | Gemini Enterprise アプリを作ると **30日間の無料トライアルライセンス**が同時に作られます。Apps にサインインするにはこれが要ります |
+
+必要なロールは、作業の内容によって分かれます。
+
+| 作業 | 必要なロール / 権限 |
+|---|---|
+| Gemini Enterprise のアプリ作成・エージェント登録 | Gemini Enterprise Admin |
+| Agent Runtime へのデプロイ | Agent Platform User、staging バケットへの Storage Admin |
+| **エージェント用サービスアカウントの作成** | `iam.serviceAccounts.create`（Service Account Admin など） |
+| **プロジェクトとシークレットへのロール付与** | それぞれの `setIamPolicy`（Project IAM Admin / Secret Manager Admin など） |
+| **そのSAを指定してデプロイする** | **`iam.serviceAccounts.actAs`**（Service Account User） |
+
+> [!IMPORTANT]
+> **最初の3つのロールだけでは、下記のセットアップは通りません。** サービスアカウントの作成も IAM の付与も `actAs` も含まれておらず、`PERMISSION_DENIED` になります。権限を持つ管理者に、3. のコマンドを実行してもらってください。
 
 このサーバー側は、Streamable HTTP で公開し `MCP_AUTH_TOKEN` を設定しておきます
 （[デプロイ手順](deployment.md)）。**トークンは Secret Manager に置いてください。**
@@ -40,7 +52,17 @@ Vonage MCP Server on Cloud Run
 
 `google-adk[mcp]` が要ります。**`google-cloud-aiplatform[agent_engines,adk]` だけでは
 `mcp` パッケージが入らず、`McpToolset` の import が失敗します。** ADK は `mcp>=1.24,<2` を
-要求するので、`pip install mcp` で最新を入れても `ImportError` になります。
+要求するので、`pip install mcp` で最新を入れると 2.x が入り、今度は
+`ImportError: cannot import name 'McpHttpClientFactory'` になります。**extra で入れてください。**
+
+実機で確認したときの版は次のとおりです。
+
+| パッケージ | 版 |
+|---|---|
+| `google-adk` | 2.7.1 |
+| `mcp` | 1.29.1（`google-adk[mcp]` が解決した版） |
+| `google-cloud-aiplatform` | 1.165.1 |
+| Python | 3.12 |
 
 ### ファイル構成
 
@@ -208,7 +230,14 @@ gcloud projects add-iam-policy-binding PROJECT \
   --member "serviceAccount:$SA" --role roles/aiplatform.user --condition=None
 gcloud storage buckets add-iam-policy-binding gs://STAGING_BUCKET \
   --member "serviceAccount:$SA" --role roles/storage.objectViewer
+
+# デプロイを実行する人が、このSAとしてデプロイできるようにする（actAs）
+gcloud iam service-accounts add-iam-policy-binding "$SA" --project PROJECT \
+  --member "user:YOU@example.com" --role roles/iam.serviceAccountUser
 ```
+
+> [!NOTE]
+> 最後の `actAs` は、プロジェクトのオーナーなら既に持っています。**最小権限で用意した実行者だと、これが無いとデプロイが `PERMISSION_DENIED` で落ちます。**
 
 ```python
 import vertexai
