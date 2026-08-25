@@ -52,7 +52,7 @@ SMS 送信と音声通話は**取り消せず、課金が発生し、相手に�
 | **Streamable HTTP 全般**（Cloud Run 等） | Streamable HTTP | Bearer / 上流 IAM | クライアント次第 | ✅ |
 | [Claude.ai / Desktop（リモート）](https://claude.com/docs/connectors/building/authentication) | Streamable HTTP | OAuth、または静的ヘッダ（beta・組織管理者が設定） | あり | 📄 |
 | [Gemini Enterprise（コネクタ）](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server) | Streamable HTTP | **OAuth 2.0 か「認証なし」のみ** | あり（既定で必ず出る） | ⚠️ |
-| [Gemini Enterprise（ADK で自作）](https://google.github.io/adk-docs/tools-custom/mcp-tools/) | Streamable HTTP | 任意ヘッダで Bearer | 自前実装 | 📄 |
+| [Gemini Enterprise（ADK で自作）](docs/gemini-enterprise-adk.md) | Streamable HTTP | 任意ヘッダで Bearer | **あり**（ADK の `require_confirmation`。Apps に承認ウィンドウが出ます） | ✅ |
 | [AWS Bedrock AgentCore Gateway](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-target-MCPservers.html) | Streamable HTTP | OAuth / IAM SigV4 / API キー | ゲートウェイには無い | 📄 |
 | [Dify](https://docs.dify.ai/en/cloud/use-dify/build/mcp) | HTTP | 任意ヘッダで Bearer、または OAuth | Human Input ノードを置けば可 | 📄 |
 | [n8n（MCP Client Tool）](https://docs.n8n.io/integrations/builtin/cluster-nodes/sub-nodes/n8n-nodes-langchain.toolmcp/) | HTTP Streamable / stdio | Bearer / 任意ヘッダ / OAuth2 | AI Agent ノードで有効化すれば可 | 📄 |
@@ -1003,9 +1003,13 @@ AIエージェントに設定すべき System Instruction（承認フロー、`d
 
 API Gateway や Identity-Aware Proxy をこのサーバーの手前に置いて OAuth 2.0 を処理し、本サーバーには `TRUST_UPSTREAM_AUTH=true` を設定します。認証の実装をこのサーバーから切り離せるうえ、監査ログもプラットフォーム側の仕組みに乗せられます。詳しくは[推奨構成: 認証は手前の層に置く](#推奨構成-認証は手前の層に置く)を参照してください。
 
-**構成B: ADK でエージェントを書く**
+**構成B: ADK でエージェントを書く（実機で確認済み・推奨）**
 
-コネクタを使わず、[Agent Development Kit](https://google.github.io/adk-docs/tools-custom/mcp-tools/) の `McpToolset` から `StreamableHTTPConnectionParams` で接続します。任意のヘッダを送れるので `MCP_AUTH_TOKEN` がそのまま使えます。ただし**ツール実行前の承認UIは自分で実装する必要があります**（コネクタ経由なら既定で表示されます）。
+コネクタを使わず、[Agent Development Kit](https://adk.dev/) の `McpToolset` から `StreamableHTTPConnectionParams` で接続します。任意のヘッダを送れるので `MCP_AUTH_TOKEN` がそのまま使えます。
+
+**ツール実行前の承認も ADK の `require_confirmation` で取れます。** Gemini Enterprise の Apps に承認ウィンドウが表示され、承認するまで送信されません（2026-08-25 に `dry_run` → 承認 → 実送信 → `delivered` まで確認しました）。
+
+**手順は [Gemini Enterprise の Agent Apps から使う（ADK 経由）](docs/gemini-enterprise-adk.md) にまとめています。**
 
 ```python
 from google.adk.tools.mcp_tool import McpToolset, StreamableHTTPConnectionParams
@@ -1073,4 +1077,5 @@ Copyright 2026 KDDI Web Communications Inc.
 - [セキュリティポリシー](SECURITY.md) — 脆弱性の報告方法と脅威モデル
 - [コントリビューションガイド](CONTRIBUTING.md)
 - [デプロイ手順](docs/deployment.md)
+- [Gemini Enterprise の Agent Apps から使う（ADK 経由）](docs/gemini-enterprise-adk.md) — 実機で確認済みの手順
 - [Gemini Enterprise 向け System Instruction](docs/gemini_system_instruction.md)

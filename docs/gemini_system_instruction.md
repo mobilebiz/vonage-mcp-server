@@ -260,10 +260,21 @@ Webhook を有効にするには、Vonage Dashboard の Application 設定で St
 
 ## Gemini Enterprise への設定手順
 
-1. Gemini Enterprise のエージェント設定画面を開く
-2. MCP サーバーとしてこのサーバーの HTTP エンドポイント（`POST /mcp`）を登録する
-   - 認証ヘッダー: `x-api-key: <VONAGE_APPLICATION_ID>`
-3. System Instruction 欄に、上記の[そのまま貼り付ける System Instruction](#そのまま貼り付ける-system-instruction)のコードブロックの内容を貼り付ける
+> [!IMPORTANT]
+> **カスタム MCP サーバーコネクタからは、このサーバーに認証情報を渡せません。**
+> コネクタが送れる認証は「なし」と OAuth 2.0 の2つだけで、任意ヘッダの欄がありません
+> （`MCP_AUTH_TOKEN` を設定する手段がない）。詳しくは README の
+> [Gemini Enterprise のカスタム MCP サーバーコネクタを使う場合](../README.md#️-gemini-enterprise-のカスタム-mcp-サーバーコネクタを使う場合)を参照してください。
+>
+> **`x-api-key: <VONAGE_APPLICATION_ID>` による認証は v1.3.0 で廃止しました。**
+> Application ID は秘密情報ではないため、認証には使えません。
+
+1. ADK でエージェントを作り、`McpToolset` からこのサーバーの `POST /mcp` に
+   `Authorization: Bearer <MCP_AUTH_TOKEN>` で接続する
+   （コネクタと違い、任意ヘッダを送れます）
+2. エージェントを Agent Runtime にデプロイし、Gemini Enterprise のアプリに
+   **Custom agent via Agent Runtime** として登録する
+3. エージェントの `instruction` に、上記の[そのまま貼り付ける System Instruction](#そのまま貼り付ける-system-instruction)のコードブロックの内容を設定する
 4. サーバー側の環境変数で `ALLOWED_NUMBERS` を設定し、検証中は自分の番号だけに送信できるようにする
 
 ### 検証中に推奨する環境変数
