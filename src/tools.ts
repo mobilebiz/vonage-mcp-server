@@ -20,6 +20,7 @@ import {
 } from './voiceCall.js';
 import { getCallStatus } from './callStatus.js';
 import { getMessageStatus, recordSubmitted } from './messageStatusStore.js';
+import { getCallEvent } from './callEventStore.js';
 import {
   PHONE_INPUT_PATTERN,
   SMS_INPUT_MAX_LENGTH,
@@ -131,6 +132,55 @@ function guardDestination(to: string): { outcome: ToolOutcome } | { normalized: 
   }
 
   return { normalized: validation.normalized };
+}
+
+/** 通話が接続されなかったことを示すステータス */
+const CALL_FAILURE_STATUSES = new Set([
+  'busy',
+  'cancelled',
+  'failed',
+  'rejected',
+  'timeout',
+  'unanswered',
+]);
+
+/**
+ * 「経路が無い」ことを示す detail。相手の状態とは無関係な失敗。
+ * @see https://developer.vonage.com/en/voice/voice-api/webhook-reference
+ */
+const UNROUTABLE_DETAILS = new Set(['cannot_route', 'restricted', 'unavailable']);
+
+/**
+ * 失敗した通話に添える注記を組み立てる。
+ *
+ * **`busy` は「相手が通話中」を意味するとは限らない。** その宛先への経路が無い場合も
+ * `busy` が返る。実測では、日本の固定電話宛が rate 0 のまま 0 秒で `busy` になり、
+ * 同じ発信元から携帯宛は繋がる、という状態が起きた。断定的に「話し中でした」と
+ * 報告させないために、ここで明示する。
+ */
+function callFailureNote(status: string | undefined, detail: string | undefined): { note: string } | null {
+  if (!status || !CALL_FAILURE_STATUSES.has(status.toLowerCase())) {
+    return null;
+  }
+
+  if (detail && UNROUTABLE_DETAILS.has(detail.toLowerCase())) {
+    return {
+      note:
+        `通話は接続されませんでした（detail: ${detail}）。これは相手の状態ではなく、` +
+        'その宛先への発信が有効になっていない可能性を示します。「話し中でした」と報告せず、' +
+        '同じ宛先への再発信を繰り返さないでください。',
+    };
+  }
+
+  if (detail) {
+    return { note: `通話は接続されませんでした（detail: ${detail}）。` };
+  }
+
+  return {
+    note:
+      '通話は接続されませんでしたが、理由（detail）を受信していません。Event Webhook が未設定の可能性があります。' +
+      `status が "${status}" でも相手の状態を断定できないため、「接続できませんでした」と報告してください。`,
+  };
 }
 
 /**
@@ -613,6 +663,10 @@ const toolImplementations: ToolImplementation[] = [
         );
       }
 
+      // Voice API の GET /calls は失敗の**理由**を返さない（detail は常に null）。
+      // 理由が来るのは Event Webhook だけなので、受信済みの記録があれば重ねる。
+      const event = getCallEvent(id);
+
       return successOutcome({
         call_id: id,
         call_status: result.status,
@@ -620,6 +674,9 @@ const toolImplementations: ToolImplementation[] = [
         duration_seconds: result.duration,
         price: result.price,
         rate: result.rate,
+        ...(event?.detail ? { detail: event.detail } : {}),
+        ...(event?.sipCode !== undefined ? { sip_code: event.sipCode } : {}),
+        ...(callFailureNote(result.status, event?.detail) ?? {}),
       });
     },
   },

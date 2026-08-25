@@ -28,6 +28,7 @@ import {
   ingestStatusWebhook,
   recordSubmitted,
 } from '../src/messageStatusStore.js';
+import { clearCallEventStore, ingestCallEvent } from '../src/callEventStore.js';
 
 /** ツールを実行して軽量ペイロードを取り出す */
 async function invoke(name: string, args: unknown): Promise<any> {
@@ -798,6 +799,72 @@ describe('tools registry', () => {
       const payload = await invoke('get_call_status', {});
       expect(payload.status).toBe('error');
       expect(mockGetCallStatus).not.toHaveBeenCalled();
+    });
+
+    // Voice API の GET /calls は detail を返さない。理由は Event Webhook にしか来ない。
+    describe('Event Webhook で受け取った理由の反映', () => {
+      beforeEach(() => {
+        clearCallEventStore();
+        mockGetCallStatus.mockResolvedValue({
+          success: true,
+          status: 'busy',
+          price: '0',
+          rate: '0',
+          duration: 0,
+          startTime: new Date().toISOString(),
+        });
+      });
+
+      it('detail と sip_code を重ねて返す', async () => {
+        ingestCallEvent({
+          uuid: 'call-detail',
+          status: 'busy',
+          detail: 'cannot_route',
+          sip_code: 486,
+          timestamp: new Date().toISOString(),
+        });
+
+        const payload = await invoke('get_call_status', { call_id: 'call-detail' });
+
+        expect(payload).toMatchObject({ status: 'success', detail: 'cannot_route', sip_code: 486 });
+      });
+
+      // 「busy = 相手が通話中」と断定させないための注記
+      it('経路が無いことを示す detail なら、相手の状態ではないと注記する', async () => {
+        ingestCallEvent({
+          uuid: 'call-unroutable',
+          status: 'busy',
+          detail: 'cannot_route',
+          timestamp: new Date().toISOString(),
+        });
+
+        const payload = await invoke('get_call_status', { call_id: 'call-unroutable' });
+
+        expect(payload.note).toContain('相手の状態ではなく');
+        expect(payload.note).toContain('cannot_route');
+      });
+
+      it('理由を受信していない失敗には、Event Webhook 未設定の可能性を注記する', async () => {
+        const payload = await invoke('get_call_status', { call_id: 'call-no-event' });
+
+        expect(payload.note).toContain('Event Webhook');
+        expect(payload.detail).toBeUndefined();
+      });
+
+      it('成功した通話には注記を付けない', async () => {
+        mockGetCallStatus.mockResolvedValue({
+          success: true,
+          status: 'completed',
+          price: '0.01',
+          rate: '0.13',
+          duration: 5,
+          startTime: new Date().toISOString(),
+        });
+
+        const payload = await invoke('get_call_status', { call_id: 'call-ok' });
+
+        expect(payload.note).toBeUndefined();
+      });
     });
   });
 

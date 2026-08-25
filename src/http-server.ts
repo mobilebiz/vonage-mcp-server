@@ -6,6 +6,8 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 
 import { SERVER_VERSION, createMcpServer, enabledToolNames } from './mcpServer.js';
 import { ingestStatusWebhook } from './messageStatusStore.js';
+import { ingestCallEvent } from './callEventStore.js';
+import { generateNCCO } from './voiceCall.js';
 import { authenticateWebhook, isWebhookAuthConfigured, safeEqual } from './webhookAuth.js';
 import {
   applyStartupConfig,
@@ -209,6 +211,92 @@ app.post('/webhooks/message-status', (req, res) => {
  */
 app.post('/webhooks/inbound', (_req, res) => {
   res.status(200).json({ status: 'ok' });
+});
+
+/**
+ * 着信時に読み上げる案内。
+ *
+ * このサーバーは発信専用で、着信を処理する機能を持たない。それでも Answer URL を
+ * 置くのは、番号をアプリケーションにリンクすると**着信がアプリに向く**ためで、
+ * URL が無いと発信者は無言のまま切られる。
+ */
+function inboundGreeting(): string {
+  const custom = process.env.VOICE_INBOUND_MESSAGE?.trim();
+  return custom && custom !== ''
+    ? custom
+    : 'おかけになった電話番号では、お電話をお受けしておりません。恐れ入りますが、担当者へ直接ご連絡ください。';
+}
+
+/**
+ * Vonage Voice API の Answer Webhook 受信エンドポイント
+ * POST /webhooks/voice/answer
+ *
+ * 着信に対して NCCO を返す。案内を読み上げて切るだけで、通話は受け付けない。
+ * NCCO は最後のアクションが終わると通話が終了するため、hangup は不要。
+ *
+ * 認証: message-status と同じく fail-closed。認証できない場合 NCCO を返さないため
+ *       着信は cancelled になるが、着信を受け付けない方針なので実害はない。
+ */
+app.post('/webhooks/voice/answer', (req, res) => {
+  const auth = authenticateWebhook(req.headers, (req as express.Request & { rawBody?: Buffer }).rawBody);
+  if (!auth.authorized) {
+    res.status(auth.status ?? 401).json({ error: auth.reason });
+    return;
+  }
+
+  res.status(200).json(generateNCCO(inboundGreeting()));
+});
+
+/**
+ * Answer URL は Vonage の既定が GET だが、このサーバーは POST しか受けない。
+ *
+ * 署名付きJWTの検証は payload_hash（＝ボディのハッシュ）を必須にしており、
+ * ボディの無い GET でこれが成立するかは公式ドキュメントに記載が無い。認証を
+ * 弱める代わりに、アプリケーション側で `answer_method` を POST にしてもらう。
+ *
+ * 黙って 404 を返すと「Webhookが動かない」原因が分からなくなるので、
+ * 何をすればよいかを本文に書いて返す。
+ */
+app.get('/webhooks/voice/answer', (_req, res) => {
+  res.status(405).json({
+    error: 'This endpoint accepts POST only',
+    reason:
+      'Vonage アプリケーションの Answer URL の HTTP メソッド（answer_method）を POST に変更してください。' +
+      '署名付きWebhookの検証にリクエストボディが必要なため、GET は受け付けません。',
+  });
+});
+
+/**
+ * Vonage Voice API の Event Webhook 受信エンドポイント
+ * POST /webhooks/voice/event
+ *
+ * **通話が失敗した理由が届く唯一の経路。** `GET /v1/calls/{uuid}` は status しか
+ * 返さず detail は null のままなので、`busy` が「相手が通話中」なのか
+ * 「その宛先への経路が無い」のかを、この Webhook 無しには区別できない。
+ * 受け取った detail / sip_code は get_call_status から返す。
+ */
+app.post('/webhooks/voice/event', (req, res) => {
+  const auth = authenticateWebhook(req.headers, (req as express.Request & { rawBody?: Buffer }).rawBody);
+  if (!auth.authorized) {
+    res.status(auth.status ?? 401).json({ error: auth.reason });
+    return;
+  }
+
+  const result = ingestCallEvent(req.body);
+
+  if (!result) {
+    // Vonageのリトライを防ぐため 200 は返さず、不正なペイロードとして 400 を返す
+    res.status(400).json({ error: 'Invalid call event payload: uuid and status are required' });
+    return;
+  }
+
+  res.status(200).json({
+    status: 'ok',
+    call_id: result.record.callId,
+    call_status: result.record.status,
+    // 再送・順序逆転で古い通知が届いた場合は取り込まず、既存の状態を維持する
+    ignored: result.ignored,
+  });
 });
 
 /**

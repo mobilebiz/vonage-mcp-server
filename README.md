@@ -180,6 +180,7 @@ AIエージェント（Gemini Enterprise / Claude 等）から利用する際の
 | `VOICE_RATE_LIMIT_PER_HOUR` | （未設定＝`RATE_LIMIT_PER_HOUR` に委ねる） | 架電だけをさらに絞りたい場合の上限。 |
 | `DISABLE_RATE_LIMIT` | `false` | `true` にするとレートリミットを完全に無効化する。**危険な設定**であり、起動のたびに警告が出る。本番環境では使わないこと。 |
 | `VONAGE_API_SIGNATURE_SECRET` | （未設定） | Status Webhook の署名検証に使う Vonage の Signature Secret。**推奨**。Vonage Dashboard の Settings → API settings で取得できる。 |
+| `VOICE_INBOUND_MESSAGE` | （案内文） | 音声の着信時に読み上げる文面。このサーバーは着信を処理しないため、既定では「お受けしておりません」という案内を読み上げて切る。 |
 | `VONAGE_WEBHOOK_SECRET` | （未設定） | 署名検証が使えない環境向けの代替。設定すると `x-webhook-secret` ヘッダーの一致を要求する。`VONAGE_API_SIGNATURE_SECRET` が設定されている場合は使われない。 |
 | `WEBHOOK_MAX_AGE_SECONDS` | `300` | 署名付き Webhook の `iat` / `exp` に許す時刻のずれ（秒、`1`〜`3600`）。短いほどリプレイ可能な時間窓が縮む。 |
 
@@ -981,6 +982,36 @@ curl -X POST http://localhost:3000/webhooks/message-status \
 **POST** `/webhooks/inbound`
 
 受信メッセージ用のスタブ（常に 200 を返す）。Vonage側の設定必須項目を満たすために用意しています。
+
+**POST** `/webhooks/voice/answer`
+
+音声の着信に対して NCCO を返すエンドポイントです。**このサーバーは発信専用で、着信を処理する機能を持ちません。** 案内を読み上げて通話を終了します（文面は `VOICE_INBOUND_MESSAGE` で変更できます）。
+
+それでも用意しているのは、**Vonage の番号をアプリケーションにリンクすると、その番号への着信がアプリに向く**ためです。Answer URL が無いと、発信者は無言のまま切られます。
+
+> [!IMPORTANT]
+> **Vonage 側で Answer URL の HTTP メソッド（`answer_method`）を POST に変更してください。** 既定は GET ですが、署名付き Webhook の検証はリクエストボディのハッシュ（`payload_hash`）を必要とするため、ボディの無い GET は受け付けません。GET で呼ばれた場合は `405` と対処法を返します。
+
+**POST** `/webhooks/voice/event`
+
+通話イベントの受信エンドポイントです。受信した内容はオンメモリに24時間保持され、`get_call_status` ツールのレスポンスに `detail` と `sip_code` として重ねて返されます。
+
+> [!TIP]
+> **通話が失敗した理由が届くのは、この Webhook だけです。** Voice API の `GET /v1/calls/{uuid}` は `status` しか返さず `detail` は常に `null` です。
+>
+> これは実運用で効きます。たとえば `busy` は「相手が通話中」とは限らず、**その宛先への経路が無い場合も `busy` になります**。`detail`（`cannot_route` / `restricted` / `unavailable` など）と `sip_code` があって初めて切り分けられます。設定しておくと、原因調査が推測ではなく事実になります。
+
+どちらのエンドポイントも認証は `/webhooks/message-status` と同じです（署名付きJWT を推奨、未設定なら 503 で無効化）。
+
+> [!WARNING]
+> **古い Vonage アプリケーションでは、署名付き Webhook が既定で無効です。** その場合このサーバーは 401 を返し続けます。Vonage Dashboard でアプリケーションの署名付き Webhook を有効化するか、`VONAGE_WEBHOOK_SECRET` による共有シークレット方式を使ってください。
+
+Vonage Dashboard の Application 設定で、次のように登録します。
+
+| 設定項目 | URL | メソッド |
+| --- | --- | --- |
+| Answer URL | `https://<host>/webhooks/voice/answer` | **POST** |
+| Event URL | `https://<host>/webhooks/voice/event` | POST |
 
 ## Gemini Enterprise などのAIエージェントから利用する
 
