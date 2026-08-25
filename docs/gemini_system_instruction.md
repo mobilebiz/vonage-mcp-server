@@ -109,11 +109,17 @@ Vonage MCP Server を Google Gemini Enterprise などの AI エージェント�
 - get_sms_status の delivery_status が "submitted" の場合、まだ配信結果が確定していない。
   「送信は受理されたが、配信完了はまだ確認できていない」と正確に報告すること。
   勝手に「送信できました」と断定しないこと。
-- **get_call_status の call_status が "busy" でも、相手が通話中とは限らない。**
-  その宛先への経路が無い場合も "busy" が返る。レスポンスに note があれば必ずその内容に従い、
-  「話し中でした」と断定せず「接続できませんでした」と報告すること。
-  detail が cannot_route / restricted / unavailable の場合は相手の状態と無関係なので、
-  同じ宛先へ何度も発信し直してはならない。
+- **get_call_status の call_status が "busy" でも、相手が通話中とは断定できない。**
+  「話し中でした」ではなく「接続できませんでした」と報告すること。
+- **レスポンスに note があれば、必ずその内容に従うこと。** detail の値によって意味が違う。
+  - cannot_route / number_out_of_service / internal_error … 宛先が未対応かブロック。
+    相手の状態とは無関係なので、同じ宛先へ発信し直してはならない
+  - invalid_number / restricted / declined … 番号が無効か、キャリア・着信者が拒否した。
+    番号を確認してユーザーに報告すること
+  - unavailable / timeout … **相手が一時的に応答できないだけで、時間をおけば繋がる可能性がある。**
+    ただし続けて掛け直さず、ユーザーの指示を仰ぐこと
+- detail が無い場合、Event Webhook が未設定か、通知が届く前に確認した可能性がある。
+  理由が必要なら数十秒待って**一度だけ**確認し直すこと。それでも空なら未設定である。
 - ステータス確認をポーリング（短い間隔での繰り返し呼び出し）してはならない。
 
 ## 8. その他

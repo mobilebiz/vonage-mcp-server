@@ -36,6 +36,11 @@ export interface CallEventRecord {
   timestamp: string;
   /** ストアへの記録時刻（TTL判定用） */
   recordedAt: number;
+  /**
+   * このサーバーが make_voice_call で発信した通話か。
+   * 上限に達したとき、どれを先に捨てるかの判断に使う。
+   */
+  known: boolean;
 }
 
 /** レコードの保持期間（24時間）。messageStatusStore と揃える */
@@ -79,6 +84,51 @@ function parseTimestamp(value: string | undefined): number | null {
 
 const store = new Map<string, CallEventRecord>();
 
+/**
+ * このサーバーが発信した call_id。
+ *
+ * **同じ Vonage Application を他システムと共用していると、そちらの通話イベントも
+ * ここに届く。** さらに、発信の相手先によっては折り返しの着信レグが立ち、1回の発信で
+ * 2件のイベント列が流れることもある。全部を同格に扱うと、上限に達したときに
+ * **get_call_status から引ける自分の記録が、引けない他人の記録に押し出される**。
+ * SMS 側で踏んだのと同じ問題（VONAGE_MCP-20）。
+ *
+ * 着信のイベントも障害調査には役立つので捨てはしないが、**捨てる順番は自分のものを
+ * 後回しにする**。
+ */
+const knownCallIds = new Set<string>();
+
+/** 記録する call_id の上限。発信のたびに増えるので、ストアと同じ規模で抑える */
+const KNOWN_MAX_ENTRIES = 1000;
+
+/**
+ * make_voice_call が発信に成功したときに呼ぶ。
+ * この ID のイベントは「自分のもの」として優先的に保持される。
+ */
+export function recordOutboundCall(callId: string): void {
+  if (!callId) {
+    return;
+  }
+
+  // 挿入順を最新にするため、いったん削除してから追加する
+  knownCallIds.delete(callId);
+  knownCallIds.add(callId);
+
+  while (knownCallIds.size > KNOWN_MAX_ENTRIES) {
+    const oldest = knownCallIds.values().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    knownCallIds.delete(oldest);
+  }
+
+  const existing = store.get(callId);
+  if (existing) {
+    // 発信レスポンスより先にイベントが届いていた場合、ここで昇格させる
+    existing.known = true;
+  }
+}
+
 /** TTL切れのレコードを取り除く */
 function pruneExpired(now: number): void {
   for (const [id, record] of store) {
@@ -88,10 +138,30 @@ function pruneExpired(now: number): void {
   }
 }
 
-/** 件数上限を超えていたら古いものから破棄する */
+/**
+ * 件数上限を超えていたら破棄する。
+ *
+ * **自分が発信していない通話（着信レグや他システムの通話）から先に捨てる。**
+ * 単純に古い順で捨てると、get_call_status から引ける自分の記録が、引けない
+ * 記録に押し出される。
+ */
 function enforceCapacity(): void {
+  if (store.size <= MAX_ENTRIES) {
+    return;
+  }
+
+  // Map は挿入順を保持するため、先に回ったものほど古い
+  for (const [id, record] of store) {
+    if (store.size <= MAX_ENTRIES) {
+      return;
+    }
+    if (!record.known) {
+      store.delete(id);
+    }
+  }
+
+  // 自分のものだけで上限を超えている場合は、古い順に捨てる
   while (store.size > MAX_ENTRIES) {
-    // Map は挿入順を保持するため、先頭が最も古い
     const oldestKey = store.keys().next().value;
     if (oldestKey === undefined) {
       break;
@@ -161,6 +231,7 @@ export function ingestCallEvent(payload: unknown): CallEventIngestResult | null 
     from: typeof body.from === 'string' ? body.from : existing?.from,
     timestamp,
     recordedAt: now,
+    known: existing?.known || knownCallIds.has(callId),
   };
 
   pruneExpired(now);
@@ -203,9 +274,10 @@ export function getCallEvent(callId: string): CallEventRecord | null {
   return store.get(callId) ?? null;
 }
 
-/** テスト用: ストアを空にする */
+/** テスト用: ストアと発信IDの記録を空にする */
 export function clearCallEventStore(): void {
   store.clear();
+  knownCallIds.clear();
 }
 
 /** テスト用: 現在の保持件数 */

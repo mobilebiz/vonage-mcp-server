@@ -997,9 +997,20 @@ curl -X POST http://localhost:3000/webhooks/message-status \
 通話イベントの受信エンドポイントです。受信した内容はオンメモリに24時間保持され、`get_call_status` ツールのレスポンスに `detail` と `sip_code` として重ねて返されます。
 
 > [!TIP]
-> **通話が失敗した理由が届くのは、この Webhook だけです。** Voice API の `GET /v1/calls/{uuid}` は `status` しか返さず `detail` は常に `null` です。
->
-> これは実運用で効きます。たとえば `busy` は「相手が通話中」とは限らず、**その宛先への経路が無い場合も `busy` になります**。`detail`（`cannot_route` / `restricted` / `unavailable` など）と `sip_code` があって初めて切り分けられます。設定しておくと、原因調査が推測ではなく事実になります。
+> **通話が失敗した理由が届くのは、この Webhook だけです。** Voice API の `GET /v1/calls/{uuid}` は `status` しか返さず `detail` は常に `null` です。設定しておくと、原因調査が推測ではなく事実になります。
+
+`detail` は `status` ごとに意味が異なります（[公式リファレンス](https://developer.vonage.com/en/voice/voice-api/webhook-reference)）。**まとめて「宛先が悪い」と解釈しないでください。**
+
+| status | detail | 意味 | 掛け直す意味があるか |
+| --- | --- | --- | --- |
+| `failed` | `cannot_route` / `number_out_of_service` / `internal_error` | 宛先がこのアカウントで未対応、ブロック、または不通 | ない |
+| `rejected` | `invalid_number` / `restricted` / `declined` | 番号が無効、キャリアまたは着信者が拒否 | 同じ条件では期待できない |
+| `unanswered` | `unavailable` / `timeout` | **相手が一時的に応答できない** | 時間をおけばある |
+
+`get_call_status` は、接続できなかった通話にこの分類に沿った `note` を添えます。
+
+> [!NOTE]
+> **`busy` が返っても「相手が通話中」と断定はできません。** 実測で、アプリケーション側の設定が不十分なときに `rate 0` / 0秒の `busy` が返り、同じ発信元から携帯宛は繋がる、という状態が起きました。`detail` が無いまま結論を出さないでください。
 
 どちらのエンドポイントも認証は `/webhooks/message-status` と同じです（署名付きJWT を推奨、未設定なら 503 で無効化）。
 

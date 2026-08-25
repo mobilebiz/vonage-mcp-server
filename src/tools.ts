@@ -20,7 +20,7 @@ import {
 } from './voiceCall.js';
 import { getCallStatus } from './callStatus.js';
 import { getMessageStatus, recordSubmitted } from './messageStatusStore.js';
-import { getCallEvent } from './callEventStore.js';
+import { getCallEvent, recordOutboundCall } from './callEventStore.js';
 import {
   PHONE_INPUT_PATTERN,
   SMS_INPUT_MAX_LENGTH,
@@ -145,42 +145,88 @@ const CALL_FAILURE_STATUSES = new Set([
 ]);
 
 /**
- * 「経路が無い」ことを示す detail。相手の状態とは無関係な失敗。
+ * detail の分類。**detail は status ごとに意味が違うので、まとめて扱ってはいけない。**
+ *
+ * 公式リファレンスの対応:
+ * - `failed`     → cannot_route / number_out_of_service / internal_error
+ * - `rejected`   → invalid_number / restricted / declined
+ * - `unanswered` → unavailable / timeout
+ *
+ * とくに `unavailable` は「相手が一時的に応答できない」であり、時間をおけば繋がる。
+ * これを `cannot_route` と同じ「経路が無い」に混ぜると、**再試行すれば繋がる相手に
+ * 対して「もう掛けるな」と指示する**ことになる。
+ *
  * @see https://developer.vonage.com/en/voice/voice-api/webhook-reference
  */
-const UNROUTABLE_DETAILS = new Set(['cannot_route', 'restricted', 'unavailable']);
+const DETAIL_CATEGORY: Record<string, 'unroutable' | 'rejected' | 'temporary'> = {
+  // failed — 宛先そのものに届かない。相手の状態とは無関係
+  cannot_route: 'unroutable',
+  number_out_of_service: 'unroutable',
+  internal_error: 'unroutable',
+  // rejected — 誰か（キャリアか着信者）が拒否した。番号の不備も含む
+  invalid_number: 'rejected',
+  restricted: 'rejected',
+  declined: 'rejected',
+  // unanswered — 一時的。時間をおけば結果が変わりうる
+  unavailable: 'temporary',
+  timeout: 'temporary',
+};
 
 /**
  * 失敗した通話に添える注記を組み立てる。
  *
- * **`busy` は「相手が通話中」を意味するとは限らない。** その宛先への経路が無い場合も
- * `busy` が返る。実測では、日本の固定電話宛が rate 0 のまま 0 秒で `busy` になり、
- * 同じ発信元から携帯宛は繋がる、という状態が起きた。断定的に「話し中でした」と
- * 報告させないために、ここで明示する。
+ * **`busy` を「相手が通話中」と断定させないことが目的。** 実測で、設定不備の状態でも
+ * `busy` が返る例があった（日本の固定電話宛が rate 0 のまま0秒で busy、同じ発信元から
+ * 携帯宛は繋がる）。status だけで相手の状態を語れないため、必ず注記を添える。
+ *
+ * ただし**理由の断定は detail の分類に従う**。「経路が無い」と言えるのは
+ * DETAIL_CATEGORY が unroutable のときだけで、それ以外に広げてはいけない。
  */
 function callFailureNote(status: string | undefined, detail: string | undefined): { note: string } | null {
   if (!status || !CALL_FAILURE_STATUSES.has(status.toLowerCase())) {
     return null;
   }
 
-  if (detail && UNROUTABLE_DETAILS.has(detail.toLowerCase())) {
-    return {
-      note:
-        `通話は接続されませんでした（detail: ${detail}）。これは相手の状態ではなく、` +
-        'その宛先への発信が有効になっていない可能性を示します。「話し中でした」と報告せず、' +
-        '同じ宛先への再発信を繰り返さないでください。',
-    };
-  }
+  const prefix = detail
+    ? `通話は接続されませんでした（status: ${status} / detail: ${detail}）。`
+    : `通話は接続されませんでした（status: ${status}）。`;
 
-  if (detail) {
-    return { note: `通話は接続されませんでした（detail: ${detail}）。` };
+  switch (detail ? DETAIL_CATEGORY[detail.toLowerCase()] : undefined) {
+    case 'unroutable':
+      return {
+        note:
+          prefix +
+          'これは相手の状態ではなく、その宛先がこのアカウントで未対応かブロックされていることを示します。' +
+          '「話し中でした」と報告せず、同じ宛先への再発信を繰り返さないでください。',
+      };
+    case 'rejected':
+      return {
+        note:
+          prefix +
+          'キャリアまたは着信者に拒否されたか、発信元・宛先の番号が受け付けられませんでした。' +
+          '同じ条件で掛け直しても結果は変わらない可能性が高いため、番号を確認してユーザーに報告してください。',
+      };
+    case 'temporary':
+      return {
+        note:
+          prefix +
+          'これは一時的な状態（相手が応答できない、または応答が時間内に得られない）を示します。' +
+          '時間をおけば繋がる可能性がありますが、続けて掛け直さずユーザーの指示を仰いでください。',
+      };
+    case undefined:
+      // detail はあるが分類表に無い（新しい値）。断定せず、値だけを伝える
+      if (detail) {
+        return { note: prefix + '理由の詳細は detail の値を確認してください。' };
+      }
+      // detail が無い。Webhook 未設定か、通知がまだ届いていないかを区別できない
+      return {
+        note:
+          prefix +
+          '理由（detail）をまだ受信していません。Event Webhook が未設定か、通知が届く前にこの確認が実行された可能性があります。' +
+          '相手の状態を断定せず「接続できませんでした」と報告し、理由が必要なら数十秒待ってから' +
+          '**一度だけ**確認し直してください（それでも空なら Webhook が未設定です）。',
+      };
   }
-
-  return {
-    note:
-      '通話は接続されませんでしたが、理由（detail）を受信していません。Event Webhook が未設定の可能性があります。' +
-      `status が "${status}" でも相手の状態を断定できないため、「接続できませんでした」と報告してください。`,
-  };
 }
 
 /**
@@ -622,6 +668,12 @@ const toolImplementations: ToolImplementation[] = [
           { to: guarded.normalized },
           'upstream'
         );
+      }
+
+      // 自分が発信した通話として記録する。イベントストアが上限に達したとき、
+      // 着信レグや他システムの通話より優先して保持するために使う。
+      if (result.callId) {
+        recordOutboundCall(result.callId);
       }
 
       return successOutcome({

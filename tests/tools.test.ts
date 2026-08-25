@@ -829,11 +829,12 @@ describe('tools registry', () => {
         expect(payload).toMatchObject({ status: 'success', detail: 'cannot_route', sip_code: 486 });
       });
 
-      // 「busy = 相手が通話中」と断定させないための注記
-      it('経路が無いことを示す detail なら、相手の状態ではないと注記する', async () => {
+      // detail は status ごとに意味が違う。まとめて「経路が無い」と扱うと、
+      // 再試行すれば繋がる相手に「もう掛けるな」と言うことになる
+      it('cannot_route は「相手の状態ではない」と断定する', async () => {
         ingestCallEvent({
           uuid: 'call-unroutable',
-          status: 'busy',
+          status: 'failed',
           detail: 'cannot_route',
           timestamp: new Date().toISOString(),
         });
@@ -844,10 +845,56 @@ describe('tools registry', () => {
         expect(payload.note).toContain('cannot_route');
       });
 
-      it('理由を受信していない失敗には、Event Webhook 未設定の可能性を注記する', async () => {
+      it('unavailable は一時的な状態として扱い、経路の問題とは言わない', async () => {
+        ingestCallEvent({
+          uuid: 'call-unavailable',
+          status: 'unanswered',
+          detail: 'unavailable',
+          timestamp: new Date().toISOString(),
+        });
+
+        const payload = await invoke('get_call_status', { call_id: 'call-unavailable' });
+
+        expect(payload.note).toContain('一時的');
+        expect(payload.note).not.toContain('相手の状態ではなく');
+        expect(payload.note).not.toContain('繰り返さないでください');
+      });
+
+      it('restricted は拒否として扱い、経路の問題とは言わない', async () => {
+        ingestCallEvent({
+          uuid: 'call-restricted',
+          status: 'rejected',
+          detail: 'restricted',
+          timestamp: new Date().toISOString(),
+        });
+
+        const payload = await invoke('get_call_status', { call_id: 'call-restricted' });
+
+        expect(payload.note).toContain('拒否');
+        expect(payload.note).not.toContain('相手の状態ではなく');
+      });
+
+      it('分類表に無い detail は断定しない', async () => {
+        ingestCallEvent({
+          uuid: 'call-unknown-detail',
+          status: 'failed',
+          detail: 'brand_new_reason',
+          timestamp: new Date().toISOString(),
+        });
+
+        const payload = await invoke('get_call_status', { call_id: 'call-unknown-detail' });
+
+        expect(payload.note).toContain('brand_new_reason');
+        expect(payload.note).not.toContain('相手の状態ではなく');
+      });
+
+      // API が終端ステータスを返したあとに Webhook が届くことがある。
+      // 「未設定」と決めつけると、数秒待てば取れた理由を永久に取り逃す
+      it('理由が無い場合は、未設定と決めつけず一度だけの再確認を案内する', async () => {
         const payload = await invoke('get_call_status', { call_id: 'call-no-event' });
 
-        expect(payload.note).toContain('Event Webhook');
+        expect(payload.note).toContain('Event Webhook が未設定');
+        expect(payload.note).toContain('一度だけ');
         expect(payload.detail).toBeUndefined();
       });
 

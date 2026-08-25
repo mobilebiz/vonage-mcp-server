@@ -5,6 +5,7 @@ import {
   clearCallEventStore,
   getCallEvent,
   ingestCallEvent,
+  recordOutboundCall,
 } from '../src/callEventStore.js';
 
 /**
@@ -121,5 +122,48 @@ describe('callEventStore', () => {
     expect(callEventStoreSize()).toBe(1000);
     expect(getCallEvent('bulk-0')).toBeNull();
     expect(getCallEvent('bulk-1000')).not.toBeNull();
+  });
+
+  // 1回の発信で折り返しの着信レグが立つことがあり、他システムと Application を
+  // 共用していれば無関係な通話も届く。上限で自分の記録が押し出されると、
+  // get_call_status から引けるものだけが消えることになる（SMS の VONAGE_MCP-20 と同じ）。
+  describe('上限に達したときの捨て方', () => {
+    it('自分が発信した通話より先に、それ以外を捨てる', () => {
+      recordOutboundCall('mine');
+      ingestCallEvent({ uuid: 'mine', status: 'failed', detail: 'cannot_route', timestamp: at(0) });
+
+      // 自分のものより後に、無関係なイベントで上限まで埋める
+      for (let i = 0; i < 1000; i++) {
+        ingestCallEvent({ uuid: `theirs-${i}`, status: 'completed', timestamp: at(i + 1) });
+      }
+
+      expect(callEventStoreSize()).toBe(1000);
+      // 最も古いのは 'mine' だが、残っているべきなのはこちら
+      expect(getCallEvent('mine')).toMatchObject({ detail: 'cannot_route' });
+      expect(getCallEvent('theirs-0')).toBeNull();
+    });
+
+    it('自分の通話だけで上限を超えたら、古いものから捨てる', () => {
+      for (let i = 0; i < 1001; i++) {
+        recordOutboundCall(`mine-${i}`);
+        ingestCallEvent({ uuid: `mine-${i}`, status: 'completed', timestamp: at(i) });
+      }
+
+      expect(callEventStoreSize()).toBe(1000);
+      expect(getCallEvent('mine-0')).toBeNull();
+      expect(getCallEvent('mine-1000')).not.toBeNull();
+    });
+
+    // 発信レスポンスより先にイベントが届く競合がある
+    it('先にイベントが届いていても、後から自分のものとして昇格する', () => {
+      ingestCallEvent({ uuid: 'race', status: 'ringing', timestamp: at(0) });
+      recordOutboundCall('race');
+
+      for (let i = 0; i < 1000; i++) {
+        ingestCallEvent({ uuid: `other-${i}`, status: 'completed', timestamp: at(i + 1) });
+      }
+
+      expect(getCallEvent('race')).not.toBeNull();
+    });
   });
 });
