@@ -1012,8 +1012,13 @@ API Gateway や Identity-Aware Proxy をこのサーバーの手前に置いて 
 **手順は [Gemini Enterprise の Agent Apps から使う（ADK 経由）](docs/gemini-enterprise-adk.md) にまとめています。**
 
 ```python
+import os
+
 from google.adk.tools.mcp_tool import McpToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
+
+# 完全な実装では Secret Manager から解決する（下記リンク先を参照）
+MCP_AUTH_TOKEN = os.environ["MCP_AUTH_TOKEN"]
 
 def confirm_unless_dry_run(**kwargs) -> bool:
     """dry_run: true 以外の呼び出しに承認を要求する。"""
