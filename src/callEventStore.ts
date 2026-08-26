@@ -104,11 +104,22 @@ const MAX_ENTRIES = 1000;
 /** 自分以外の通話の保持上限。素性の分からないデータなので小さく取る */
 const UNKNOWN_MAX_ENTRIES = 200;
 
-/** このサーバーが発信した call_id */
-const knownCallIds = new Set<string>();
+/**
+ * このサーバーが発信した call_id と、その記録時刻。
+ *
+ * **保持期間はイベントと同じ24時間にする。** 件数だけで打ち切ると、発信が
+ * 立て込んだときに「まだイベントが届いていない通話のID」を先に忘れ、あとから
+ * 届いた終端イベントが素性の分からないデータとして扱われる。そうなると、
+ * 無関係な着信 200 件で押し出されうる。**イベントを守るための記録なのだから、
+ * イベントより先に消えてはならない。**
+ *
+ * 件数の上限も残すが、これは異常時にメモリが際限なく増えないための歯止めで、
+ * 通常の運用で当たる値ではない。
+ */
+const knownCallIds = new Map<string, number>();
 
-/** 記録する call_id の上限。発信のたびに増えるので、ストアと同じ規模で抑える */
-const KNOWN_MAX_ENTRIES = 1000;
+/** 発信IDの件数上限（メモリの歯止め）。24時間のTTLが先に効くのが普通 */
+const KNOWN_MAX_ENTRIES = 10000;
 
 /**
  * make_voice_call が発信に成功したときに呼ぶ。
@@ -121,12 +132,21 @@ export function recordOutboundCall(callId: string): void {
     return;
   }
 
+  const now = Date.now();
+
   // 挿入順を最新にするため、いったん削除してから追加する
   knownCallIds.delete(callId);
-  knownCallIds.add(callId);
+  knownCallIds.set(callId, now);
+
+  for (const [id, recordedAt] of knownCallIds) {
+    if (now - recordedAt < TTL_MS) {
+      break; // 挿入順なので、ここから先は期限内
+    }
+    knownCallIds.delete(id);
+  }
 
   while (knownCallIds.size > KNOWN_MAX_ENTRIES) {
-    const oldest = knownCallIds.values().next().value;
+    const oldest = knownCallIds.keys().next().value;
     if (oldest === undefined) {
       break;
     }
