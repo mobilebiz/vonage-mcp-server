@@ -298,6 +298,35 @@ function shouldIgnoreUpdate(
   return incomingRank < existingRank;
 }
 
+/**
+ * この**プロセス**が Event Webhook を待ち受けているか。
+ *
+ * ストアが空である理由は2つあり、意味がまったく違う。
+ *
+ * - HTTP 版 — まだ通知が届いていないだけかもしれない。待てば埋まる可能性がある
+ * - stdio 版 — `/webhooks/voice/event` を誰も待ち受けていない。**待っても永久に埋まらない**
+ *
+ * 別プロセスの HTTP 版に Webhook を向けても、ストアはプロセス内にしか無いため
+ * こちらの結果は変わらない。区別せずに「数十秒待って再確認」と案内すると、
+ * stdio のエージェントに確実に空振りする往復をさせることになる。
+ */
+let webhookHosted = false;
+
+/**
+ * Event Webhook を待ち受けている／いないを記録する。
+ *
+ * 本番では HTTP 版のエントリポイントが起動時に一度だけ true を渡す。stdio 版は
+ * 何もしない（既定の false のまま）。テストは両分岐を確かめるために切り替える。
+ */
+export function setCallEventWebhookHosted(hosted: boolean): void {
+  webhookHosted = hosted;
+}
+
+/** Event Webhook を待ち受けているか。理由が「これから届きうる」かの判断に使う。 */
+export function isCallEventWebhookHosted(): boolean {
+  return webhookHosted;
+}
+
 /** call_id からイベント記録を取得する。見つからない場合は null。 */
 export function getCallEvent(callId: string): CallEventRecord | null {
   pruneExpired(Date.now());

@@ -180,7 +180,7 @@ AIエージェント（Gemini Enterprise / Claude 等）から利用する際の
 | `VOICE_RATE_LIMIT_PER_HOUR` | （未設定＝`RATE_LIMIT_PER_HOUR` に委ねる） | 架電だけをさらに絞りたい場合の上限。 |
 | `DISABLE_RATE_LIMIT` | `false` | `true` にするとレートリミットを完全に無効化する。**危険な設定**であり、起動のたびに警告が出る。本番環境では使わないこと。 |
 | `VONAGE_API_SIGNATURE_SECRET` | （未設定） | Status Webhook の署名検証に使う Vonage の Signature Secret。**推奨**。Vonage Dashboard の Settings → API settings で取得できる。 |
-| `VOICE_INBOUND_MESSAGE` | （案内文） | 音声の着信時に読み上げる文面。このサーバーは着信を処理しないため、既定では「お受けしておりません」という案内を読み上げて切る。 |
+| `VOICE_INBOUND_MESSAGE` | （案内文） | 音声の着信時に読み上げる文面。このサーバーは着信を処理しないため、既定では「お受けしておりません」という案内を読み上げて切る。**1000文字以内**（発信の読み上げと同じ上限）。着信は誰でも掛けられるため、長い案内文はそのまま通話時間と音声合成の課金になる。超過すると起動時にエラーで止まる。 |
 | `VONAGE_WEBHOOK_SECRET` | （未設定） | 署名検証が使えない環境向けの代替。設定すると `x-webhook-secret` ヘッダーの一致を要求する。`VONAGE_API_SIGNATURE_SECRET` が設定されている場合は使われない。**Vonage は任意ヘッダーを送れないため、Vonage から直接呼ばれる Webhook には使えない**（手前のゲートウェイがヘッダーを付与する構成でのみ有効）。 |
 | `WEBHOOK_MAX_AGE_SECONDS` | `300` | 署名付き Webhook の `iat` / `exp` に許す時刻のずれ（秒、`1`〜`3600`）。短いほどリプレイ可能な時間窓が縮む。 |
 
@@ -1003,7 +1003,8 @@ curl -X POST http://localhost:3000/webhooks/message-status \
 
 | status | detail | 意味 | 掛け直す意味があるか |
 | --- | --- | --- | --- |
-| `failed` | `cannot_route` / `number_out_of_service` | 宛先がこのアカウントで未対応、ブロック、または不通 | ない |
+| `failed` | `cannot_route` | 宛先がこのアカウントで未対応、またはブロック。**相手の状態とは無関係** | ない |
+| `failed` | `number_out_of_service` | **宛先の番号自体が使われていない**（番号の確認が要る） | ない |
 | `failed` | `internal_error` | **Vonage 側の内部エラー。宛先については何も分からない** | 時間をおけばある |
 | `rejected` | `invalid_number` / `restricted` / `declined` | 番号が無効、キャリアまたは着信者が拒否 | 同じ条件では期待できない |
 | `unanswered` | `unavailable` / `timeout` | **相手が一時的に応答できない** | 時間をおけばある |
@@ -1012,6 +1013,9 @@ curl -X POST http://localhost:3000/webhooks/message-status \
 
 > [!NOTE]
 > **`detail` が空でも、Webhook が未設定だとは限りません。** 通知が届く前に確認した、Vonage が `detail` を付けなかった、サーバーが再起動した、24時間の保持期間を過ぎた——どれも同じ「空」に見えます。このサーバーからは原因を判別できないため、`note` も断定しません。
+
+> [!IMPORTANT]
+> **stdio 版では、通話が失敗した理由は原理的に取得できません。** Webhook を待ち受けるプロセスが無いためで、別プロセスの HTTP 版に Event URL を向けても記録はそちらのメモリに入り、stdio 側の結果は変わりません。この場合の `note` は再確認を勧めず、「HTTP 版で Event Webhook を受ける必要がある」と伝えます。`get_sms_status` が stdio で `submitted` 止まりなのと同じ理由です。
 
 受信したイベントはオンメモリに24時間保持されます（最大1000件）。**このうち、このサーバーが発信していない通話（着信レグや、同じ Application を共用する別システムの通話）には専用枠 200 件を設けています。** 枠を分けないと、着信が多い環境で `get_call_status` から引ける記録のほうが押し出されるためです。
 

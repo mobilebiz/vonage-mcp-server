@@ -28,7 +28,11 @@ import {
   ingestStatusWebhook,
   recordSubmitted,
 } from '../src/messageStatusStore.js';
-import { clearCallEventStore, ingestCallEvent } from '../src/callEventStore.js';
+import {
+  clearCallEventStore,
+  ingestCallEvent,
+  setCallEventWebhookHosted,
+} from '../src/callEventStore.js';
 
 /** ツールを実行して軽量ペイロードを取り出す */
 async function invoke(name: string, args: unknown): Promise<any> {
@@ -816,7 +820,14 @@ describe('tools registry', () => {
 
       beforeEach(() => {
         clearCallEventStore();
+        // 既定は HTTP 版（Webhook を待ち受けている）とする。stdio の分岐は
+        // 個別のテストで false に切り替えて確かめる。
+        setCallEventWebhookHosted(true);
         mockApiStatus('busy');
+      });
+
+      afterEach(() => {
+        setCallEventWebhookHosted(false);
       });
 
       it('detail と sip_code を重ねて返す', async () => {
@@ -849,6 +860,25 @@ describe('tools registry', () => {
 
         expect(payload.note).toContain('相手の状態ではなく');
         expect(payload.note).toContain('cannot_route');
+      });
+
+      // 同じ failed でも number_out_of_service は「宛先の番号自体が不通」。
+      // cannot_route の注記を共有すると「相手の状態ではない」と逆を言うことになる
+      it('number_out_of_service は宛先の番号自体が不通だと述べる', async () => {
+        mockApiStatus('failed');
+        ingestCallEvent({
+          uuid: 'call-oos',
+          status: 'failed',
+          detail: 'number_out_of_service',
+          timestamp: new Date().toISOString(),
+        });
+
+        const payload = await invoke('get_call_status', { call_id: 'call-oos' });
+
+        expect(payload.note).toContain('番号自体が使われていない');
+        expect(payload.note).toContain('繰り返さないでください');
+        expect(payload.note).not.toContain('相手の状態ではなく');
+        expect(payload.note).not.toContain('未対応かブロック');
       });
 
       it('unavailable は一時的な状態として扱い、経路の問題とは言わない', async () => {
@@ -949,6 +979,19 @@ describe('tools registry', () => {
         expect(payload.note).toContain('サーバー再起動');
         expect(payload.note).not.toMatch(/Webhook が未設定です/);
         expect(payload.detail).toBeUndefined();
+      });
+
+      // stdio では /webhooks/voice/event を待ち受けるプロセスが無い。理由は
+      // 「まだ来ていない」のではなく「来ようがない」ので、再確認を勧めてはいけない
+      it('stdio では再確認を勧めず、理由が取得できないと述べる', async () => {
+        setCallEventWebhookHosted(false);
+
+        const payload = await invoke('get_call_status', { call_id: 'call-no-event-stdio' });
+
+        expect(payload.note).toContain('stdio');
+        expect(payload.note).toContain('待っても再確認しても結果は変わりません');
+        expect(payload.note).not.toContain('一度だけ');
+        expect(payload.note).not.toContain('数十秒');
       });
 
       it('イベントは受信済みだが detail が無い場合は、そう述べる', async () => {

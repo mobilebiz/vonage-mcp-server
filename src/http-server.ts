@@ -6,7 +6,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 
 import { SERVER_VERSION, createMcpServer, enabledToolNames } from './mcpServer.js';
 import { ingestStatusWebhook } from './messageStatusStore.js';
-import { ingestCallEvent } from './callEventStore.js';
+import { ingestCallEvent, setCallEventWebhookHosted } from './callEventStore.js';
 import { generateNCCO } from './voiceCall.js';
 import { authenticateWebhook, isWebhookAuthConfigured, safeEqual } from './webhookAuth.js';
 import {
@@ -18,6 +18,7 @@ import {
   getBindHost,
   getMcpAuthToken,
   getPort,
+  getVoiceInboundMessage,
   isLoopbackHost,
   isUpstreamAuthTrusted,
 } from './config.js';
@@ -37,6 +38,11 @@ if (isMainModule) {
 }
 
 export const app = express();
+
+// このプロセスは Event Webhook を待ち受ける（下の /webhooks/voice/event）。
+// get_call_status は、理由がまだ空のときに「待てば届く」のか「stdio なので
+// 永久に届かない」のかでまったく違う案内を返す（→ callEventStore）。
+setCallEventWebhookHosted(true);
 
 /**
  * CORS は既定で閉じる。
@@ -219,12 +225,14 @@ app.post('/webhooks/inbound', (_req, res) => {
  * このサーバーは発信専用で、着信を処理する機能を持たない。それでも Answer URL を
  * 置くのは、番号をアプリケーションにリンクすると**着信がアプリに向く**ためで、
  * URL が無いと発信者は無言のまま切られる。
+ *
+ * 文面の長さ検証は getVoiceInboundMessage() 側にある（起動時に落とす）。
  */
 function inboundGreeting(): string {
-  const custom = process.env.VOICE_INBOUND_MESSAGE?.trim();
-  return custom && custom !== ''
-    ? custom
-    : 'おかけになった電話番号では、お電話をお受けしておりません。恐れ入りますが、担当者へ直接ご連絡ください。';
+  return (
+    getVoiceInboundMessage() ??
+    'おかけになった電話番号では、お電話をお受けしておりません。恐れ入りますが、担当者へ直接ご連絡ください。'
+  );
 }
 
 /**

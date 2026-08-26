@@ -15,6 +15,8 @@ import {
   getMcpAuthToken,
   getPort,
   getRateLimitPerHour,
+  getVoiceInboundMessage,
+  VOICE_MESSAGE_MAX_LENGTH,
   isCapabilityEnabled,
   isHttpAuthConfigured,
   isLoopbackHost,
@@ -43,6 +45,7 @@ const MANAGED_ENV = [
   'PORT',
   'ALLOWED_ORIGINS',
   'ALLOWED_HOSTS',
+  'VOICE_INBOUND_MESSAGE',
 ];
 
 describe('config', () => {
@@ -286,6 +289,40 @@ describe('config', () => {
     });
   });
 
+  // 着信番号は公開されていて誰でも掛けられる。発信側だけ長さを縛っても、
+  // 案内文が長ければ1件ごとに TTS の課金と通話時間が伸びる
+  describe('getVoiceInboundMessage', () => {
+    it('未設定なら null を返す（呼び出し側の既定文を使う）', () => {
+      expect(getVoiceInboundMessage()).toBeNull();
+    });
+
+    it('空白だけの指定は未設定として扱う', () => {
+      process.env.VOICE_INBOUND_MESSAGE = '   ';
+
+      expect(getVoiceInboundMessage()).toBeNull();
+    });
+
+    it('前後の空白を落として返す', () => {
+      process.env.VOICE_INBOUND_MESSAGE = '  こちらは発信専用です。  ';
+
+      expect(getVoiceInboundMessage()).toBe('こちらは発信専用です。');
+    });
+
+    it('上限ちょうどは受け付ける', () => {
+      process.env.VOICE_INBOUND_MESSAGE = 'あ'.repeat(VOICE_MESSAGE_MAX_LENGTH);
+
+      expect(getVoiceInboundMessage()).toHaveLength(VOICE_MESSAGE_MAX_LENGTH);
+    });
+
+    // 黙って切り詰めない。運用者が設定したはずの案内が流れていないことに気づけなくなる
+    it('上限を超えたら起動エラーにする（切り詰めない）', () => {
+      process.env.VOICE_INBOUND_MESSAGE = 'あ'.repeat(VOICE_MESSAGE_MAX_LENGTH + 1);
+
+      expect(() => getVoiceInboundMessage()).toThrow(ConfigError);
+      expect(() => getVoiceInboundMessage()).toThrow(/VOICE_INBOUND_MESSAGE が長すぎます/);
+    });
+  });
+
   describe('validateStartupConfig', () => {
     it('既定の環境では起動できるが、全機能 OFF であることを警告する', () => {
       const warnings = validateStartupConfig().join('\n');
@@ -306,6 +343,13 @@ describe('config', () => {
       process.env.VONAGE_PRIVATE_KEY_PATH = './does-not-exist.key';
 
       expect(() => validateStartupConfig()).not.toThrow();
+    });
+
+    // 起動時に落とさないと、着信のたびに長い案内が流れてから気づくことになる
+    it('長すぎる VOICE_INBOUND_MESSAGE は起動エラーとして拾う', () => {
+      process.env.VOICE_INBOUND_MESSAGE = 'あ'.repeat(VOICE_MESSAGE_MAX_LENGTH + 1);
+
+      expect(() => validateStartupConfig()).toThrow(/VOICE_INBOUND_MESSAGE/);
     });
 
     // 共有シークレットの webhook エンドポイントは公開されていて試行制限も無い

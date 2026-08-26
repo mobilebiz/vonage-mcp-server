@@ -42,6 +42,16 @@ export const MAX_RATE_LIMIT_PER_HOUR = 10_000;
 export const MAX_BULK_MAX_ROWS = 10_000;
 
 /**
+ * 読み上げメッセージ長の上限（通話時間の暴走を防ぐ）。
+ *
+ * make_voice_call のスキーマと、着信案内 `VOICE_INBOUND_MESSAGE` の両方に掛ける。
+ * 発信側だけ縛っても、**着信は誰でも掛けられる**ため上限にならない。
+ *
+ * guardrails.ts からも再公開している（既存の import 元を変えないため）。
+ */
+export const VOICE_MESSAGE_MAX_LENGTH = 1000;
+
+/**
  * capability トグルの環境変数名。
  *
  * bulk を SMS から分離しているのは爆発半径が違うため。単発が1件なのに対し、
@@ -395,6 +405,35 @@ export function getMcpAuthToken(): string | null {
 }
 
 /**
+ * 音声の着信時に読み上げる案内文。未設定なら null（呼び出し側の既定文を使う）。
+ *
+ * **長さの上限は発信側と同じ `VOICE_MESSAGE_MAX_LENGTH` を掛ける。**
+ * make_voice_call はスキーマで縛っているが、こちらは環境変数なので誰も見ていない。
+ * 着信番号は公開されていて誰でも掛けられるため、長い案内文を置くと1件ごとに
+ * TTS の課金と通話時間が伸び、発信側に掛けた上限が意味を成さなくなる。
+ *
+ * 起動時に落とす（切り詰めない）。黙って短くすると、運用者は設定したはずの
+ * 案内が流れていないことに気づけない。
+ */
+export function getVoiceInboundMessage(): string | null {
+  const raw = process.env.VOICE_INBOUND_MESSAGE;
+  if (raw === undefined || raw.trim() === '') {
+    return null;
+  }
+
+  const message = raw.trim();
+  if (message.length > VOICE_MESSAGE_MAX_LENGTH) {
+    throw new ConfigError([
+      `VOICE_INBOUND_MESSAGE が長すぎます（${message.length}文字）。` +
+        `${VOICE_MESSAGE_MAX_LENGTH}文字以内にしてください。` +
+        '着信は誰でも掛けられるため、読み上げが長いほど通話時間と音声合成の課金が増えます。',
+    ]);
+  }
+
+  return message;
+}
+
+/**
  * 認証を上流（Cloud Run IAM / API Gateway など）に任せる宣言。
  *
  * これを true にすると、このサーバー自身は Bearer トークンを要求しない。
@@ -593,6 +632,7 @@ export function validateStartupConfig(): string[] {
   collect(() => getAllowedOrigins());
   collect(() => parseListEnv('ALLOWED_HOSTS'));
   collect(() => getAllowedCountryCodes());
+  collect(() => getVoiceInboundMessage());
 
   // capability と依存する資格情報の突き合わせ。
   // パースに失敗している場合は上で報告済みなので、ここはスキップする。

@@ -20,7 +20,7 @@ import {
 } from './voiceCall.js';
 import { getCallStatus } from './callStatus.js';
 import { getMessageStatus, recordSubmitted } from './messageStatusStore.js';
-import { getCallEvent, recordOutboundCall } from './callEventStore.js';
+import { getCallEvent, isCallEventWebhookHosted, recordOutboundCall } from './callEventStore.js';
 import {
   PHONE_INPUT_PATTERN,
   SMS_INPUT_MAX_LENGTH,
@@ -156,12 +156,22 @@ const CALL_FAILURE_STATUSES = new Set([
  * これを `cannot_route` と同じ「経路が無い」に混ぜると、**再試行すれば繋がる相手に
  * 対して「もう掛けるな」と指示する**ことになる。
  *
+ * 同じ理由で `number_out_of_service` も `cannot_route` と分けている。どちらも
+ * 掛け直しても無駄だが、**ユーザーに取ってほしい行動が違う**。前者は番号そのものが
+ * 不通なので「番号を確かめ直す」、後者はアカウントの設定・宛先の許可の問題なので
+ * 「Vonage 側の設定を見る」になる。混ぜると誤った方へ誘導する。
+ *
  * @see https://developer.vonage.com/en/voice/voice-api/webhook-reference
  */
-const DETAIL_CATEGORY: Record<string, 'unroutable' | 'rejected' | 'temporary' | 'upstream'> = {
-  // failed — 宛先そのものに届かない。相手の状態とは無関係
+const DETAIL_CATEGORY: Record<
+  string,
+  'unroutable' | 'out_of_service' | 'rejected' | 'temporary' | 'upstream'
+> = {
+  // failed — このアカウントからその宛先へ経路が無い。相手の状態とは無関係
   cannot_route: 'unroutable',
-  number_out_of_service: 'unroutable',
+  // 同じ failed でも、これは宛先の番号自体が使われていないことを示す。
+  // 「相手の状態ではない」と言ってはいけない（まさに相手の番号の状態である）
+  number_out_of_service: 'out_of_service',
   // 同じ failed でも、これは宛先について何も語っていない。Vonage 側の障害なので
   // 「その宛先には掛けるな」と言ってはいけない（一時的で、あとから通ることがある）
   internal_error: 'upstream',
@@ -205,6 +215,14 @@ function callFailureNote(
           'これは相手の状態ではなく、その宛先がこのアカウントで未対応かブロックされていることを示します。' +
           '「話し中でした」と報告せず、同じ宛先への再発信を繰り返さないでください。',
       };
+    case 'out_of_service':
+      return {
+        note:
+          prefix +
+          'これは宛先の番号自体が使われていない（不通の）ことを示します。' +
+          '「話し中でした」と報告せず、同じ宛先への再発信を繰り返さないでください。' +
+          '番号が正しいかユーザーに確認してもらってください。',
+      };
     case 'rejected':
       return {
         note:
@@ -241,6 +259,20 @@ function callFailureNote(
             prefix +
             'このサーバーは通話イベントを受信していますが、理由（detail）は含まれていませんでした。' +
             '相手の状態を断定せず「接続できませんでした」と報告してください。',
+        };
+      }
+
+      // 待てば届くのか、原理的に届かないのかで、正しい行動が正反対になる。
+      // stdio では Webhook を待ち受けるプロセスがそもそも無い（→ callEventStore）。
+      if (!isCallEventWebhookHosted()) {
+        return {
+          note:
+            prefix +
+            '理由（detail）は取得できません。このサーバーは stdio で起動しており、' +
+            '理由が届く経路である Event Webhook を待ち受けていないためです。' +
+            '待っても再確認しても結果は変わりません。相手の状態を断定せず' +
+            '「接続できませんでした」と報告し、理由が必要なら HTTP 版のサーバーで' +
+            'Event Webhook を受ける必要があるとユーザーに伝えてください。',
         };
       }
 
