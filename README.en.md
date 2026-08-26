@@ -120,7 +120,7 @@ Legend: ✅ verified on real hardware / 📄 documented as supported (not yet ve
 | **Streamable HTTP in general** (Cloud Run, etc.) | Streamable HTTP | Bearer / upstream IAM | depends on the client | ✅ |
 | [Claude.ai / Desktop (remote)](https://claude.com/docs/connectors/building/authentication) | Streamable HTTP | OAuth, or static headers (beta, set by an org admin) | yes | 📄 |
 | [Gemini Enterprise (connector)](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server) | Streamable HTTP | **OAuth 2.0 or "no authentication" only** | yes, by default | ⚠️ |
-| [Gemini Enterprise (your own ADK agent)](https://google.github.io/adk-docs/tools-custom/mcp-tools/) | Streamable HTTP | Bearer via arbitrary headers | you build it | 📄 |
+| [Gemini Enterprise (your own ADK agent)](docs/gemini-enterprise-adk.md) | Streamable HTTP | Bearer via arbitrary headers | **yes** (ADK `require_confirmation`; an approval window appears in Apps) | ✅ |
 | [AWS Bedrock AgentCore Gateway](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-target-MCPservers.html) | Streamable HTTP | OAuth / IAM SigV4 / API key | none at the gateway | 📄 |
 | [Dify](https://docs.dify.ai/en/cloud/use-dify/build/mcp) | HTTP | Bearer via arbitrary headers, or OAuth | only if you add a Human Input node | 📄 |
 | [n8n (MCP Client Tool)](https://docs.n8n.io/integrations/builtin/cluster-nodes/sub-nodes/n8n-nodes-langchain.toolmcp/) | HTTP Streamable / stdio | Bearer / arbitrary headers / OAuth2 | only if enabled on the AI Agent node | 📄 |
@@ -154,10 +154,14 @@ money to the entire internet. Do not do it.** Two workable setups:
 
 1. **Terminate OAuth 2.0 upstream** — put an API gateway or Identity-Aware Proxy
    in front and set `TRUST_UPSTREAM_AUTH=true` on this server.
-2. **Write an ADK agent instead of using the connector** — `McpToolset` with
-   `StreamableHTTPConnectionParams` can send arbitrary headers, so
-   `MCP_AUTH_TOKEN` works as-is. You then have to build the approval step
-   yourself.
+2. **Write an ADK agent instead of using the connector** (verified, recommended)
+   — `McpToolset` with `StreamableHTTPConnectionParams` can send arbitrary
+   headers, so `MCP_AUTH_TOKEN` works as-is. Approval is covered too: ADK's
+   `require_confirmation` surfaces an approval window in Gemini Enterprise Apps,
+   and nothing is sent until you approve. Walked end to end on 2026-08-25
+   (`dry_run` → approval → real send → `delivered`). See
+   [Using this server from Gemini Enterprise Agent Apps](docs/gemini-enterprise-adk.md)
+   (Japanese).
 
 ---
 
