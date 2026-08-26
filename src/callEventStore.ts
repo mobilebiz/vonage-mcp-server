@@ -179,9 +179,13 @@ export interface CallEventIngestResult {
  * - 受信したtimestampが記録済みのものより古い
  * - 確定済みの状態（completed / busy 等）を、より前の段階（ringing 等）で上書きしようとしている
  *
- * **失敗理由（detail / sip_code）は、後続のイベントで欠けていても消さない。**
- * 終端イベントに理由が乗り、その後に別のイベントが来たときに理由が消えると、
+ * **失敗理由（detail / sip_code）は、同じ status の続報で欠けていても消さない。**
+ * 終端イベントに理由が乗り、その後に同じ status の通知が来たときに理由が消えると、
  * このストアを置いた意味が無くなるため。
+ *
+ * ただし **status が変わったら引き継がない。** `busy` の理由（cannot_route など）を
+ * `completed` に持ち越すと、get_call_status が「完了したが経路が無かった」という
+ * ありえない組み合わせを返す。理由は、それが説明していた status のものである。
  *
  * @returns 取り込めた場合は結果、ペイロードが不正な場合は null
  */
@@ -221,12 +225,17 @@ export function ingestCallEvent(payload: unknown): CallEventIngestResult | null 
         ? Number(sipCodeRaw)
         : undefined;
 
+  // 同じ status の続報なら、前に受け取った理由を引き継ぐ。
+  // status が変わったなら、前の理由は今の status を説明していないので捨てる。
+  const sameStatus = existing?.status.toLowerCase() === status.toLowerCase();
+  const inheritedDetail = sameStatus ? existing?.detail : undefined;
+  const inheritedSipCode = sameStatus ? existing?.sipCode : undefined;
+
   const record: CallEventRecord = {
     callId,
     status,
-    // 一度受け取った理由は、後続イベントに無くても保持する
-    detail: typeof body.detail === 'string' && body.detail !== '' ? body.detail : existing?.detail,
-    sipCode: sipCode ?? existing?.sipCode,
+    detail: typeof body.detail === 'string' && body.detail !== '' ? body.detail : inheritedDetail,
+    sipCode: sipCode ?? inheritedSipCode,
     direction: typeof body.direction === 'string' ? body.direction : existing?.direction,
     to: typeof body.to === 'string' ? body.to : existing?.to,
     from: typeof body.from === 'string' ? body.from : existing?.from,

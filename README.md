@@ -181,7 +181,7 @@ AIエージェント（Gemini Enterprise / Claude 等）から利用する際の
 | `DISABLE_RATE_LIMIT` | `false` | `true` にするとレートリミットを完全に無効化する。**危険な設定**であり、起動のたびに警告が出る。本番環境では使わないこと。 |
 | `VONAGE_API_SIGNATURE_SECRET` | （未設定） | Status Webhook の署名検証に使う Vonage の Signature Secret。**推奨**。Vonage Dashboard の Settings → API settings で取得できる。 |
 | `VOICE_INBOUND_MESSAGE` | （案内文） | 音声の着信時に読み上げる文面。このサーバーは着信を処理しないため、既定では「お受けしておりません」という案内を読み上げて切る。 |
-| `VONAGE_WEBHOOK_SECRET` | （未設定） | 署名検証が使えない環境向けの代替。設定すると `x-webhook-secret` ヘッダーの一致を要求する。`VONAGE_API_SIGNATURE_SECRET` が設定されている場合は使われない。 |
+| `VONAGE_WEBHOOK_SECRET` | （未設定） | 署名検証が使えない環境向けの代替。設定すると `x-webhook-secret` ヘッダーの一致を要求する。`VONAGE_API_SIGNATURE_SECRET` が設定されている場合は使われない。**Vonage は任意ヘッダーを送れないため、Vonage から直接呼ばれる Webhook には使えない**（手前のゲートウェイがヘッダーを付与する構成でのみ有効）。 |
 | `WEBHOOK_MAX_AGE_SECONDS` | `300` | 署名付き Webhook の `iat` / `exp` に許す時刻のずれ（秒、`1`〜`3600`）。短いほどリプレイ可能な時間窓が縮む。 |
 
 ```sh
@@ -1021,7 +1021,9 @@ curl -X POST http://localhost:3000/webhooks/message-status \
 どちらのエンドポイントも認証は `/webhooks/message-status` と同じです（署名付きJWT を推奨、未設定なら 503 で無効化）。
 
 > [!WARNING]
-> **古い Vonage アプリケーションでは、署名付き Webhook が既定で無効です。** その場合このサーバーは 401 を返し続けます。Vonage Dashboard でアプリケーションの署名付き Webhook を有効化するか、`VONAGE_WEBHOOK_SECRET` による共有シークレット方式を使ってください。
+> **古い Vonage アプリケーションでは、署名付き Webhook が既定で無効です。** その場合このサーバーは 401 を返し続けるので、Vonage Dashboard でアプリケーションの署名付き Webhook を**有効化してください**。
+>
+> `VONAGE_WEBHOOK_SECRET`（共有シークレット）は、この経路の代替にはなりません。**Vonage のアプリケーション設定で指定できるのは URL と HTTP メソッドだけで、`x-webhook-secret` ヘッダーを付ける手段がないためです。** この方式が使えるのは、手前に置いたゲートウェイなどがヘッダーを付与する構成に限られます。
 
 Vonage Dashboard の Application 設定で、次のように登録します。
 

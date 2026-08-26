@@ -69,12 +69,23 @@ describe('callEventStore', () => {
     expect(getCallEvent('call-3')!.sipCode).toBe(503);
   });
 
-  it('一度受け取った detail は、後続イベントに無くても消えない', () => {
-    ingestCallEvent({ uuid: 'call-4', status: 'busy', detail: 'cannot_route', timestamp: at(0) });
-    // 理由を伴わない後続イベント（同じ順位の終端ステータス）
-    ingestCallEvent({ uuid: 'call-4', status: 'completed', timestamp: at(1000) });
+  it('一度受け取った detail は、同じ status の続報で欠けていても消えない', () => {
+    ingestCallEvent({ uuid: 'call-4', status: 'failed', detail: 'cannot_route', sip_code: 404, timestamp: at(0) });
+    // 理由を伴わない同じ status の続報
+    ingestCallEvent({ uuid: 'call-4', status: 'failed', timestamp: at(1000) });
 
-    expect(getCallEvent('call-4')).toMatchObject({ status: 'completed', detail: 'cannot_route' });
+    expect(getCallEvent('call-4')).toMatchObject({ status: 'failed', detail: 'cannot_route', sipCode: 404 });
+  });
+
+  // 「完了したが経路が無かった」という、ありえない組み合わせを返さないため
+  it('status が変わったら、前の status の理由は引き継がない', () => {
+    ingestCallEvent({ uuid: 'call-4b', status: 'busy', detail: 'cannot_route', sip_code: 486, timestamp: at(0) });
+    ingestCallEvent({ uuid: 'call-4b', status: 'completed', timestamp: at(1000) });
+
+    const record = getCallEvent('call-4b')!;
+    expect(record.status).toBe('completed');
+    expect(record.detail).toBeUndefined();
+    expect(record.sipCode).toBeUndefined();
   });
 
   it('古いタイムスタンプの通知は取り込まない', () => {
