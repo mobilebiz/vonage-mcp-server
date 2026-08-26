@@ -803,19 +803,24 @@ describe('tools registry', () => {
 
     // Voice API の GET /calls は detail を返さない。理由は Event Webhook にしか来ない。
     describe('Event Webhook で受け取った理由の反映', () => {
-      beforeEach(() => {
-        clearCallEventStore();
+      /** Voice API が返すステータス。実際には Webhook のステータスと一致する */
+      const mockApiStatus = (status: string) =>
         mockGetCallStatus.mockResolvedValue({
           success: true,
-          status: 'busy',
+          status,
           price: '0',
           rate: '0',
           duration: 0,
           startTime: new Date().toISOString(),
         });
+
+      beforeEach(() => {
+        clearCallEventStore();
+        mockApiStatus('busy');
       });
 
       it('detail と sip_code を重ねて返す', async () => {
+        mockApiStatus('busy');
         ingestCallEvent({
           uuid: 'call-detail',
           status: 'busy',
@@ -832,6 +837,7 @@ describe('tools registry', () => {
       // detail は status ごとに意味が違う。まとめて「経路が無い」と扱うと、
       // 再試行すれば繋がる相手に「もう掛けるな」と言うことになる
       it('cannot_route は「相手の状態ではない」と断定する', async () => {
+        mockApiStatus('failed');
         ingestCallEvent({
           uuid: 'call-unroutable',
           status: 'failed',
@@ -846,6 +852,7 @@ describe('tools registry', () => {
       });
 
       it('unavailable は一時的な状態として扱い、経路の問題とは言わない', async () => {
+        mockApiStatus('unanswered');
         ingestCallEvent({
           uuid: 'call-unavailable',
           status: 'unanswered',
@@ -861,6 +868,7 @@ describe('tools registry', () => {
       });
 
       it('restricted は拒否として扱い、経路の問題とは言わない', async () => {
+        mockApiStatus('rejected');
         ingestCallEvent({
           uuid: 'call-restricted',
           status: 'rejected',
@@ -874,7 +882,35 @@ describe('tools registry', () => {
         expect(payload.note).not.toContain('相手の状態ではなく');
       });
 
+      // API が先に completed へ進み、対応する Webhook がまだ届いていないと、
+      // 手元には1つ前の失敗イベントが残っている
+      it('API の status と食い違う理由は返さない', async () => {
+        mockGetCallStatus.mockResolvedValue({
+          success: true,
+          status: 'completed',
+          price: '0.01',
+          rate: '0.13',
+          duration: 5,
+          startTime: new Date().toISOString(),
+        });
+        ingestCallEvent({
+          uuid: 'call-stale',
+          status: 'busy',
+          detail: 'cannot_route',
+          sip_code: 486,
+          timestamp: new Date().toISOString(),
+        });
+
+        const payload = await invoke('get_call_status', { call_id: 'call-stale' });
+
+        expect(payload.call_status).toBe('completed');
+        expect(payload.detail).toBeUndefined();
+        expect(payload.sip_code).toBeUndefined();
+        expect(payload.note).toBeUndefined();
+      });
+
       it('分類表に無い detail は断定しない', async () => {
+        mockApiStatus('failed');
         ingestCallEvent({
           uuid: 'call-unknown-detail',
           status: 'failed',
@@ -890,6 +926,7 @@ describe('tools registry', () => {
 
       // internal_error は failed に属するが、宛先について何も語っていない
       it('internal_error は宛先の問題として扱わない', async () => {
+        mockApiStatus('failed');
         ingestCallEvent({
           uuid: 'call-internal',
           status: 'failed',

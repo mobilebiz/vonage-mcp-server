@@ -379,7 +379,10 @@ if (isMainModule) {
     }
     if (!isWebhookAuthConfigured()) {
       console.warn(
-        '[WARN] Webhook認証が未設定のため POST /webhooks/message-status は無効です。' +
+        '[WARN] Webhook認証が未設定のため、以下のエンドポイントはすべて 503 で無効です:' +
+          ' POST /webhooks/message-status（配信ステータス）,' +
+          ' POST /webhooks/voice/answer（着信への応答。NCCOを返さないため着信は切断されます）,' +
+          ' POST /webhooks/voice/event（通話イベント。失敗理由が記録されません）。' +
           ' VONAGE_API_SIGNATURE_SECRET（推奨）または VONAGE_WEBHOOK_SECRET を設定してください。'
       );
     }

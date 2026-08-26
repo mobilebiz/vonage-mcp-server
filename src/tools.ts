@@ -744,7 +744,17 @@ const toolImplementations: ToolImplementation[] = [
 
       // Voice API の GET /calls は失敗の**理由**を返さない（detail は常に null）。
       // 理由が来るのは Event Webhook だけなので、受信済みの記録があれば重ねる。
+      //
+      // ただし**保持している理由は、それが説明していた status のもの**である。
+      // APIが先に completed へ進み、対応する Webhook がまだ届いていない場合、
+      // 手元には1つ前の失敗イベント（busy / cannot_route など）が残っている。
+      // そのまま重ねると「完了したが経路が無かった」を返してしまう。
       const event = getCallEvent(id);
+      const explainsCurrentStatus =
+        event !== null &&
+        typeof result.status === 'string' &&
+        event.status.toLowerCase() === result.status.toLowerCase();
+      const diagnostics = explainsCurrentStatus ? event : null;
 
       return successOutcome({
         call_id: id,
@@ -753,9 +763,9 @@ const toolImplementations: ToolImplementation[] = [
         duration_seconds: result.duration,
         price: result.price,
         rate: result.rate,
-        ...(event?.detail ? { detail: event.detail } : {}),
-        ...(event?.sipCode !== undefined ? { sip_code: event.sipCode } : {}),
-        ...(callFailureNote(result.status, event?.detail, event !== null) ?? {}),
+        ...(diagnostics?.detail ? { detail: diagnostics.detail } : {}),
+        ...(diagnostics?.sipCode !== undefined ? { sip_code: diagnostics.sipCode } : {}),
+        ...(callFailureNote(result.status, diagnostics?.detail, diagnostics !== null) ?? {}),
       });
     },
   },
