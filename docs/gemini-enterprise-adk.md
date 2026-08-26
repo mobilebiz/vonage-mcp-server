@@ -81,7 +81,24 @@ gemini-adk-agent/
 `system_instruction.md` は、このリポジトリの
 [`gemini_system_instruction.md`](gemini_system_instruction.md) にある
 「そのまま貼り付ける System Instruction」の本文を書き出したものです。
-**文書側を正とし、スクリプトで取り込んでください**（手でコピーすると必ずずれます）。
+**文書側を正とし、次のコマンドで取り込んでください**（手でコピーすると必ずずれます）。
+
+```sh
+# 最初の ```text ブロックの中身だけを取り出す
+python - <<'EOF'
+import re
+from pathlib import Path
+
+src = Path("/path/to/vonage-mcp-server/docs/gemini_system_instruction.md")
+body = re.search(r"^```text\n(.*?)^```", src.read_text(encoding="utf-8"), re.S | re.M)
+if not body:
+    raise SystemExit("```text ブロックが見つかりません")
+Path("vonage_agent/system_instruction.md").write_text(body.group(1).strip() + "\n", encoding="utf-8")
+EOF
+```
+
+**文書を更新したら実行し直してください。** バンドルに焼き込まれるのはデプロイ時点の内容で、
+文書を直しただけでは配布物に反映されません。
 
 ### `vonage_agent/agent.py`
 
