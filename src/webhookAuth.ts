@@ -183,6 +183,19 @@ function verifyClaims(
 }
 
 /**
+ * シークレットを環境変数から読む。**空白だけの値は未設定として扱う。**
+ *
+ * 生の値をそのまま使うと、`VONAGE_API_SIGNATURE_SECRET="   "` のような設定が
+ * 「設定済み」と判定され、署名検証に空白を使って**全 Webhook が 401 を返し続ける**。
+ * 503（未設定）ではないので起動時の警告も出ず、運用者には何の手がかりも残らない。
+ * config.ts は既に `.trim()` / `isBlank()` で正規化しているので、ここも揃える。
+ */
+function readSecret(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value === '' ? undefined : value;
+}
+
+/**
  * Webhookリクエストを検証する。
  *
  * @param headers リクエストヘッダー（Express の req.headers を想定）
@@ -193,8 +206,8 @@ export function authenticateWebhook(
   rawBody?: Buffer,
   now: number = Date.now()
 ): WebhookAuthResult {
-  const signatureSecret = process.env.VONAGE_API_SIGNATURE_SECRET;
-  const sharedSecret = process.env.VONAGE_WEBHOOK_SECRET;
+  const signatureSecret = readSecret('VONAGE_API_SIGNATURE_SECRET');
+  const sharedSecret = readSecret('VONAGE_WEBHOOK_SECRET');
 
   // どちらも未設定なら受理しない。未認証で受け付けるとステータス偽装が可能になるため。
   if (!signatureSecret && !sharedSecret) {
@@ -257,7 +270,13 @@ export function authenticateWebhook(
   return { authorized: false, status: 401, reason: 'Unauthorized webhook request' };
 }
 
-/** Webhook認証が構成されているか（起動時の警告表示用） */
+/**
+ * Webhook認証が構成されているか。
+ *
+ * 起動時の警告と、get_call_status が「理由は届きようがない」と判断するのに使う。
+ * **authenticateWebhook と同じ readSecret を通すこと。** 判定がずれると、
+ * 401 を返し続ける構成を「認証済み」と見なして再確認を勧めてしまう。
+ */
 export function isWebhookAuthConfigured(): boolean {
-  return Boolean(process.env.VONAGE_API_SIGNATURE_SECRET || process.env.VONAGE_WEBHOOK_SECRET);
+  return Boolean(readSecret('VONAGE_API_SIGNATURE_SECRET') || readSecret('VONAGE_WEBHOOK_SECRET'));
 }

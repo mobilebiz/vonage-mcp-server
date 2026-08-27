@@ -636,6 +636,21 @@ describe('HTTP MCP Wrapper', () => {
       expect(getMessageStatus('msg-spoof')).toBeNull();
     });
 
+    // 生の値を見ていた頃は「設定済み」と判定され、署名検証に空白を使って
+    // 全 Webhook が 401 を返し続けた。503 ではないので起動時の警告も出ない
+    it('空白だけのシークレットは未設定として扱い、401 ではなく 503 を返すべき', async () => {
+      process.env.VONAGE_API_SIGNATURE_SECRET = '   ';
+      process.env.VONAGE_WEBHOOK_SECRET = '\t\n ';
+
+      const res = await request(app)
+        .post('/webhooks/message-status')
+        .send({ message_uuid: 'msg-blank', status: 'delivered' });
+
+      expect(res.status).toBe(503);
+      expect(res.body.error).toContain('not configured');
+      expect(getMessageStatus('msg-blank')).toBeNull();
+    });
+
     describe('署名付きJWT (VONAGE_API_SIGNATURE_SECRET)', () => {
       const SECRET = 'a'.repeat(32);
 

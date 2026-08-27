@@ -1010,6 +1010,18 @@ describe('tools registry', () => {
         expect(payload.note).not.toContain('stdio');
       });
 
+      // 空白だけのシークレットは authenticateWebhook が使えず全件 401 になる。
+      // 「設定済み」と判定すると、届きようがない理由の再確認を勧めてしまう
+      it('空白だけのシークレットも未設定として扱う', async () => {
+        process.env.VONAGE_API_SIGNATURE_SECRET = '   ';
+        delete process.env.VONAGE_WEBHOOK_SECRET;
+
+        const payload = await invoke('get_call_status', { call_id: 'call-blank-secret' });
+
+        expect(payload.note).toContain('Webhook の認証が未設定');
+        expect(payload.note).not.toContain('一度だけ');
+      });
+
       it('イベントは受信済みだが detail が無い場合は、そう述べる', async () => {
         ingestCallEvent({
           uuid: 'call-no-detail',
