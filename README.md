@@ -1015,7 +1015,10 @@ curl -X POST http://localhost:3000/webhooks/message-status \
 > **`detail` が空でも、Webhook が未設定だとは限りません。** 通知が届く前に確認した、Vonage が `detail` を付けなかった、サーバーが再起動した、24時間の保持期間を過ぎた——どれも同じ「空」に見えます。このサーバーからは原因を判別できないため、`note` も断定しません。
 
 > [!IMPORTANT]
-> **stdio 版では、通話が失敗した理由は原理的に取得できません。** Webhook を待ち受けるプロセスが無いためで、別プロセスの HTTP 版に Event URL を向けても記録はそちらのメモリに入り、stdio 側の結果は変わりません。この場合の `note` は再確認を勧めず、「HTTP 版で Event Webhook を受ける必要がある」と伝えます。`get_sms_status` が stdio で `submitted` 止まりなのと同じ理由です。
+> **理由が「まだ届いていない」のか「届きようがない」のかで、正しい対処は正反対です。** 届きようがない構成は2つあり、`note` はそれぞれを名指しして再確認を勧めません。
+>
+> - **stdio 版** — Webhook を待ち受けるプロセスがありません。別プロセスの HTTP 版に Event URL を向けても、記録はそちらのメモリに入るだけで stdio 側の結果は変わりません（`get_sms_status` が stdio で `submitted` 止まりなのと同じ理由）
+> - **Webhook の認証が未設定** — `VONAGE_API_SIGNATURE_SECRET` も `VONAGE_WEBHOOK_SECRET` も無い場合、エンドポイントは fail-closed で 503 を返し続けます。**HTTP で動いていても記録は永久に埋まりません**
 
 受信したイベントはオンメモリに24時間保持されます（最大1000件）。**このうち、このサーバーが発信していない通話（着信レグや、同じ Application を共用する別システムの通話）には専用枠 200 件を設けています。** 枠を分けないと、着信が多い環境で `get_call_status` から引ける記録のほうが押し出されるためです。
 

@@ -820,9 +820,11 @@ describe('tools registry', () => {
 
       beforeEach(() => {
         clearCallEventStore();
-        // 既定は HTTP 版（Webhook を待ち受けている）とする。stdio の分岐は
-        // 個別のテストで false に切り替えて確かめる。
+        // 既定は「理由が届きうる」構成、つまり HTTP 版で Webhook の認証も
+        // 済んでいる状態とする。届きようがない2通り（stdio / 認証未設定）は
+        // 個別のテストで切り替えて確かめる。
         setCallEventWebhookHosted(true);
+        process.env.VONAGE_API_SIGNATURE_SECRET = 'signature-secret';
         mockApiStatus('busy');
       });
 
@@ -992,6 +994,20 @@ describe('tools registry', () => {
         expect(payload.note).toContain('待っても再確認しても結果は変わりません');
         expect(payload.note).not.toContain('一度だけ');
         expect(payload.note).not.toContain('数十秒');
+      });
+
+      // 経路の死に方はトランスポートだけではない。HTTP 版でも認証が未設定なら
+      // /webhooks/voice/event は 503 を返し続け、記録は永久に埋まらない
+      it('Webhook の認証が未設定なら、再確認を勧めず設定を促す', async () => {
+        delete process.env.VONAGE_API_SIGNATURE_SECRET;
+        delete process.env.VONAGE_WEBHOOK_SECRET;
+
+        const payload = await invoke('get_call_status', { call_id: 'call-no-auth' });
+
+        expect(payload.note).toContain('Webhook の認証が未設定');
+        expect(payload.note).toContain('VONAGE_API_SIGNATURE_SECRET');
+        expect(payload.note).not.toContain('一度だけ');
+        expect(payload.note).not.toContain('stdio');
       });
 
       it('イベントは受信済みだが detail が無い場合は、そう述べる', async () => {

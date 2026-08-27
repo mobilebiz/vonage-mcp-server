@@ -20,6 +20,7 @@ import {
 } from './voiceCall.js';
 import { getCallStatus } from './callStatus.js';
 import { getMessageStatus, recordSubmitted } from './messageStatusStore.js';
+import { isWebhookAuthConfigured } from './webhookAuth.js';
 import { getCallEvent, isCallEventWebhookHosted, recordOutboundCall } from './callEventStore.js';
 import {
   PHONE_INPUT_PATTERN,
@@ -263,7 +264,13 @@ function callFailureNote(
       }
 
       // 待てば届くのか、原理的に届かないのかで、正しい行動が正反対になる。
-      // stdio では Webhook を待ち受けるプロセスがそもそも無い（→ callEventStore）。
+      // **経路の死に方は2通りあり、運用者に頼むことも違う。**
+      //
+      // - stdio        — エンドポイントがそもそも無い（→ callEventStore）
+      // - 認証が未設定 — エンドポイントはあるが 503 を返し続ける（fail-closed。
+      //                  → webhookAuth。トランスポートだけを見ると見落とす）
+      //
+      // どちらも「まだ届いていない」ではないので、再確認を勧めてはいけない。
       if (!isCallEventWebhookHosted()) {
         return {
           note:
@@ -273,6 +280,19 @@ function callFailureNote(
             '待っても再確認しても結果は変わりません。相手の状態を断定せず' +
             '「接続できませんでした」と報告し、理由が必要なら HTTP 版のサーバーで' +
             'Event Webhook を受ける必要があるとユーザーに伝えてください。',
+        };
+      }
+
+      if (!isWebhookAuthConfigured()) {
+        return {
+          note:
+            prefix +
+            '理由（detail）は取得できません。Webhook の認証が未設定のため、' +
+            'このサーバーの Event Webhook は 503 を返して無効化されています。' +
+            '待っても再確認しても結果は変わりません。相手の状態を断定せず' +
+            '「接続できませんでした」と報告し、理由が必要なら ' +
+            'VONAGE_API_SIGNATURE_SECRET（推奨）または VONAGE_WEBHOOK_SECRET を' +
+            '設定する必要があるとユーザーに伝えてください。',
         };
       }
 
