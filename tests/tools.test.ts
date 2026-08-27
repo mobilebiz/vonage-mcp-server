@@ -28,6 +28,11 @@ import {
   ingestStatusWebhook,
   recordSubmitted,
 } from '../src/messageStatusStore.js';
+import {
+  clearCallEventStore,
+  ingestCallEvent,
+  setCallEventWebhookHosted,
+} from '../src/callEventStore.js';
 
 /** ツールを実行して軽量ペイロードを取り出す */
 async function invoke(name: string, args: unknown): Promise<any> {
@@ -798,6 +803,252 @@ describe('tools registry', () => {
       const payload = await invoke('get_call_status', {});
       expect(payload.status).toBe('error');
       expect(mockGetCallStatus).not.toHaveBeenCalled();
+    });
+
+    // Voice API の GET /calls は detail を返さない。理由は Event Webhook にしか来ない。
+    describe('Event Webhook で受け取った理由の反映', () => {
+      /** Voice API が返すステータス。実際には Webhook のステータスと一致する */
+      const mockApiStatus = (status: string) =>
+        mockGetCallStatus.mockResolvedValue({
+          success: true,
+          status,
+          price: '0',
+          rate: '0',
+          duration: 0,
+          startTime: new Date().toISOString(),
+        });
+
+      beforeEach(() => {
+        clearCallEventStore();
+        // 既定は「理由が届きうる」構成、つまり HTTP 版で Webhook の認証も
+        // 済んでいる状態とする。届きようがない2通り（stdio / 認証未設定）は
+        // 個別のテストで切り替えて確かめる。
+        setCallEventWebhookHosted(true);
+        process.env.VONAGE_API_SIGNATURE_SECRET = 'signature-secret';
+        mockApiStatus('busy');
+      });
+
+      afterEach(() => {
+        setCallEventWebhookHosted(false);
+      });
+
+      it('detail と sip_code を重ねて返す', async () => {
+        mockApiStatus('busy');
+        ingestCallEvent({
+          uuid: 'call-detail',
+          status: 'busy',
+          detail: 'cannot_route',
+          sip_code: 486,
+          timestamp: new Date().toISOString(),
+        });
+
+        const payload = await invoke('get_call_status', { call_id: 'call-detail' });
+
+        expect(payload).toMatchObject({ status: 'success', detail: 'cannot_route', sip_code: 486 });
+      });
+
+      // detail は status ごとに意味が違う。まとめて「経路が無い」と扱うと、
+      // 再試行すれば繋がる相手に「もう掛けるな」と言うことになる
+      it('cannot_route は「相手の状態ではない」と断定する', async () => {
+        mockApiStatus('failed');
+        ingestCallEvent({
+          uuid: 'call-unroutable',
+          status: 'failed',
+          detail: 'cannot_route',
+          timestamp: new Date().toISOString(),
+        });
+
+        const payload = await invoke('get_call_status', { call_id: 'call-unroutable' });
+
+        expect(payload.note).toContain('相手の状態ではなく');
+        expect(payload.note).toContain('cannot_route');
+      });
+
+      // 同じ failed でも number_out_of_service は「宛先の番号自体が不通」。
+      // cannot_route の注記を共有すると「相手の状態ではない」と逆を言うことになる
+      it('number_out_of_service は宛先の番号自体が不通だと述べる', async () => {
+        mockApiStatus('failed');
+        ingestCallEvent({
+          uuid: 'call-oos',
+          status: 'failed',
+          detail: 'number_out_of_service',
+          timestamp: new Date().toISOString(),
+        });
+
+        const payload = await invoke('get_call_status', { call_id: 'call-oos' });
+
+        expect(payload.note).toContain('番号自体が使われていない');
+        expect(payload.note).toContain('繰り返さないでください');
+        expect(payload.note).not.toContain('相手の状態ではなく');
+        expect(payload.note).not.toContain('未対応かブロック');
+      });
+
+      it('unavailable は一時的な状態として扱い、経路の問題とは言わない', async () => {
+        mockApiStatus('unanswered');
+        ingestCallEvent({
+          uuid: 'call-unavailable',
+          status: 'unanswered',
+          detail: 'unavailable',
+          timestamp: new Date().toISOString(),
+        });
+
+        const payload = await invoke('get_call_status', { call_id: 'call-unavailable' });
+
+        expect(payload.note).toContain('一時的');
+        expect(payload.note).not.toContain('相手の状態ではなく');
+        expect(payload.note).not.toContain('繰り返さないでください');
+      });
+
+      it('restricted は拒否として扱い、経路の問題とは言わない', async () => {
+        mockApiStatus('rejected');
+        ingestCallEvent({
+          uuid: 'call-restricted',
+          status: 'rejected',
+          detail: 'restricted',
+          timestamp: new Date().toISOString(),
+        });
+
+        const payload = await invoke('get_call_status', { call_id: 'call-restricted' });
+
+        expect(payload.note).toContain('拒否');
+        expect(payload.note).not.toContain('相手の状態ではなく');
+      });
+
+      // API が先に completed へ進み、対応する Webhook がまだ届いていないと、
+      // 手元には1つ前の失敗イベントが残っている
+      it('API の status と食い違う理由は返さない', async () => {
+        mockGetCallStatus.mockResolvedValue({
+          success: true,
+          status: 'completed',
+          price: '0.01',
+          rate: '0.13',
+          duration: 5,
+          startTime: new Date().toISOString(),
+        });
+        ingestCallEvent({
+          uuid: 'call-stale',
+          status: 'busy',
+          detail: 'cannot_route',
+          sip_code: 486,
+          timestamp: new Date().toISOString(),
+        });
+
+        const payload = await invoke('get_call_status', { call_id: 'call-stale' });
+
+        expect(payload.call_status).toBe('completed');
+        expect(payload.detail).toBeUndefined();
+        expect(payload.sip_code).toBeUndefined();
+        expect(payload.note).toBeUndefined();
+      });
+
+      it('分類表に無い detail は断定しない', async () => {
+        mockApiStatus('failed');
+        ingestCallEvent({
+          uuid: 'call-unknown-detail',
+          status: 'failed',
+          detail: 'brand_new_reason',
+          timestamp: new Date().toISOString(),
+        });
+
+        const payload = await invoke('get_call_status', { call_id: 'call-unknown-detail' });
+
+        expect(payload.note).toContain('brand_new_reason');
+        expect(payload.note).not.toContain('相手の状態ではなく');
+      });
+
+      // internal_error は failed に属するが、宛先について何も語っていない
+      it('internal_error は宛先の問題として扱わない', async () => {
+        mockApiStatus('failed');
+        ingestCallEvent({
+          uuid: 'call-internal',
+          status: 'failed',
+          detail: 'internal_error',
+          timestamp: new Date().toISOString(),
+        });
+
+        const payload = await invoke('get_call_status', { call_id: 'call-internal' });
+
+        expect(payload.note).toContain('Vonage 側の内部エラー');
+        expect(payload.note).not.toContain('未対応かブロック');
+        expect(payload.note).not.toContain('繰り返さないでください');
+      });
+
+      // 記録が無い理由は複数ある（未着・再起動・TTL・未設定）。区別できない以上、断定しない
+      it('記録が無い場合は、未設定と決めつけず一度だけの再確認を案内する', async () => {
+        const payload = await invoke('get_call_status', { call_id: 'call-no-event' });
+
+        expect(payload.note).toContain('一度だけ');
+        expect(payload.note).toContain('サーバー再起動');
+        expect(payload.note).not.toMatch(/Webhook が未設定です/);
+        expect(payload.detail).toBeUndefined();
+      });
+
+      // stdio では /webhooks/voice/event を待ち受けるプロセスが無い。理由は
+      // 「まだ来ていない」のではなく「来ようがない」ので、再確認を勧めてはいけない
+      it('stdio では再確認を勧めず、理由が取得できないと述べる', async () => {
+        setCallEventWebhookHosted(false);
+
+        const payload = await invoke('get_call_status', { call_id: 'call-no-event-stdio' });
+
+        expect(payload.note).toContain('stdio');
+        expect(payload.note).toContain('待っても再確認しても結果は変わりません');
+        expect(payload.note).not.toContain('一度だけ');
+        expect(payload.note).not.toContain('数十秒');
+      });
+
+      // 経路の死に方はトランスポートだけではない。HTTP 版でも認証が未設定なら
+      // /webhooks/voice/event は 503 を返し続け、記録は永久に埋まらない
+      it('Webhook の認証が未設定なら、再確認を勧めず設定を促す', async () => {
+        delete process.env.VONAGE_API_SIGNATURE_SECRET;
+        delete process.env.VONAGE_WEBHOOK_SECRET;
+
+        const payload = await invoke('get_call_status', { call_id: 'call-no-auth' });
+
+        expect(payload.note).toContain('Webhook の認証が未設定');
+        expect(payload.note).toContain('VONAGE_API_SIGNATURE_SECRET');
+        expect(payload.note).not.toContain('一度だけ');
+        expect(payload.note).not.toContain('stdio');
+      });
+
+      // 空白だけのシークレットは authenticateWebhook が使えず全件 401 になる。
+      // 「設定済み」と判定すると、届きようがない理由の再確認を勧めてしまう
+      it('空白だけのシークレットも未設定として扱う', async () => {
+        process.env.VONAGE_API_SIGNATURE_SECRET = '   ';
+        delete process.env.VONAGE_WEBHOOK_SECRET;
+
+        const payload = await invoke('get_call_status', { call_id: 'call-blank-secret' });
+
+        expect(payload.note).toContain('Webhook の認証が未設定');
+        expect(payload.note).not.toContain('一度だけ');
+      });
+
+      it('イベントは受信済みだが detail が無い場合は、そう述べる', async () => {
+        ingestCallEvent({
+          uuid: 'call-no-detail',
+          status: 'busy',
+          timestamp: new Date().toISOString(),
+        });
+
+        const payload = await invoke('get_call_status', { call_id: 'call-no-detail' });
+
+        expect(payload.note).toContain('受信していますが、理由（detail）は含まれていませんでした');
+        expect(payload.note).not.toContain('未設定');
+      });
+
+      it('成功した通話には注記を付けない', async () => {
+        mockGetCallStatus.mockResolvedValue({
+          success: true,
+          status: 'completed',
+          price: '0.01',
+          rate: '0.13',
+          duration: 5,
+          startTime: new Date().toISOString(),
+        });
+
+        const payload = await invoke('get_call_status', { call_id: 'call-ok' });
+
+        expect(payload.note).toBeUndefined();
+      });
     });
   });
 

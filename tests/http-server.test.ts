@@ -30,6 +30,7 @@ import {
   recordSubmitted,
 } from '../src/messageStatusStore.js';
 import { clearWebhookReplayCache } from '../src/webhookAuth.js';
+import { clearCallEventStore, getCallEvent } from '../src/callEventStore.js';
 
 /** jti はリプレイ検出の対象なので、テストごとに必ず別の値を使う */
 let jtiCounter = 0;
@@ -635,6 +636,21 @@ describe('HTTP MCP Wrapper', () => {
       expect(getMessageStatus('msg-spoof')).toBeNull();
     });
 
+    // 生の値を見ていた頃は「設定済み」と判定され、署名検証に空白を使って
+    // 全 Webhook が 401 を返し続けた。503 ではないので起動時の警告も出ない
+    it('空白だけのシークレットは未設定として扱い、401 ではなく 503 を返すべき', async () => {
+      process.env.VONAGE_API_SIGNATURE_SECRET = '   ';
+      process.env.VONAGE_WEBHOOK_SECRET = '\t\n ';
+
+      const res = await request(app)
+        .post('/webhooks/message-status')
+        .send({ message_uuid: 'msg-blank', status: 'delivered' });
+
+      expect(res.status).toBe(503);
+      expect(res.body.error).toContain('not configured');
+      expect(getMessageStatus('msg-blank')).toBeNull();
+    });
+
     describe('署名付きJWT (VONAGE_API_SIGNATURE_SECRET)', () => {
       const SECRET = 'a'.repeat(32);
 
@@ -853,6 +869,135 @@ describe('HTTP MCP Wrapper', () => {
       expect(res.status).toBe(200);
       expect(res.body.ignored).toBe(true);
       expect(getMessageStatus('msg-ord')!.status).toBe('delivered');
+    });
+  });
+  // 番号をアプリケーションにリンクすると着信がアプリに向く。Answer URL が無いと
+  // 発信者は無言で切られる。Event URL は、通話が失敗した理由(detail)が届く唯一の経路。
+  describe('Voice Webhook', () => {
+    beforeEach(() => {
+      clearCallEventStore();
+      delete process.env.VOICE_INBOUND_MESSAGE;
+    });
+
+    describe('POST /webhooks/voice/answer', () => {
+      it('認証が通れば案内を読み上げる NCCO を返すべき', async () => {
+        const res = await request(app)
+          .post('/webhooks/voice/answer')
+          .set('x-webhook-secret', 'test-webhook-secret')
+          .send({ from: '819045327751', to: '81345438093', uuid: 'call-in' });
+
+        expect(res.status).toBe(200);
+        expect(Array.isArray(res.body)).toBe(true);
+        expect(res.body[0]).toMatchObject({ action: 'talk', language: 'ja-JP' });
+        expect(res.body[0].text).toContain('お受けしておりません');
+      });
+
+      it('VOICE_INBOUND_MESSAGE で文面を差し替えられるべき', async () => {
+        process.env.VOICE_INBOUND_MESSAGE = 'こちらは発信専用です。';
+
+        const res = await request(app)
+          .post('/webhooks/voice/answer')
+          .set('x-webhook-secret', 'test-webhook-secret')
+          .send({ uuid: 'call-in' });
+
+        expect(res.body[0].text).toBe('こちらは発信専用です。');
+      });
+
+      it('シークレットが不一致なら 401 を返すべき', async () => {
+        const res = await request(app)
+          .post('/webhooks/voice/answer')
+          .set('x-webhook-secret', 'wrong')
+          .send({ uuid: 'call-in' });
+
+        expect(res.status).toBe(401);
+      });
+
+      it('認証手段が一つも設定されていなければ 503（fail-closed）', async () => {
+        delete process.env.VONAGE_WEBHOOK_SECRET;
+        delete process.env.VONAGE_API_SIGNATURE_SECRET;
+
+        const res = await request(app).post('/webhooks/voice/answer').send({ uuid: 'call-in' });
+
+        expect(res.status).toBe(503);
+      });
+
+      // 既定の GET のままだと署名検証(payload_hash)が成立しないため受け付けない。
+      // 黙って 404 にすると原因が分からなくなるので、対処法を本文で返す。
+      it('GET は 405 で、answer_method を POST にするよう案内すべき', async () => {
+        const res = await request(app).get('/webhooks/voice/answer');
+
+        expect(res.status).toBe(405);
+        expect(res.body.reason).toContain('answer_method');
+      });
+    });
+
+    describe('POST /webhooks/voice/event', () => {
+      it('イベントを取り込んで 200 を返すべき', async () => {
+        const res = await request(app)
+          .post('/webhooks/voice/event')
+          .set('x-webhook-secret', 'test-webhook-secret')
+          .send({
+            uuid: 'call-evt',
+            status: 'busy',
+            detail: 'cannot_route',
+            sip_code: 486,
+            timestamp: new Date().toISOString(),
+          });
+
+        expect(res.status).toBe(200);
+        expect(res.body).toMatchObject({ status: 'ok', call_id: 'call-evt', call_status: 'busy' });
+        expect(getCallEvent('call-evt')).toMatchObject({ detail: 'cannot_route', sipCode: 486 });
+      });
+
+      it('uuid や status が無いペイロードは 400（Vonageのリトライを誘発しない）', async () => {
+        const res = await request(app)
+          .post('/webhooks/voice/event')
+          .set('x-webhook-secret', 'test-webhook-secret')
+          .send({ status: 'busy' });
+
+        expect(res.status).toBe(400);
+      });
+
+      it('未認証のイベントは取り込まない（ステータス偽装の防止）', async () => {
+        const res = await request(app)
+          .post('/webhooks/voice/event')
+          .set('x-webhook-secret', 'wrong')
+          .send({ uuid: 'call-spoof', status: 'completed' });
+
+        expect(res.status).toBe(401);
+        expect(getCallEvent('call-spoof')).toBeNull();
+      });
+
+      it('署名付きJWTでも取り込めるべき', async () => {
+        const SECRET = 'b'.repeat(32);
+        process.env.VONAGE_API_SIGNATURE_SECRET = SECRET;
+        delete process.env.VONAGE_WEBHOOK_SECRET;
+
+        const body = { uuid: 'call-signed', status: 'completed', timestamp: new Date().toISOString() };
+        const res = await request(app)
+          .post('/webhooks/voice/event')
+          .set('Authorization', `Bearer ${signWebhookJwt(SECRET, body)}`)
+          .send(body);
+
+        expect(res.status).toBe(200);
+        expect(getCallEvent('call-signed')!.status).toBe('completed');
+      });
+
+      it('順序が逆転した通知は取り込まず、確定した状態を維持すべき', async () => {
+        await request(app)
+          .post('/webhooks/voice/event')
+          .set('x-webhook-secret', 'test-webhook-secret')
+          .send({ uuid: 'call-ord', status: 'completed', timestamp: new Date(Date.now() + 2000).toISOString() });
+
+        const res = await request(app)
+          .post('/webhooks/voice/event')
+          .set('x-webhook-secret', 'test-webhook-secret')
+          .send({ uuid: 'call-ord', status: 'ringing', timestamp: new Date(Date.now() + 1000).toISOString() });
+
+        expect(res.status).toBe(200);
+        expect(res.body.ignored).toBe(true);
+        expect(getCallEvent('call-ord')!.status).toBe('completed');
+      });
     });
   });
 });

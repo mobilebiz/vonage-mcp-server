@@ -20,6 +20,8 @@ import {
 } from './voiceCall.js';
 import { getCallStatus } from './callStatus.js';
 import { getMessageStatus, recordSubmitted } from './messageStatusStore.js';
+import { isWebhookAuthConfigured } from './webhookAuth.js';
+import { getCallEvent, isCallEventWebhookHosted, recordOutboundCall } from './callEventStore.js';
 import {
   PHONE_INPUT_PATTERN,
   SMS_INPUT_MAX_LENGTH,
@@ -131,6 +133,179 @@ function guardDestination(to: string): { outcome: ToolOutcome } | { normalized: 
   }
 
   return { normalized: validation.normalized };
+}
+
+/** 通話が接続されなかったことを示すステータス */
+const CALL_FAILURE_STATUSES = new Set([
+  'busy',
+  'cancelled',
+  'failed',
+  'rejected',
+  'timeout',
+  'unanswered',
+]);
+
+/**
+ * detail の分類。**detail は status ごとに意味が違うので、まとめて扱ってはいけない。**
+ *
+ * 公式リファレンスの対応:
+ * - `failed`     → cannot_route / number_out_of_service / internal_error
+ * - `rejected`   → invalid_number / restricted / declined
+ * - `unanswered` → unavailable / timeout
+ *
+ * とくに `unavailable` は「相手が一時的に応答できない」であり、時間をおけば繋がる。
+ * これを `cannot_route` と同じ「経路が無い」に混ぜると、**再試行すれば繋がる相手に
+ * 対して「もう掛けるな」と指示する**ことになる。
+ *
+ * 同じ理由で `number_out_of_service` も `cannot_route` と分けている。どちらも
+ * 掛け直しても無駄だが、**ユーザーに取ってほしい行動が違う**。前者は番号そのものが
+ * 不通なので「番号を確かめ直す」、後者はアカウントの設定・宛先の許可の問題なので
+ * 「Vonage 側の設定を見る」になる。混ぜると誤った方へ誘導する。
+ *
+ * @see https://developer.vonage.com/en/voice/voice-api/webhook-reference
+ */
+const DETAIL_CATEGORY: Record<
+  string,
+  'unroutable' | 'out_of_service' | 'rejected' | 'temporary' | 'upstream'
+> = {
+  // failed — このアカウントからその宛先へ経路が無い。相手の状態とは無関係
+  cannot_route: 'unroutable',
+  // 同じ failed でも、これは宛先の番号自体が使われていないことを示す。
+  // 「相手の状態ではない」と言ってはいけない（まさに相手の番号の状態である）
+  number_out_of_service: 'out_of_service',
+  // 同じ failed でも、これは宛先について何も語っていない。Vonage 側の障害なので
+  // 「その宛先には掛けるな」と言ってはいけない（一時的で、あとから通ることがある）
+  internal_error: 'upstream',
+  // rejected — 誰か（キャリアか着信者）が拒否した。番号の不備も含む
+  invalid_number: 'rejected',
+  restricted: 'rejected',
+  declined: 'rejected',
+  // unanswered — 一時的。時間をおけば結果が変わりうる
+  unavailable: 'temporary',
+  timeout: 'temporary',
+};
+
+/**
+ * 失敗した通話に添える注記を組み立てる。
+ *
+ * **`busy` を「相手が通話中」と断定させないことが目的。** 実測で、設定不備の状態でも
+ * `busy` が返る例があった（日本の固定電話宛が rate 0 のまま0秒で busy、同じ発信元から
+ * 携帯宛は繋がる）。status だけで相手の状態を語れないため、必ず注記を添える。
+ *
+ * ただし**理由の断定は detail の分類に従う**。「経路が無い」と言えるのは
+ * DETAIL_CATEGORY が unroutable のときだけで、それ以外に広げてはいけない。
+ */
+function callFailureNote(
+  status: string | undefined,
+  detail: string | undefined,
+  hasEventRecord: boolean
+): { note: string } | null {
+  if (!status || !CALL_FAILURE_STATUSES.has(status.toLowerCase())) {
+    return null;
+  }
+
+  const prefix = detail
+    ? `通話は接続されませんでした（status: ${status} / detail: ${detail}）。`
+    : `通話は接続されませんでした（status: ${status}）。`;
+
+  switch (detail ? DETAIL_CATEGORY[detail.toLowerCase()] : undefined) {
+    case 'unroutable':
+      return {
+        note:
+          prefix +
+          'これは相手の状態ではなく、その宛先がこのアカウントで未対応かブロックされていることを示します。' +
+          '「話し中でした」と報告せず、同じ宛先への再発信を繰り返さないでください。',
+      };
+    case 'out_of_service':
+      return {
+        note:
+          prefix +
+          'これは宛先の番号自体が使われていない（不通の）ことを示します。' +
+          '「話し中でした」と報告せず、同じ宛先への再発信を繰り返さないでください。' +
+          '番号が正しいかユーザーに確認してもらってください。',
+      };
+    case 'rejected':
+      return {
+        note:
+          prefix +
+          'キャリアまたは着信者に拒否されたか、発信元・宛先の番号が受け付けられませんでした。' +
+          '同じ条件で掛け直しても結果は変わらない可能性が高いため、番号を確認してユーザーに報告してください。',
+      };
+    case 'temporary':
+      return {
+        note:
+          prefix +
+          'これは一時的な状態（相手が応答できない、または応答が時間内に得られない）を示します。' +
+          '時間をおけば繋がる可能性がありますが、続けて掛け直さずユーザーの指示を仰いでください。',
+      };
+    case 'upstream':
+      return {
+        note:
+          prefix +
+          'これは Vonage 側の内部エラーで、宛先や相手の状態について何も示していません。' +
+          '一時的な可能性があるため、時間をおいた再試行は妥当です。判断はユーザーに委ねてください。',
+      };
+    case undefined:
+      // detail はあるが分類表に無い（新しい値）。断定せず、値だけを伝える
+      if (detail) {
+        return { note: prefix + '理由の詳細は detail の値を確認してください。' };
+      }
+      // detail が無い。**なぜ無いのかは、このサーバーからは分からない。**
+      // 通知が届く前、Vonage が detail を付けなかった、プロセス再起動で記録が消えた、
+      // 24時間の保持期間を過ぎた、Webhook が未設定 — どれも同じ「空」に見える。
+      // 断定できない以上、断定しない。
+      if (hasEventRecord) {
+        return {
+          note:
+            prefix +
+            'このサーバーは通話イベントを受信していますが、理由（detail）は含まれていませんでした。' +
+            '相手の状態を断定せず「接続できませんでした」と報告してください。',
+        };
+      }
+
+      // 待てば届くのか、原理的に届かないのかで、正しい行動が正反対になる。
+      // **経路の死に方は2通りあり、運用者に頼むことも違う。**
+      //
+      // - stdio        — エンドポイントがそもそも無い（→ callEventStore）
+      // - 認証が未設定 — エンドポイントはあるが 503 を返し続ける（fail-closed。
+      //                  → webhookAuth。トランスポートだけを見ると見落とす）
+      //
+      // どちらも「まだ届いていない」ではないので、再確認を勧めてはいけない。
+      if (!isCallEventWebhookHosted()) {
+        return {
+          note:
+            prefix +
+            '理由（detail）は取得できません。このサーバーは stdio で起動しており、' +
+            '理由が届く経路である Event Webhook を待ち受けていないためです。' +
+            '待っても再確認しても結果は変わりません。相手の状態を断定せず' +
+            '「接続できませんでした」と報告し、理由が必要なら HTTP 版のサーバーで' +
+            'Event Webhook を受ける必要があるとユーザーに伝えてください。',
+        };
+      }
+
+      if (!isWebhookAuthConfigured()) {
+        return {
+          note:
+            prefix +
+            '理由（detail）は取得できません。Webhook の認証が未設定のため、' +
+            'このサーバーの Event Webhook は 503 を返して無効化されています。' +
+            '待っても再確認しても結果は変わりません。相手の状態を断定せず' +
+            '「接続できませんでした」と報告し、理由が必要なら ' +
+            'VONAGE_API_SIGNATURE_SECRET（推奨）または VONAGE_WEBHOOK_SECRET を' +
+            '設定する必要があるとユーザーに伝えてください。',
+        };
+      }
+
+      return {
+        note:
+          prefix +
+          '理由（detail）を受信していません。通知が届く前にこの確認が実行されたか、記録が失われた' +
+          '（サーバー再起動、または24時間の保持期間経過）か、Event Webhook が未設定の可能性があります。' +
+          '相手の状態を断定せず「接続できませんでした」と報告し、理由が必要なら数十秒待ってから' +
+          '**一度だけ**確認し直してください。それでも空なら、Webhook の設定と配信ログの確認を' +
+          'ユーザーに依頼してください（このサーバー側からは原因を判別できません）。',
+      };
+  }
 }
 
 /**
@@ -574,6 +749,12 @@ const toolImplementations: ToolImplementation[] = [
         );
       }
 
+      // 自分が発信した通話として記録する。イベントストアが上限に達したとき、
+      // 着信レグや他システムの通話より優先して保持するために使う。
+      if (result.callId) {
+        recordOutboundCall(result.callId);
+      }
+
       return successOutcome({
         call_id: result.callId,
         to: guarded.normalized,
@@ -613,6 +794,20 @@ const toolImplementations: ToolImplementation[] = [
         );
       }
 
+      // Voice API の GET /calls は失敗の**理由**を返さない（detail は常に null）。
+      // 理由が来るのは Event Webhook だけなので、受信済みの記録があれば重ねる。
+      //
+      // ただし**保持している理由は、それが説明していた status のもの**である。
+      // APIが先に completed へ進み、対応する Webhook がまだ届いていない場合、
+      // 手元には1つ前の失敗イベント（busy / cannot_route など）が残っている。
+      // そのまま重ねると「完了したが経路が無かった」を返してしまう。
+      const event = getCallEvent(id);
+      const explainsCurrentStatus =
+        event !== null &&
+        typeof result.status === 'string' &&
+        event.status.toLowerCase() === result.status.toLowerCase();
+      const diagnostics = explainsCurrentStatus ? event : null;
+
       return successOutcome({
         call_id: id,
         call_status: result.status,
@@ -620,6 +815,9 @@ const toolImplementations: ToolImplementation[] = [
         duration_seconds: result.duration,
         price: result.price,
         rate: result.rate,
+        ...(diagnostics?.detail ? { detail: diagnostics.detail } : {}),
+        ...(diagnostics?.sipCode !== undefined ? { sip_code: diagnostics.sipCode } : {}),
+        ...(callFailureNote(result.status, diagnostics?.detail, diagnostics !== null) ?? {}),
       });
     },
   },

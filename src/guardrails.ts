@@ -25,6 +25,7 @@ import { JP_MAX_CONCATENATED_CHARS } from './smsSegments.js';
 export {
   DEFAULT_BULK_MAX_ROWS,
   DEFAULT_RATE_LIMIT_PER_HOUR,
+  VOICE_MESSAGE_MAX_LENGTH,
   getBulkMaxRows,
   getRateLimitPerHour,
 } from './config.js';
@@ -58,9 +59,6 @@ export const PHONE_INPUT_PATTERN = '^(?:\\+[1-9][0-9\\s-]{6,20}|0[0-9\\s-]{8,20}
  * 3通分に相当していた (VONAGE_MCP-25)。
  */
 export const SMS_INPUT_MAX_LENGTH = JP_MAX_CONCATENATED_CHARS;
-
-/** make_voice_call の読み上げメッセージ長上限（通話時間の暴走を防ぐ） */
-export const VOICE_MESSAGE_MAX_LENGTH = 1000;
 
 /**
  * 電話番号をE.164形式（+付き）に正規化する。

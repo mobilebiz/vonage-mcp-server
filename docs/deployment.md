@@ -203,13 +203,22 @@ gcloud run services logs read $SERVICE_NAME --region=$REGION --limit=50
 
 ### 6. Webhook を登録する（方式B のみ）
 
-Vonage Dashboard の Application 設定で **Status URL** に登録します。
+Vonage Dashboard の Application 設定で、次の3つを登録します。
 
-```
-https://YOUR_SERVICE_URL/webhooks/message-status
-```
+| 設定項目 | URL | メソッド |
+| --- | --- | --- |
+| Status URL（SMSの配信結果） | `https://YOUR_SERVICE_URL/webhooks/message-status` | POST |
+| Answer URL（音声の着信） | `https://YOUR_SERVICE_URL/webhooks/voice/answer` | **POST** |
+| Event URL（通話イベント） | `https://YOUR_SERVICE_URL/webhooks/voice/event` | POST |
 
-**`VONAGE_API_SIGNATURE_SECRET` を設定してください。** 未設定だとこのエンドポイントは `503` を返して無効化されます（fail-closed）。
+> [!IMPORTANT]
+> **Answer URL のメソッドは POST に変更してください。** 既定の GET では `405` になります（署名検証にリクエストボディが必要なため）。
+>
+> **Event URL は、通話が失敗した理由が届く唯一の経路です。** 登録しないと `get_call_status` は `detail` も `sip_code` も返せず、`busy` が「相手が通話中」なのか「その宛先への経路が無い」のか切り分けられません。
+
+**`VONAGE_API_SIGNATURE_SECRET` を設定してください。** 未設定だと上記3つのエンドポイントはすべて `503` を返して無効化されます（fail-closed）。**着信は無応答のまま切断され、通話イベントも一切記録されません。**
+
+あわせて、**アプリケーションの署名付き Webhook が有効か確認してください。** 古いアプリケーションでは既定で無効になっており、その場合は `401` が返り続けます。
 
 ```bash
 echo -n "YOUR_SIGNATURE_SECRET" | gcloud secrets create vonage-signature-secret --data-file=-

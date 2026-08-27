@@ -1,6 +1,7 @@
 import { Vonage } from '@vonage/server-sdk';
 import { readFileSync } from 'fs';
 import { E164_DIALABLE_PATTERN, normalizeToE164 } from './guardrails.js';
+import { getPrivateKeyPath } from './config.js';
 
 // Vonage設定のインターフェース
 interface VonageConfig {
@@ -42,7 +43,7 @@ export async function sendSMS(params: SMSParams): Promise<{ success: boolean; me
       throw new Error('VONAGE_APPLICATION_ID環境変数が設定されていません');
     }
     
-    const privateKeyPath = process.env.VONAGE_PRIVATE_KEY_PATH || './private.key';
+    const privateKeyPath = getPrivateKeyPath();
     
     // Vonageクライアントを初期化
     const vonage = createVonageClient({
