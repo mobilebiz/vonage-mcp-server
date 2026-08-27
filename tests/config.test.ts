@@ -14,6 +14,8 @@ import {
   getBindHost,
   getMcpAuthToken,
   getPort,
+  getPrivateKeyPath,
+  DEFAULT_PRIVATE_KEY_PATH,
   getRateLimitPerHour,
   getVoiceInboundMessage,
   VOICE_MESSAGE_MAX_LENGTH,
@@ -286,6 +288,33 @@ describe('config', () => {
       ['[::1]', '::1'],
     ])('extractHostname(%s) は %s', (input, expected) => {
       expect(extractHostname(input)).toBe(expected);
+    });
+  });
+
+  // 鍵は送信のたびに readFileSync される。起動時の検証と実行時の読み取りが
+  // 同じ値を指していなければ、検証は何も保証しない
+  describe('getPrivateKeyPath', () => {
+    it('未設定なら既定値を返す', () => {
+      expect(getPrivateKeyPath()).toBe(DEFAULT_PRIVATE_KEY_PATH);
+    });
+
+    it('前後の空白を落として返す', () => {
+      process.env.VONAGE_PRIVATE_KEY_PATH = '  ./keys/app.key  ';
+
+      expect(getPrivateKeyPath()).toBe('./keys/app.key');
+    });
+
+    // 以前は起動時だけ trim していたため、空白だけの値は「起動時は ./private.key を
+    // 確認して通り、実行時は "   " を読んで毎回失敗する」という食い違いを起こした。
+    // しかも失敗はレート枠を消費したあとに来る
+    it('空白だけの値は未設定として扱い、起動時の検証と同じパスを指す', () => {
+      process.env.VONAGE_PRIVATE_KEY_PATH = '   ';
+      process.env.ENABLE_SMS = 'true';
+      process.env.VONAGE_APPLICATION_ID = 'app-id';
+
+      expect(getPrivateKeyPath()).toBe(DEFAULT_PRIVATE_KEY_PATH);
+      // 既定の鍵は存在するので、起動時の検証も同じ判断になる
+      expect(() => validateStartupConfig()).not.toThrow();
     });
   });
 

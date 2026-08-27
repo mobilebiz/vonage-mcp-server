@@ -2,6 +2,8 @@ import { Voice, NCCOAction } from '@vonage/voice';
 import { Auth } from '@vonage/auth';
 import { readFileSync } from 'fs';
 
+import { getPrivateKeyPath } from './config.js';
+
 // Voice通話パラメータのインターフェース
 export interface VoiceCallParams {
   to: string;
@@ -64,7 +66,7 @@ export async function makeVoiceCall(params: VoiceCallParams): Promise<{ success:
       throw new Error('VONAGE_APPLICATION_ID環境変数が設定されていません');
     }
     
-    const privateKeyPath = process.env.VONAGE_PRIVATE_KEY_PATH || './private.key';
+    const privateKeyPath = getPrivateKeyPath();
     const fromNumber = process.env.VONAGE_VOICE_FROM;
     if (!fromNumber) {
       throw new Error('VONAGE_VOICE_FROM環境変数が設定されていません');

@@ -404,6 +404,22 @@ export function getMcpAuthToken(): string | null {
   return token;
 }
 
+/** VONAGE_PRIVATE_KEY_PATH が未設定のときに使う既定のパス */
+export const DEFAULT_PRIVATE_KEY_PATH = './private.key';
+
+/**
+ * 秘密鍵のパス。**空白だけの値は未設定として扱い、既定値へ倒す。**
+ *
+ * 送信のたびに readFileSync される値なので、起動時の検証と実行時の読み取りが
+ * 同じ値を指していなければ意味がない。以前は起動時だけ `.trim()` していたため、
+ * `VONAGE_PRIVATE_KEY_PATH="   "` は**起動時は ./private.key を確認して通り、
+ * 実行時は "   " を読んで毎回失敗する**という食い違いが起きていた。しかも失敗は
+ * レート枠を消費したあとに来る（bulk では1件も送らずに大量の枠を失う）。
+ */
+export function getPrivateKeyPath(): string {
+  return process.env.VONAGE_PRIVATE_KEY_PATH?.trim() || DEFAULT_PRIVATE_KEY_PATH;
+}
+
 /**
  * 音声の着信時に読み上げる案内文。未設定なら null（呼び出し側の既定文を使う）。
  *
@@ -661,7 +677,7 @@ export function validateStartupConfig(): string[] {
     // 起動時に確かめないと、パスの誤記やマウント漏れでも起動でき、各呼び出しは
     // **レート枠を消費してから**鍵の読み込みで失敗する。bulk では1件も送らずに
     // 大量の枠を失う。
-    const privateKeyPath = process.env.VONAGE_PRIVATE_KEY_PATH?.trim() || './private.key';
+    const privateKeyPath = getPrivateKeyPath();
     try {
       accessSync(privateKeyPath, constants.R_OK);
     } catch {

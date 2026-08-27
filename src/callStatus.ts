@@ -1,6 +1,8 @@
 import { Vonage } from '@vonage/server-sdk';
 import { readFileSync } from 'fs';
 
+import { getPrivateKeyPath } from './config.js';
+
 /**
  * Call Status取得パラメータ
  */
@@ -33,7 +35,7 @@ export async function getCallStatus(params: CallStatusParams): Promise<CallStatu
   try {
     // 環境変数から設定を取得（パラメータで上書き可能）
     const applicationId = params.applicationId || process.env.VONAGE_APPLICATION_ID;
-    const privateKeyPath = params.privateKeyPath || process.env.VONAGE_PRIVATE_KEY_PATH;
+    const privateKeyPath = params.privateKeyPath?.trim() || getPrivateKeyPath();
     
     // 必須パラメータのチェック
     if (!applicationId) {
