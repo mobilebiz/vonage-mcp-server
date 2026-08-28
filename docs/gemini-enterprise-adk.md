@@ -121,7 +121,7 @@ from google.adk.agents import Agent
 from google.adk.tools.mcp_tool import McpToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 
-DESTRUCTIVE = ["send_sms", "bulk_sms_from_csv", "make_voice_call"]
+DESTRUCTIVE = ["send_sms", "make_voice_call"]
 READ_ONLY = ["get_sms_status", "get_call_status"]
 
 

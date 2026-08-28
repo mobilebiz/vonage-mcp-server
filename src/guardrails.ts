@@ -23,10 +23,8 @@ import { JP_MAX_CONCATENATED_CHARS } from './smsSegments.js';
 
 // 既存の import 元を変えずに済むよう、設定系のシンボルはここからも再公開する。
 export {
-  DEFAULT_BULK_MAX_ROWS,
   DEFAULT_RATE_LIMIT_PER_HOUR,
   VOICE_MESSAGE_MAX_LENGTH,
-  getBulkMaxRows,
   getRateLimitPerHour,
 } from './config.js';
 
@@ -474,8 +472,8 @@ export interface RateLimitResult {
 /**
  * スライディングウィンドウ方式のオンメモリ・レートリミッタ。
  *
- * 1件の送信・架電を1単位としてカウントする。bulk_sms_from_csv のように1回の
- * ツール呼び出しで複数件を送るものは、送信件数分をまとめて消費する（cost）。
+ * 1件の送信・架電を1単位としてカウントする。1回のツール呼び出しで複数件を送る
+ * 場合に備えて、消費量は cost で指定できる。
  * プロセスが再起動するとカウントはリセットされる（簡易実装）。
  */
 export class RateLimiter {
@@ -589,8 +587,8 @@ export class RateLimiter {
 }
 
 /**
- * 課金が発生するツール（send_sms / bulk_sms_from_csv / make_voice_call）で共有するレートリミッタ。
- * ステータス取得系やJWT生成などの副作用のないツールはカウント対象外。
+ * 課金が発生するツール（send_sms / make_voice_call）で共有するレートリミッタ。
+ * ステータス取得系など副作用のないツールはカウント対象外。
  */
 export const toolRateLimiter = new RateLimiter();
 

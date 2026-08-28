@@ -1,15 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-const { mockSendSMS, mockSendBulkSMS, mockMakeVoiceCall, mockGetCallStatus } = vi.hoisted(() => ({
+const { mockSendSMS, mockMakeVoiceCall, mockGetCallStatus } = vi.hoisted(() => ({
   mockSendSMS: vi.fn(),
-  mockSendBulkSMS: vi.fn(),
   mockMakeVoiceCall: vi.fn(),
   mockGetCallStatus: vi.fn(),
 }));
 
 vi.mock('../src/vonage.js', async () => {
   const actual = await vi.importActual<typeof import('../src/vonage.js')>('../src/vonage.js');
-  return { ...actual, sendSMS: mockSendSMS, sendBulkSMS: mockSendBulkSMS };
+  return { ...actual, sendSMS: mockSendSMS };
 });
 
 vi.mock('../src/voiceCall.js', async () => {
@@ -53,13 +52,11 @@ describe('tools registry', () => {
     delete process.env.VOICE_RATE_LIMIT_PER_HOUR;
     delete process.env.ALLOWED_COUNTRY_CODES;
     delete process.env.ALLOW_PREMIUM_NUMBERS;
-    delete process.env.BULK_MAX_ROWS;
     delete process.env.RATE_LIMIT_PER_HOUR;
     // RATE_LIMIT_PER_HOUR=0 は「全拒否」の意味なので、無効化には使えない
     process.env.DISABLE_RATE_LIMIT = 'true';
     // capability は既定で全 OFF。ツールの挙動を検証するテストでは明示的に有効化する
     process.env.ENABLE_SMS = 'true';
-    process.env.ENABLE_BULK_SMS = 'true';
     process.env.ENABLE_VOICE = 'true';
 
   });
@@ -72,7 +69,6 @@ describe('tools registry', () => {
     it('全ツールがJSON Schemaを生成できる', () => {
       const tools = listTools();
       expect(tools.map((t) => t.name).sort()).toEqual([
-        'bulk_sms_from_csv',
         'get_call_status',
         'get_sms_status',
         'make_voice_call',
@@ -103,7 +99,7 @@ describe('tools registry', () => {
     });
 
     it('課金対象の全ツールに dry_run がある', () => {
-      for (const name of ['send_sms', 'bulk_sms_from_csv', 'make_voice_call']) {
+      for (const name of ['send_sms', 'make_voice_call']) {
         expect(toolDefinitions.find((t) => t.name === name)!.schema).toHaveProperty('dry_run');
       }
     });
@@ -113,7 +109,7 @@ describe('tools registry', () => {
   // 課金対象のツールに付けると、実行前の確認が黙って省かれる（VONAGE_MCP-4）。
   describe('ツール注釈', () => {
     it('課金対象のツールは破壊的として宣言され、確認を省く注釈を持たない', () => {
-      for (const name of ['send_sms', 'bulk_sms_from_csv', 'make_voice_call']) {
+      for (const name of ['send_sms', 'make_voice_call']) {
         const annotations = toolDefinitions.find((t) => t.name === name)!.annotations;
         expect(annotations.readOnlyHint).toBe(false);
         expect(annotations.destructiveHint).toBe(true);
@@ -415,27 +411,6 @@ describe('tools registry', () => {
       expect(third.exceeded_bucket).toBe('global');
     });
 
-    // これが元のバグ。単発で使い切ったあと1行CSVを繰り返せば上限を素通りできた
-    it('単発SMSと bulk は同じ枠を消費し、合計が上限を超えない', async () => {
-      mockSendSMS.mockResolvedValue({ success: true, messageId: 'msg-123' });
-      mockSendBulkSMS.mockResolvedValue({
-        totalRequests: 1,
-        successCount: 1,
-        failureCount: 0,
-        results: [{ to: '+819012345678', success: true, messageId: 'm1' }],
-      });
-
-      await invoke('send_sms', { to: '09012345678', message: 'a' });
-      await invoke('send_sms', { to: '09012345678', message: 'a' });
-
-      const bulk = await invoke('bulk_sms_from_csv', {
-        csv_content: 'phone,from,message\n09012345678,VonageMCP,hi\n',
-      });
-
-      expect(bulk.status).toBe('error');
-      expect(mockSendBulkSMS).not.toHaveBeenCalled();
-    });
-
     // 課金はセグメント単位。RATE_LIMIT_PER_HOUR=5 のつもりでも、
     // 日本語の長文なら実際の課金は5通分では済まない
     describe('セグメント数の上限', () => {
@@ -477,35 +452,6 @@ describe('tools registry', () => {
         const payload = await invoke('make_voice_call', { to: '09012345678', message: 'テスト' });
 
         expect(payload.status).toBe('success');
-      });
-
-      it('bulk はセグメント数の合計を消費する', async () => {
-        process.env.RATE_LIMIT_PER_HOUR = '10';
-        process.env.SMS_SEGMENT_LIMIT_PER_HOUR = '4';
-
-        // 3セグメント + 1セグメント = 4セグメント。ちょうど収まる
-        const csv =
-          `phone,from,message\n09012345678,VonageMCP,${'あ'.repeat(160)}\n09087654321,VonageMCP,hi\n`;
-
-        const preview = await invoke('bulk_sms_from_csv', { csv_content: csv, dry_run: true });
-        expect(preview.estimated_segments).toBe(4);
-
-        mockSendBulkSMS.mockResolvedValue({
-          totalRequests: 2,
-          successCount: 2,
-          failureCount: 0,
-          results: [
-            { to: '+819012345678', success: true, messageId: 'm1' },
-            { to: '+819087654321', success: true, messageId: 'm2' },
-          ],
-        });
-
-        expect((await invoke('bulk_sms_from_csv', { csv_content: csv })).status).toBe('success');
-
-        // 枠を使い切ったので次は通らない
-        const blocked = await invoke('bulk_sms_from_csv', { csv_content: csv });
-        expect(blocked.status).toBe('error');
-        expect(blocked.exceeded_bucket).toBe('segments');
       });
     });
 
@@ -582,195 +528,6 @@ describe('tools registry', () => {
       const payload = await invoke('make_voice_call', { to: '09012345678', message: 'a', voice: 'ロボット' });
       expect(payload.status).toBe('error');
       expect(mockMakeVoiceCall).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('bulk_sms_from_csv', () => {
-    const csv = 'phone,from,message\n09012345678,VonageMCP,hello\n09087654321,VonageMCP,hello2\n';
-
-    // CSV 経路だけ + 無しの国際番号を受理していた不整合 (Codex L-1)。
-    // 2125551234 に + を補うと +212 = モロッコ宛になる
-    it('+ も先頭 0 も無い番号の行は無効として扱う', async () => {
-      const payload = await invoke('bulk_sms_from_csv', {
-        csv_content: 'phone,from,message\n2125551234,VonageMCP,hi\n',
-        dry_run: true,
-      });
-
-      expect(payload.status).toBe('error');
-      expect(payload.invalid_rows).toBe(1);
-      expect(mockSendBulkSMS).not.toHaveBeenCalled();
-    });
-
-    it('セグメント上限を超える行は送信されない（単発と同じ制限を適用）', async () => {
-      const long = 'あ'.repeat(250);
-      mockSendBulkSMS.mockResolvedValue({
-        totalRequests: 1,
-        successCount: 1,
-        failureCount: 0,
-        results: [{ to: '+819087654321', from: 'VonageMCP', success: true, messageId: 'm1' }],
-      });
-
-      const payload = await invoke('bulk_sms_from_csv', {
-        csv_content: `phone,from,message\n09012345678,VonageMCP,${long}\n09087654321,VonageMCP,ok\n`,
-      });
-
-      expect(payload.too_long_rows).toBe(1);
-      // 第2引数は「1件送るたびに recordSubmitted する」コールバック
-      expect(mockSendBulkSMS).toHaveBeenCalledWith(
-        [{ to: '+819087654321', message: 'ok', from: 'VonageMCP' }],
-        expect.any(Function)
-      );
-    });
-
-    it('全行がセグメント上限超ならAPIを呼ばずエラーを返す', async () => {
-      const long = 'あ'.repeat(250);
-      const payload = await invoke('bulk_sms_from_csv', {
-        csv_content: `phone,from,message\n09012345678,VonageMCP,${long}\n`,
-      });
-
-      expect(payload.status).toBe('error');
-      expect(payload.too_long_rows).toBe(1);
-      expect(mockSendBulkSMS).not.toHaveBeenCalled();
-    });
-
-    it('BULK_MAX_ROWS を超えるCSVはAPIを呼ばず拒否する', async () => {
-      process.env.BULK_MAX_ROWS = '2';
-      const rows = ['09012345678', '09087654321', '09011112222']
-        .map((p) => `${p},VonageMCP,hi`)
-        .join('\n');
-
-      const payload = await invoke('bulk_sms_from_csv', { csv_content: `phone,from,message\n${rows}\n` });
-
-      expect(payload.status).toBe('error');
-      expect(payload.reason).toContain('行数が上限を超えています');
-      expect(payload.max_rows).toBe(2);
-      expect(mockSendBulkSMS).not.toHaveBeenCalled();
-    });
-
-    it('BULK_MAX_ROWS=0 は無制限ではなく全拒否（VONAGE_MCP-18）', async () => {
-      process.env.BULK_MAX_ROWS = '0';
-
-      const payload = await invoke('bulk_sms_from_csv', {
-        csv_content: 'phone,from,message\n09012345678,VonageMCP,hi\n',
-      });
-
-      expect(payload.status).toBe('error');
-      expect(payload.reason).toContain('停止されています');
-      expect(payload.max_rows).toBe(0);
-      expect(mockSendBulkSMS).not.toHaveBeenCalled();
-    });
-
-    it('送信件数の分だけレート枠を消費する', async () => {
-      delete process.env.DISABLE_RATE_LIMIT;
-      process.env.RATE_LIMIT_PER_HOUR = '3';
-      mockSendBulkSMS.mockResolvedValue({
-        totalRequests: 2,
-        successCount: 2,
-        failureCount: 0,
-        results: [
-          { to: '+819012345678', from: 'VonageMCP', success: true, messageId: 'm1' },
-          { to: '+819087654321', from: 'VonageMCP', success: true, messageId: 'm2' },
-        ],
-      });
-
-      expect((await invoke('bulk_sms_from_csv', { csv_content: csv })).status).toBe('success');
-
-      // 残り枠は1件。2件のCSVは通らない
-      const blocked = await invoke('bulk_sms_from_csv', { csv_content: csv });
-      expect(blocked.status).toBe('error');
-      expect(blocked.reason).toContain('2件の送信を要求');
-      expect(blocked.remaining_quota).toBe(1);
-      expect(mockSendBulkSMS).toHaveBeenCalledTimes(1);
-    });
-
-    it('レート枠が足りない場合は1件も送信しない', async () => {
-      delete process.env.DISABLE_RATE_LIMIT;
-      process.env.RATE_LIMIT_PER_HOUR = '1';
-
-      const payload = await invoke('bulk_sms_from_csv', { csv_content: csv });
-
-      expect(payload.status).toBe('error');
-      expect(payload.reason).toContain('1件も送信していません');
-      expect(mockSendBulkSMS).not.toHaveBeenCalled();
-    });
-
-    it('全件失敗なら status=error を返す', async () => {
-      mockSendBulkSMS.mockResolvedValue({
-        totalRequests: 2,
-        successCount: 0,
-        failureCount: 2,
-        results: [
-          { to: '+819012345678', from: 'VonageMCP', success: false, error: 'auth failed' },
-          { to: '+819087654321', from: 'VonageMCP', success: false, error: 'auth failed' },
-        ],
-      });
-
-      const payload = await invoke('bulk_sms_from_csv', { csv_content: csv });
-
-      expect(payload.status).toBe('error');
-      expect(payload.sent).toBe(0);
-      expect(payload.failed).toBe(2);
-    });
-
-    it('一部失敗なら status=partial_success を返す', async () => {
-      mockSendBulkSMS.mockResolvedValue({
-        totalRequests: 2,
-        successCount: 1,
-        failureCount: 1,
-        results: [
-          { to: '+819012345678', from: 'VonageMCP', success: true, messageId: 'm1' },
-          { to: '+819087654321', from: 'VonageMCP', success: false, error: 'rejected' },
-        ],
-      });
-
-      const payload = await invoke('bulk_sms_from_csv', { csv_content: csv });
-
-      expect(payload.status).toBe('partial_success');
-      expect(payload.sent).toBe(1);
-      expect(payload.failed).toBe(1);
-    });
-
-    it('dry_run では件数のみを返す', async () => {
-      const payload = await invoke('bulk_sms_from_csv', { csv_content: csv, dry_run: true });
-
-      expect(payload).toMatchObject({
-        status: 'dry_run_success',
-        total_rows: 2,
-        sendable_rows: 2,
-        invalid_rows: 0,
-        blocked_rows: 0,
-      });
-      expect(mockSendBulkSMS).not.toHaveBeenCalled();
-    });
-
-    it('ALLOWED_NUMBERS で絞り込まれた行だけを送信する', async () => {
-      process.env.ALLOWED_NUMBERS = '+819012345678';
-      mockSendBulkSMS.mockResolvedValue({
-        totalRequests: 1,
-        successCount: 1,
-        failureCount: 0,
-        results: [{ to: '+819012345678', from: 'VonageMCP', success: true, messageId: 'm1' }],
-      });
-
-      const payload = await invoke('bulk_sms_from_csv', { csv_content: csv });
-
-      expect(payload.status).toBe('success');
-      expect(payload.sent).toBe(1);
-      expect(payload.blocked_rows).toBe(1);
-      expect(mockSendBulkSMS).toHaveBeenCalledWith(
-        [{ to: '+819012345678', message: 'hello', from: 'VonageMCP' }],
-        expect.any(Function)
-      );
-    });
-
-    it('送信可能な行が無ければエラーを返す', async () => {
-      process.env.ALLOWED_NUMBERS = '+819099999999';
-
-      const payload = await invoke('bulk_sms_from_csv', { csv_content: csv });
-
-      expect(payload.status).toBe('error');
-      expect(payload.blocked_rows).toBe(2);
-      expect(mockSendBulkSMS).not.toHaveBeenCalled();
     });
   });
 
@@ -1139,38 +896,6 @@ describe('tools registry', () => {
     });
   });
 
-  // 単発とCSVでルールがずれていると、`2FA` は CSV だけ弾かれ、日本で禁止されている
-  // `INFO` は CSV だけ通る、という食い違いが起きる
-  describe('送信者IDのルールが単発とCSVで一致している', () => {
-    async function bulkRowErrors(from: string): Promise<string[]> {
-      const payload = await invoke('bulk_sms_from_csv', {
-        csv_content: `phone,from,message\n09012345678,${from},hi\n`,
-        dry_run: true,
-      });
-      return payload.status === 'error' ? [payload.reason] : [];
-    }
-
-    it('CSV でも 2FA のような数字始まりの送信者IDが通る', async () => {
-      const payload = await invoke('bulk_sms_from_csv', {
-        csv_content: 'phone,from,message\n09012345678,2FA,hi\n',
-        dry_run: true,
-      });
-
-      expect(payload.status).toBe('dry_run_success');
-      expect(payload.sendable_rows).toBe(1);
-    });
-
-    it('CSV でも日本で禁止されている INFO は弾かれる', async () => {
-      const errors = await bulkRowErrors('INFO');
-      expect(errors.join()).toContain('送信可能な行がありません');
-    });
-
-    it('CSV でも日本宛の数値送信元は弾かれる', async () => {
-      const errors = await bulkRowErrors('09087654321');
-      expect(errors.join()).toContain('送信可能な行がありません');
-    });
-  });
-
   describe('セグメント上限の設定', () => {
     it('SMS_MAX_SEGMENTS で1通あたりの上限を変更できる', async () => {
       process.env.SMS_MAX_SEGMENTS = '1';
@@ -1241,26 +966,6 @@ describe('tools registry', () => {
       expect(payload.status).toBe('error');
       expect(payload.reason).toContain('国番号');
     });
-
-    it('bulk でもブロックされた行は送信対象から除かれる', async () => {
-      mockSendBulkSMS.mockResolvedValue({
-        totalRequests: 1,
-        successCount: 1,
-        failureCount: 0,
-        results: [{ to: '+819012345678', success: true, messageId: 'm1' }],
-      });
-
-      const payload = await invoke('bulk_sms_from_csv', {
-        csv_content:
-          'phone,from,message\n09012345678,VonageMCP,hi\n0990123456,VonageMCP,hi\n+12125551234,VonageMCP,hi\n',
-      });
-
-      expect(payload.blocked_rows).toBe(2);
-      expect(mockSendBulkSMS).toHaveBeenCalledWith(
-        [{ to: '+819012345678', message: 'hi', from: 'VonageMCP' }],
-        expect.any(Function)
-      );
-    });
   });
 
   describe('capability トグル', () => {
@@ -1296,7 +1001,6 @@ describe('tools registry', () => {
 
     it.each([
       ['ENABLE_SMS', ['get_sms_status', 'send_sms']],
-      ['ENABLE_BULK_SMS', ['bulk_sms_from_csv']],
       ['ENABLE_VOICE', ['get_call_status', 'make_voice_call']],
     ])('%s だけを有効にすると対象ツールだけが公開される', (capability, expected) => {
       disableAll();
@@ -1343,18 +1047,19 @@ describe('tools registry', () => {
       expect(outcome.payload.reason).toContain('ENABLE_SMS');
     });
 
-    it('bulk は ENABLE_SMS では有効にならない（独立したトグル）', async () => {
+    it('架電は ENABLE_SMS では有効にならない（独立したトグル）', async () => {
       disableAll();
       process.env.ENABLE_SMS = 'true';
 
-      const outcome = await runTool('bulk_sms_from_csv', {
-        csv_content: 'phone,from,message\n09012345678,VonageMCP,hi\n',
+      const outcome = await runTool('make_voice_call', {
+        to: '09012345678',
+        message: 'hi',
         dry_run: true,
       });
 
       expect(outcome.errorKind).toBe('disabled');
-      expect(outcome.payload.required_capability).toBe('ENABLE_BULK_SMS');
-      expect(mockSendBulkSMS).not.toHaveBeenCalled();
+      expect(outcome.payload.required_capability).toBe('ENABLE_VOICE');
+      expect(mockMakeVoiceCall).not.toHaveBeenCalled();
     });
 
     it('全 OFF のときの未知ツールエラーは、有効なツールが無いことを伝える', async () => {

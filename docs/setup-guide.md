@@ -108,12 +108,10 @@ npm run build:mcpb
 | **Vonage Application ID** | Dashboard で確認した Application ID |
 | **Private Key Path** | `private.key` の**絶対パス**（例: `/Users/yourname/vonage/private.key`） |
 | **Enable SMS** | SMS を使うなら `true` |
-| **Enable Bulk SMS** | CSV 一括送信を使うなら `true` |
 | **Enable Voice** | 音声通話を使うなら `true` |
 | **Voice Call From Number** | Enable Voice が `true` のときのみ必須。E.164 形式 |
 | **Allowed Numbers** | **送信先を限定する場合**にカンマ区切りで指定 |
 | **Rate Limit Per Hour** | 1時間あたりの上限（既定 5） |
-| **Bulk CSV Max Rows** | CSV の最大行数（既定 100） |
 
 ### 入力するときの注意
 
@@ -270,7 +268,7 @@ dry_run の内容に納得したら、送信します。
 
 ```
 [WARN] すべての機能が無効です。ツールは1つも公開されません。
-       利用する機能を ENABLE_SMS / ENABLE_BULK_SMS / ENABLE_VOICE のいずれかに
+       利用する機能を ENABLE_SMS / ENABLE_VOICE のいずれかに
        true を設定して有効化してください（既定はすべて OFF です）。
 ```
 
@@ -350,7 +348,7 @@ grep 'method="tools/call"' ~/Library/Logs/Claude/mcp-server-*.log | tail -3
 ## 5.1 Claude Desktop（最優先）
 
 - [ ] `.mcpb` をダブルクリックしてインストールできる
-- [ ] 設定画面に **Enable SMS / Enable Bulk SMS / Enable Voice** が表示される
+- [ ] 設定画面に **Enable SMS / Enable Voice** が表示される
 - [ ] すべて既定のまま（全 `false`）でインストールすると、**ツールが1つも出ない**
 - [ ] `Enable SMS` を `true` にすると `send_sms` と `get_sms_status` が出る
 - [ ] **ツール実行前に承認プロンプトが出る**

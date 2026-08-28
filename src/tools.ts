@@ -9,8 +9,7 @@ import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { z, type ZodRawShape } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 
-import { sendSMS, sendBulkSMS } from './vonage.js';
-import { parseAndValidateCSV } from './csvUtils.js';
+import { sendSMS } from './vonage.js';
 import {
   MAX_CALL_DURATION_SECONDS,
   callLengthTimer,
@@ -31,7 +30,6 @@ import {
   checkDestination,
   containsUrl,
   isEmergencyNumber,
-  getBulkMaxRows,
   toolRateLimiter,
   validateAndNormalizePhoneNumber,
   validateSenderId,
@@ -47,7 +45,6 @@ import { approximateCharsForSegments, estimateSmsSegments } from './smsSegments.
 import {
   dryRunOutcome,
   errorOutcome,
-  partialSuccessOutcome,
   successOutcome,
   unexpectedErrorOutcome,
   type ToolOutcome,
@@ -311,10 +308,10 @@ function callFailureNote(
 /**
  * レートリミットを cost 件分消費する。超過していればエラーの ToolOutcome を返す。
  *
- * バケットは**ツール名ではなくチャネル**で分ける。ツール名で分けると、単発 SMS で
- * 上限まで送ったあと1行だけの CSV を繰り返すことで上限を素通りできる
- * （VONAGE_MCP-17）。`global` と該当チャネルの両方を原子的に消費し、
- * どちらか一方でも足りなければ1件も送らない。
+ * バケットは**ツール名ではなくチャネル**で分ける。ツール名で分けると、送信手段を
+ * 変えるだけで上限を素通りできてしまう（VONAGE_MCP-17。当時は単発 SMS で上限まで
+ * 送ったあと、1行だけの CSV 一括送信を繰り返すことで実際に起きた）。`global` と
+ * 該当チャネルの両方を原子的に消費し、どちらか一方でも足りなければ1件も送らない。
  */
 function consumeRateLimit(
   toolName: string,
@@ -533,164 +530,6 @@ const toolImplementations: ToolImplementation[] = [
         segments: segments.estimate.segments,
         ...urlWarning,
       });
-    },
-  },
-
-  {
-    name: 'bulk_sms_from_csv',
-    capability: 'ENABLE_BULK_SMS',
-    annotations: SENDING_TOOL_ANNOTATIONS,
-    title: 'CSV一括SMS送信',
-    description:
-      'CSV（ヘッダー: phone,from,message）から複数のSMSをまとめて送信する。無効な行はスキップされる。' +
-      '課金はセグメント単位で、1行あたり既定3セグメントまで（日本語なら約200文字）。' +
-      '多数の課金が発生するため、必ず dry_run: true で件数と推定セグメント数を確認し、ユーザーの承認を得てから実行すること。',
-    schema: {
-      csv_content: z
-        .string()
-        .min(1)
-        .describe(
-          'CSVの内容。1行目は phone,from,message のヘッダーであること。' +
-            'message列は1行あたり3セグメント以内（日本語なら約200文字、英数字なら約450文字）に収めること。'
-        ),
-      dry_run: dryRunField,
-    },
-    handler: async ({ csv_content, dry_run }) => {
-      let parseResult;
-      try {
-        parseResult = parseAndValidateCSV(csv_content);
-      } catch (error) {
-        return errorOutcome(
-          error instanceof Error ? error.message : String(error),
-          'CSVのフォーマットを確認してください。1行目は phone,from,message のヘッダーである必要があります。'
-        );
-      }
-
-      // 行数上限のチェック。巨大なCSVによる大量課金を防ぐ
-      const maxRows = getBulkMaxRows();
-
-      // 0 は「無制限」ではなく「停止」。上限超過と同じ文面だと
-      // 「0行以下に分割してください」という無意味な指示になってしまう。
-      if (maxRows === 0) {
-        return errorOutcome(
-          'bulk_sms_from_csv は管理者によって停止されています（BULK_MAX_ROWS=0）。1件も送信していません。',
-          '再試行しても結果は変わりません。利用するには、管理者に BULK_MAX_ROWS の設定変更を依頼してください。',
-          { total_rows: parseResult.totalRows, max_rows: 0 }
-        );
-      }
-
-      if (parseResult.totalRows > maxRows) {
-        return errorOutcome(
-          `CSVの行数が上限を超えています（${parseResult.totalRows}行 > 上限${maxRows}行）。1件も送信していません。`,
-          `CSVを${maxRows}行以下に分割して再試行してください。上限は環境変数 BULK_MAX_ROWS で変更できます。`,
-          { total_rows: parseResult.totalRows, max_rows: maxRows }
-        );
-      }
-
-      // ALLOWED_NUMBERS とセグメント数による絞り込み
-      const allowed: typeof parseResult.validRows = [];
-      const blocked: string[] = [];
-      const tooLong: Array<{ to: string; segments: number; characters: number }> = [];
-      let totalSegments = 0;
-
-      const maxSegments = getSmsMaxSegments();
-
-      for (const row of parseResult.validRows) {
-        // 単発の send_sms と同じ制限を適用する。
-        // ここを掛けないと bulk 経由でスキーマの制限を完全に迂回できる。
-        const estimate = estimateSmsSegments(row.message);
-        if (estimate.segments > maxSegments) {
-          tooLong.push({ to: row.phone, segments: estimate.segments, characters: estimate.characters });
-          continue;
-        }
-
-        const guarded = guardDestination(row.phone);
-        if ('outcome' in guarded) {
-          blocked.push(row.phone);
-        } else {
-          allowed.push({ ...row, phone: guarded.normalized });
-          totalSegments += estimate.segments;
-        }
-      }
-
-      const skipCounts = {
-        total_rows: parseResult.totalRows,
-        invalid_rows: parseResult.invalidRows.length,
-        blocked_rows: blocked.length,
-        too_long_rows: tooLong.length,
-      };
-
-      if (allowed.length === 0) {
-        return errorOutcome(
-          `送信可能な行がありません（総行数: ${parseResult.totalRows}、無効: ${parseResult.invalidRows.length}、ブロック: ${blocked.length}、セグメント超過: ${tooLong.length}）。`,
-          `電話番号・送信者名・本文の各列を見直してください。${maxSegments}セグメントを超える行は要約してください（日本語なら約${approximateCharsForSegments('UCS-2', maxSegments)}文字）。ブロックされた行は ALLOWED_NUMBERS の制限によるものなので、再試行しても結果は変わりません。`,
-          skipCounts
-        );
-      }
-
-      if (dry_run) {
-        return dryRunOutcome({
-          tool: 'bulk_sms_from_csv',
-          sendable_rows: allowed.length,
-          rate_limit_cost: allowed.length,
-          // 実際に課金されるのは行数ではなくセグメント数の合計。
-          // 行数だけを見せると、日本語の長文で費用が数倍になる。
-          estimated_segments: totalSegments,
-          ...skipCounts,
-          ...(tooLong.length > 0 ? { too_long_examples: tooLong.slice(0, 5) } : {}),
-        });
-      }
-
-      // 送信件数とセグメント数の分だけレート枠を消費する。足りなければ1件も送らない
-      const limited = consumeRateLimit('bulk_sms_from_csv', 'sms', {
-        messages: allowed.length,
-        segments: totalSegments,
-      });
-      if (limited) {
-        return limited;
-      }
-
-      // 記録は**1件送るたび**に行う。全件終わってからまとめて記録すると、
-      // 逐次送信の途中で届いたDLRが未登録IDとして隔離バッファへ回り、
-      // 大きなCSVではそこから溢れて配信ステータスを取れなくなる。
-      const bulkResult = await sendBulkSMS(
-        allowed.map((row) => ({ to: row.phone, message: row.message, from: row.from })),
-        (item) => {
-          if (item.success && item.messageId) {
-            recordSubmitted(item.messageId, item.to, item.from);
-          }
-        }
-      );
-
-      // 失敗の詳細は先頭10件までに絞り、コンテキスト消費を抑える
-      const failures = bulkResult.results
-        .filter((r) => !r.success)
-        .map((r) => ({ to: r.to, reason: r.error }));
-
-      const summary = {
-        sent: bulkResult.successCount,
-        failed: bulkResult.failureCount,
-        ...skipCounts,
-        failures: failures.slice(0, 10),
-        failures_truncated: Math.max(0, failures.length - 10),
-      };
-
-      // 全件失敗を success として返すと、AIがトップレベルの status だけを見て
-      // 「送信できました」と誤報告するため、結果に応じて状態を分ける
-      if (bulkResult.successCount === 0) {
-        return errorOutcome(
-          `${bulkResult.failureCount}件すべての送信に失敗しました。`,
-          'failures の reason を確認してください。認証エラーや設定不備の場合は再試行しても結果は変わらないため、ユーザーに報告してください。',
-          summary,
-          'upstream'
-        );
-      }
-
-      if (bulkResult.failureCount > 0) {
-        return partialSuccessOutcome(summary);
-      }
-
-      return successOutcome(summary);
     },
   },
 

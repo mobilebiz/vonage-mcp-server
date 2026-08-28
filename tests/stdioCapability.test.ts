@@ -215,24 +215,6 @@ describe('stdio トランスポートの capability 強制', () => {
     expect(JSON.stringify(response)).not.toContain('call_id');
   });
 
-  it('bulk は SMS とは独立したトグルで制御される', async () => {
-    const { responses } = await talkToServer({ ...baseEnv, ENABLE_SMS: 'true' }, [
-      ...handshake,
-      {
-        jsonrpc: '2.0',
-        id: 2,
-        method: 'tools/call',
-        params: {
-          name: 'bulk_sms_from_csv',
-          arguments: { csv_content: 'phone,from,message\n09012345678,VonageMCP,hi\n', dry_run: true },
-        },
-      },
-    ]);
-
-    const response = responses.find((r) => r.id === 2)!;
-    expect(response.error ?? response.result?.isError).toBeTruthy();
-  });
-
   it('有効にしたツールは stdio から実行できる（dry_run で確認）', async () => {
     const { responses } = await talkToServer({ ...baseEnv, ENABLE_SMS: 'true' }, [
       ...handshake,

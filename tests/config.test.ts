@@ -2,11 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   CAPABILITY_ENV_VARS,
   ConfigError,
-  DEFAULT_BULK_MAX_ROWS,
   DEFAULT_RATE_LIMIT_PER_HOUR,
-  MAX_BULK_MAX_ROWS,
   MAX_RATE_LIMIT_PER_HOUR,
-  getBulkMaxRows,
   getCapabilities,
   extractHostname,
   getAllowedHostnames,
@@ -33,11 +30,9 @@ import {
 /** このモジュールが読む環境変数（テストごとに完全にクリアする） */
 const MANAGED_ENV = [
   'ENABLE_SMS',
-  'ENABLE_BULK_SMS',
   'ENABLE_VOICE',
   'DISABLE_RATE_LIMIT',
   'RATE_LIMIT_PER_HOUR',
-  'BULK_MAX_ROWS',
   'VONAGE_APPLICATION_ID',
   'VONAGE_PRIVATE_KEY_PATH',
   'VONAGE_VOICE_FROM',
@@ -148,26 +143,9 @@ describe('config', () => {
     });
   });
 
-  describe('getBulkMaxRows', () => {
-    it('未設定なら既定値', () => {
-      expect(getBulkMaxRows()).toBe(DEFAULT_BULK_MAX_ROWS);
-    });
-
-    it('0 は全拒否（無制限ではない）', () => {
-      process.env.BULK_MAX_ROWS = '0';
-      expect(getBulkMaxRows()).toBe(0);
-    });
-
-    it('安全上限を超える値は起動エラー', () => {
-      process.env.BULK_MAX_ROWS = String(MAX_BULK_MAX_ROWS + 1);
-      expect(() => getBulkMaxRows()).toThrow(ConfigError);
-    });
-  });
-
   describe('getCapabilities', () => {
     const allOff = {
       ENABLE_SMS: false,
-      ENABLE_BULK_SMS: false,
       ENABLE_VOICE: false,
     };
 
@@ -191,9 +169,9 @@ describe('config', () => {
       expect(isCapabilityEnabled('ENABLE_SMS')).toBe(true);
     });
 
-    it('各トグルは独立している（bulk だけ有効にできる）', () => {
-      process.env.ENABLE_BULK_SMS = 'true';
-      expect(getCapabilities()).toEqual({ ...allOff, ENABLE_BULK_SMS: true });
+    it('各トグルは独立している（voice だけ有効にできる）', () => {
+      process.env.ENABLE_VOICE = 'true';
+      expect(getCapabilities()).toEqual({ ...allOff, ENABLE_VOICE: true });
     });
   });
 
@@ -416,7 +394,7 @@ describe('config', () => {
     it('複数の問題をまとめて報告する', () => {
       process.env.ENABLE_SMS = 'yes';
       process.env.RATE_LIMIT_PER_HOUR = '1.5';
-      process.env.BULK_MAX_ROWS = '-3';
+      process.env.SMS_MAX_SEGMENTS = '0';
 
       try {
         validateStartupConfig();
@@ -426,7 +404,7 @@ describe('config', () => {
         expect(problems).toHaveLength(3);
         expect(problems.join('\n')).toContain('ENABLE_SMS');
         expect(problems.join('\n')).toContain('RATE_LIMIT_PER_HOUR');
-        expect(problems.join('\n')).toContain('BULK_MAX_ROWS');
+        expect(problems.join('\n')).toContain('SMS_MAX_SEGMENTS');
       }
     });
 
@@ -452,10 +430,8 @@ describe('config', () => {
 
     it('0 設定は「無制限ではない」ことを警告で明示する', () => {
       process.env.RATE_LIMIT_PER_HOUR = '0';
-      process.env.BULK_MAX_ROWS = '0';
       const warnings = validateStartupConfig().join('\n');
       expect(warnings).toContain('RATE_LIMIT_PER_HOUR=0');
-      expect(warnings).toContain('BULK_MAX_ROWS=0');
     });
 
     it('すべての capability 環境変数を検証対象にしている', () => {
@@ -468,9 +444,8 @@ describe('config', () => {
   });
 });
 
-// express.json() の既定 100KB は BULK_MAX_ROWS の既定値 100 でも足りない。
-// 日本語の本文は3バイト/文字なので、660文字の行が100本並ぶと200KBを超え、
-// stdio では通る CSV が HTTP でだけ 413 になる（VONAGE_MCP-4）
+// express.json() の既定 100KB では、トランスポートによって通る入力が変わって
+// しまう（VONAGE_MCP-4）。v3.0.0 以降は設定によらず一定の値を返す
 describe('getMaxRequestBodyBytes', () => {
   const originalEnv = { ...process.env };
 
@@ -478,26 +453,13 @@ describe('getMaxRequestBodyBytes', () => {
     process.env = { ...originalEnv };
   });
 
-  it('既定の BULK_MAX_ROWS で、想定される最大のCSVが収まる', () => {
-    // 660文字の日本語 = 1980バイト。100行で約198KB
-    const worstCaseCsvBytes = 100 * 660 * 3;
-
-    expect(getMaxRequestBodyBytes()).toBeGreaterThan(worstCaseCsvBytes);
-  });
-
   it('express.json() の既定 100KB より大きい', () => {
     expect(getMaxRequestBodyBytes()).toBeGreaterThan(100 * 1024);
   });
 
-  it('BULK_MAX_ROWS を増やせば上限も増える', () => {
-    const atDefault = getMaxRequestBodyBytes();
-    process.env.BULK_MAX_ROWS = '1000';
-
-    expect(getMaxRequestBodyBytes()).toBeGreaterThan(atDefault);
-  });
-
-  it('BULK_MAX_ROWS=0（bulk 停止）でも他のツールが使える下限は残る', () => {
-    process.env.BULK_MAX_ROWS = '0';
+  // かつては BULK_MAX_ROWS から算出していた。環境変数で動かせないことを固定する
+  it('環境変数によらず一定', () => {
+    process.env.RATE_LIMIT_PER_HOUR = '1000';
 
     expect(getMaxRequestBodyBytes()).toBe(MIN_REQUEST_BODY_BYTES);
   });

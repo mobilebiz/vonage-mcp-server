@@ -13,7 +13,6 @@
 import { accessSync, constants } from 'fs';
 
 import { isAssignedCallingCode } from './callingCodes.js';
-import { JP_MAX_CONCATENATED_CHARS } from './smsSegments.js';
 
 /** 設定エラー。1度の起動で見つかった問題をまとめて報告する */
 export class ConfigError extends Error {
@@ -29,17 +28,11 @@ export class ConfigError extends Error {
 /** レートリミットの既定値（1時間あたりのSMS送信・架電の件数） */
 export const DEFAULT_RATE_LIMIT_PER_HOUR = 5;
 
-/** bulk_sms_from_csv で一度に処理できる最大行数の既定値 */
-export const DEFAULT_BULK_MAX_ROWS = 100;
-
 /**
  * コード側の安全上限。これを超える設定は起動エラーにする。
  * 桁を1つ打ち間違えただけで青天井の課金にならないための歯止め。
  */
 export const MAX_RATE_LIMIT_PER_HOUR = 10_000;
-
-/** 同上（bulk の行数） */
-export const MAX_BULK_MAX_ROWS = 10_000;
 
 /**
  * 読み上げメッセージ長の上限（通話時間の暴走を防ぐ）。
@@ -51,21 +44,17 @@ export const MAX_BULK_MAX_ROWS = 10_000;
  */
 export const VOICE_MESSAGE_MAX_LENGTH = 1000;
 
-/**
- * capability トグルの環境変数名。
- *
- * bulk を SMS から分離しているのは爆発半径が違うため。単発が1件なのに対し、
- * bulk は1回の呼び出しで数百件を送れる。
- */
-export const CAPABILITY_ENV_VARS = ['ENABLE_SMS', 'ENABLE_BULK_SMS', 'ENABLE_VOICE'] as const;
+/** capability トグルの環境変数名。 */
+export const CAPABILITY_ENV_VARS = ['ENABLE_SMS', 'ENABLE_VOICE'] as const;
 
 /**
  * レートリミットのバケット。
  *
  * `global` が主たる上限で、`sms` / `voice` は必要な組織だけが追加で絞るための層。
- * ツールごとにバケットを分けると、単発 SMS で上限まで送ったあと1行だけの CSV を
- * 繰り返すことで上限を素通りできてしまう（VONAGE_MCP-17）。課金は送信手段では
- * なく件数で発生するので、バケットも送信手段ではなく件数に対して置く。
+ * ツールごとにバケットを分けると、送信手段を変えるだけで上限を素通りできてしまう
+ * （VONAGE_MCP-17。当時は単発 SMS で上限まで送ったあと、1行だけの CSV 一括送信を
+ * 繰り返すことで実際に起きた）。課金は送信手段ではなく件数で発生するので、
+ * バケットも送信手段ではなく件数に対して置く。
  */
 export const RATE_LIMIT_BUCKETS = ['global', 'sms', 'voice', 'segments'] as const;
 
@@ -102,9 +91,11 @@ export const MIN_MCP_AUTH_TOKEN_LENGTH = 16;
 export const MIN_WEBHOOK_SECRET_LENGTH = 16;
 
 /**
- * HTTP のリクエストボディに常に許すサイズ（バイト）。
+ * HTTP のリクエストボディに許すサイズ（バイト）。
  *
- * bulk を無効にしていても、他のツールの引数や JSON-RPC の枠でこの程度は要る。
+ * express.json() の既定（100KB）ではなくこの値を使う。ツールの引数と JSON-RPC の
+ * 枠に十分な余裕を持たせつつ、認証済みの相手にメモリを好きなだけ使わせないための
+ * 上限でもある。
  */
 export const MIN_REQUEST_BODY_BYTES = 1024 * 1024;
 
@@ -275,35 +266,13 @@ export function getSmsMaxSegments(): number {
 }
 
 /**
- * HTTP のリクエストボディに許す最大サイズ（バイト）を、現在の設定から求める。
+ * HTTP のリクエストボディに許す最大サイズ（バイト）。
  *
- * express.json() の既定は 100KB で、これは `BULK_MAX_ROWS` の既定値 100 でも
- * 足りない。日本語の本文は1文字3バイトなので、660文字の行が並ぶと 100 行で
- * 200KB を超える。上限を上げずに放置すると、stdio では通る CSV が HTTP でだけ
- * 413 で弾かれ、**トランスポートによって挙動が変わる**（VONAGE_MCP-4）。
- *
- * 逆に無制限にすると、認証済みの相手とはいえメモリを好きなだけ使わせられる。
- * そこで「設定上ありうる最大の入力」から算出する。
+ * かつては `BULK_MAX_ROWS` から算出していた。CSV 一括送信を廃止した v3.0.0
+ * 以降は、最大の入力が「1通分の本文」になったため固定値で足りる。
  */
 export function getMaxRequestBodyBytes(): number {
-  // 1行の最悪ケース: 本文（UTF-8で最大3バイト/文字）+ 宛先 + 送信者ID + 区切り
-  const worstCaseBytesPerRow = JP_MAX_CONCATENATED_CHARS * 3 + 128;
-  // CSV 以外のリクエスト（JSON-RPC の枠、他ツールの引数）に使う余裕
-  const overheadBytes = 64 * 1024;
-  const rows = getBulkMaxRows();
-
-  return Math.max(MIN_REQUEST_BODY_BYTES, rows * worstCaseBytesPerRow + overheadBytes);
-}
-
-/**
- * bulk_sms_from_csv の最大行数を返す。`0` は全拒否（bulk の停止）。
- */
-export function getBulkMaxRows(): number {
-  return parseIntegerEnv('BULK_MAX_ROWS', {
-    min: 0,
-    max: MAX_BULK_MAX_ROWS,
-    defaultValue: DEFAULT_BULK_MAX_ROWS,
-  });
+  return MIN_REQUEST_BODY_BYTES;
 }
 
 /**
@@ -414,7 +383,7 @@ export const DEFAULT_PRIVATE_KEY_PATH = './private.key';
  * 同じ値を指していなければ意味がない。以前は起動時だけ `.trim()` していたため、
  * `VONAGE_PRIVATE_KEY_PATH="   "` は**起動時は ./private.key を確認して通り、
  * 実行時は "   " を読んで毎回失敗する**という食い違いが起きていた。しかも失敗は
- * レート枠を消費したあとに来る（bulk では1件も送らずに大量の枠を失う）。
+ * レート枠を消費したあとに来る。
  */
 export function getPrivateKeyPath(): string {
   return process.env.VONAGE_PRIVATE_KEY_PATH?.trim() || DEFAULT_PRIVATE_KEY_PATH;
@@ -629,13 +598,6 @@ export function validateStartupConfig(): string[] {
       defaultValue: DEFAULT_RATE_LIMIT_PER_HOUR,
     })
   );
-  collect(() =>
-    parseIntegerEnv('BULK_MAX_ROWS', {
-      min: 0,
-      max: MAX_BULK_MAX_ROWS,
-      defaultValue: DEFAULT_BULK_MAX_ROWS,
-    })
-  );
   collect(() => getChannelRateLimit('sms'));
   collect(() => getChannelRateLimit('voice'));
   collect(() => getChannelRateLimit('segments'));
@@ -675,8 +637,7 @@ export function validateStartupConfig(): string[] {
 
     // 鍵は送信のたびに readFileSync される（vonage.ts / voiceCall.ts）。存在を
     // 起動時に確かめないと、パスの誤記やマウント漏れでも起動でき、各呼び出しは
-    // **レート枠を消費してから**鍵の読み込みで失敗する。bulk では1件も送らずに
-    // 大量の枠を失う。
+    // **レート枠を消費してから**鍵の読み込みで失敗する。
     const privateKeyPath = getPrivateKeyPath();
     try {
       accessSync(privateKeyPath, constants.R_OK);
@@ -798,9 +759,6 @@ export function validateStartupConfig(): string[] {
         `${RATE_LIMIT_ENV_VARS[bucket]}=0 のため、${zeroBucketLabels[bucket]}はすべて拒否されます（無制限ではありません）。`
       );
     }
-  }
-  if (process.env.BULK_MAX_ROWS?.trim() === '0') {
-    warnings.push('BULK_MAX_ROWS=0 のため、bulk_sms_from_csv はすべて拒否されます（無制限ではありません）。');
   }
 
   return warnings;

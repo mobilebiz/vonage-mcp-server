@@ -2,7 +2,7 @@
 
 [English](README.en.md) | 日本語
 
-VonageのSMS送信、CSV一括送信、音声通話を **AIエージェントから安全に使う**ための MCP (Model Context Protocol) サーバーです。
+VonageのSMS送信と音声通話を **AIエージェントから安全に使う**ための MCP (Model Context Protocol) サーバーです。
 
 利用者が自分の環境にコンテナを立て、自分の Vonage 資格情報を設定して使う **OSS のリファレンス実装**です。このプロジェクトがあなたの資格情報を預かることはありません。
 
@@ -69,7 +69,7 @@ SMS 送信と音声通話は**取り消せず、課金が発生し、相手に�
 
 ### ツール実行前の承認について
 
-`send_sms` / `make_voice_call` / `bulk_sms_from_csv` には、MCP のツール注釈で `destructiveHint: true` を付けています。これを解釈する基盤（Gemini Enterprise など）では、実行前に確認が表示されます。`get_sms_status` / `get_call_status` は `readOnlyHint: true` なので確認は省かれます。
+`send_sms` / `make_voice_call` には、MCP のツール注釈で `destructiveHint: true` を付けています。これを解釈する基盤（Gemini Enterprise など）では、実行前に確認が表示されます。`get_sms_status` / `get_call_status` は `readOnlyHint: true` なので確認は省かれます。
 
 > [!WARNING]
 > **注釈は仕様上ヒントであり、強制ではありません。** 無視する基盤もあり、「常に許可」を選べる基盤もあります。**実測でも、Claude Desktop は `readOnlyHint` を尊重せず、読み取り専用ツールにも承認プロンプトを出しました。**
@@ -138,7 +138,6 @@ npm install
 | 環境変数 | 有効になるツール | 既定 |
 | --- | --- | --- |
 | `ENABLE_SMS` | `send_sms` / `get_sms_status` | OFF |
-| `ENABLE_BULK_SMS` | `bulk_sms_from_csv` | OFF |
 | `ENABLE_VOICE` | `make_voice_call` / `get_call_status` | OFF |
 
 ```sh
@@ -147,10 +146,6 @@ ENABLE_SMS=true
 ```
 
 無効なツールは `tools/list` の結果に含まれません。エージェントが存在しないツールを呼ぼうとして迷走せず、使わないツールの定義がコンテキストを消費することもありません。
-
-> [!IMPORTANT]
-> **`ENABLE_BULK_SMS` を `ENABLE_SMS` から分けているのは、爆発半径が違うためです。**
-> 単発の `send_sms` が1件なのに対し、`bulk_sms_from_csv` は1回の呼び出しで数百件を送信できます。
 
 > [!WARNING]
 > **v1.3.0 の破壊的変更: `generate_jwt` ツールを削除しました。**
@@ -172,9 +167,8 @@ AIエージェント（Gemini Enterprise / Claude 等）から利用する際の
 | `ALLOWED_COUNTRY_CODES` | `81`（日本のみ） | 送信・架電を許可する**国番号**（カンマ区切り、`+` の有無は問わない）。海外宛を使う場合は明示的に追加する。`*` を指定すると制限を外す（非推奨）。実在しない国番号を書くと起動エラーになる。 |
 | `ALLOW_PREMIUM_NUMBERS` | `false` | `true` にすると、`0990`（情報料代理徴収）・`0570`（ナビダイヤル）・`0180`（テレドーム）への送信・架電を許可する。 |
 | `ALLOWED_NUMBERS` | （未設定＝制限なし） | 送信・架電を許可する宛先番号のホワイトリスト（カンマ区切り）。設定すると、これ以外の番号へのリクエストはエラーになる。表記ゆれ（`090-1234-5678` 等）は正規化して比較される。 |
-| `RATE_LIMIT_PER_HOUR` | `5` | 1時間あたりの**送信・架電件数**の上限（`0`〜`10000` の整数）。`send_sms` / `bulk_sms_from_csv` / `make_voice_call` に**ツールごと独立して**適用される。**`0` は「すべて拒否」**（緊急停止）。`dry_run: true` の呼び出しは消費しない。 |
-| `BULK_MAX_ROWS` | `100` | `bulk_sms_from_csv` が一度に受け付けるCSVの最大行数（`0`〜`10000` の整数）。**`0` は「すべて拒否」**（bulk の停止）。 |
-| `SMS_RATE_LIMIT_PER_HOUR` | （未設定＝`RATE_LIMIT_PER_HOUR` に委ねる） | SMS だけをさらに絞りたい場合の上限。`send_sms` と `bulk_sms_from_csv` の合計に対して効く。 |
+| `RATE_LIMIT_PER_HOUR` | `5` | 1時間あたりの**送信・架電件数**の上限（`0`〜`10000` の整数）。`send_sms` / `make_voice_call` の**合計**に適用される。**`0` は「すべて拒否」**（緊急停止）。`dry_run: true` の呼び出しは消費しない。 |
+| `SMS_RATE_LIMIT_PER_HOUR` | （未設定＝`RATE_LIMIT_PER_HOUR` に委ねる） | SMS だけをさらに絞りたい場合の上限。 |
 | `SMS_SEGMENT_LIMIT_PER_HOUR` | （未設定＝制限なし） | 1時間あたりの**セグメント数**の上限。**課金と直結する唯一の設定**。 |
 | `SMS_MAX_SEGMENTS` | `3` | 1通のSMSに許すセグメント数（`1`〜`10`）。 |
 | `VOICE_RATE_LIMIT_PER_HOUR` | （未設定＝`RATE_LIMIT_PER_HOUR` に委ねる） | 架電だけをさらに絞りたい場合の上限。 |
@@ -188,7 +182,6 @@ AIエージェント（Gemini Enterprise / Claude 等）から利用する際の
 # 検証中は自分の番号だけに送信を許可する例
 ALLOWED_NUMBERS=+819012345678,+819087654321
 RATE_LIMIT_PER_HOUR=3
-BULK_MAX_ROWS=10
 VONAGE_API_SIGNATURE_SECRET=your_signature_secret_here
 ```
 
@@ -276,14 +269,14 @@ SMS の `from` には Vonage 公式ルールが適用されます。**英数字1
 
 #### レートリミットの数え方
 
-**「ツール呼び出し回数」ではなく「送信件数」で消費されます。** `bulk_sms_from_csv` は CSV の送信対象行数の分だけまとめて枠を消費し、残り枠が足りない場合は**1件も送信せず**エラーを返します。巨大なCSVを渡して上限を迂回することはできません。
+**「ツール呼び出し回数」ではなく「送信件数」で消費されます。** 課金は送信手段ではなく件数で発生するため、バケットも件数に対して置いています。
 
 枠はツールごとではなく、次の2層で管理されます。
 
 | バケット | 消費単位 | 対象 | 環境変数 |
 | --- | --- | --- | --- |
 | `global` | 件数 | SMS・架電のすべて | `RATE_LIMIT_PER_HOUR` |
-| `sms` | 件数 | `send_sms` + `bulk_sms_from_csv` | `SMS_RATE_LIMIT_PER_HOUR` |
+| `sms` | 件数 | `send_sms` | `SMS_RATE_LIMIT_PER_HOUR` |
 | `voice` | 件数 | `make_voice_call` | `VOICE_RATE_LIMIT_PER_HOUR` |
 | `segments` | **セグメント数** | SMS のみ | `SMS_SEGMENT_LIMIT_PER_HOUR` |
 
@@ -308,11 +301,11 @@ SMS の `from` には Vonage 公式ルールが適用されます。**英数字1
 
 **本文の上限はセグメント数で指定します**（`SMS_MAX_SEGMENTS`、既定 `3`）。文字数で縛っても課金と対応しないためです。既定の3セグメントは、日本語なら約200文字、英数字なら約450文字に相当します。
 
-`dry_run` のレスポンスに `encoding` と `segments`（bulk では `estimated_segments`）が含まれるので、**送信前にユーザーへ提示してください**。
+`dry_run` のレスポンスに `encoding` と `segments` が含まれるので、**送信前にユーザーへ提示してください**。
 
 > [!IMPORTANT]
 > **`RATE_LIMIT_PER_HOUR=5` は「1時間に合計5件まで」を意味します。**
-> ツールごとに別枠ではありません。単発SMSで5件送ったあと1行だけのCSVを繰り返す、といった方法で上限を超えることはできません。
+> ツールごとに別枠ではありません。送信手段を変えて上限を超えることはできません。
 
 > [!WARNING]
 > **v1.3.0 の破壊的変更: SMS 本文の上限が「160文字」から「3セグメント」に変わりました。**
@@ -320,14 +313,14 @@ SMS の `from` には Vonage 公式ルールが適用されます。**英数字1
 > 文字数で縛っても課金と対応しないためです。同じ160文字でも、英数字なら1通分、日本語なら3通分の課金でした。
 
 > [!WARNING]
-> **v1.3.0 の破壊的変更: `RATE_LIMIT_PER_HOUR=0` / `BULK_MAX_ROWS=0` の意味が反転しました。**
+> **v1.3.0 の破壊的変更: `RATE_LIMIT_PER_HOUR=0` の意味が反転しました。**
 > v1.2.1 以前は `0` が「無制限」でしたが、v1.3.0 以降は「**すべて拒否**」になります。緊急停止のつもりで `0` を設定した管理者が、逆に無制限にしてしまう事故を防ぐためです。
-> 無制限にしたい場合は `DISABLE_RATE_LIMIT=true` を明示的に設定してください。`BULK_MAX_ROWS` に無制限の指定はありません（上限 `10000` まで）。
+> 無制限にしたい場合は `DISABLE_RATE_LIMIT=true` を明示的に設定してください。
 
 > [!IMPORTANT]
 > **環境変数は起動時に厳格に検証されます。**解釈できない値があると、サーバーは警告を出して動き続けるのではなく、エラーメッセージを表示して**起動に失敗**します（fail-fast）。
 > - 真偽値（`ENABLE_*` / `DISABLE_RATE_LIMIT`）に指定できるのは `true` / `false` のみです。**大文字小文字を区別**し、`1` / `yes` / `on` / `True` はすべてエラーになります。`False` のような値を truthy と誤判定して、無効にしたつもりの設定が有効になる事故を防ぐためです
-> - 数値（`RATE_LIMIT_PER_HOUR` / `BULK_MAX_ROWS`）は10進整数のみです。小数・指数表記・負数・範囲外はエラーになります
+> - 数値（`RATE_LIMIT_PER_HOUR` / `SMS_MAX_SEGMENTS`）は10進整数のみです。小数・指数表記・負数・範囲外はエラーになります
 > - 問題は**まとめて**報告されます。1つ直すたびに再起動する必要はありません
 
 > [!IMPORTANT]
@@ -531,18 +524,6 @@ Claude Desktopの設定ファイル `claude_desktop_config.json` に以下の設
     - 日本の電話番号（0から始まる）は自動的にE.164形式に変換
     - `{"status":"success","message_id":"...","to":"+81..."}` を返却
 
-- **bulk_sms_from_csv**: CSV一括SMS送信ツール
-  - 入力:
-    - `csv_content` (必須): CSVファイルの内容（phone,from,messageのヘッダー付き）
-    - `dry_run` (オプション): `true` で送信せず件数のみ返却
-  - 機能:
-    - CSVファイルを解析して複数宛先に一括SMS送信
-    - 無効な行・`ALLOWED_NUMBERS` 外の行・**セグメント上限を超える行**は自動的にスキップ
-    - CSVの行数は `BULK_MAX_ROWS`（デフォルト100、`0` は全拒否）で制限
-    - **送信件数の分だけレートリミットを消費**し、残り枠が足りなければ1件も送信しない
-    - 送信件数と失敗の要約（先頭10件）を返却
-    - API制限回避のため100ms間隔で順次送信
-
 - **make_voice_call**: 音声通話ツール
   - 入力:
     - `to` (必須): 発信先電話番号（E.164形式または0ABJ形式）
@@ -598,17 +579,6 @@ Claude Desktopで以下のような質問ができます：
 → send_smsツールを使用してSMS送信
 ```
 
-#### CSV一括SMS送信
-
-```text
-「以下のCSVデータで一括SMS送信をしてください」
-phone,from,message
-090-1234-5678,VonageMCP,テストメッセージです
-080-9876-5432,SalesTeam,お打ち合わせの件でご連絡しました
-
-→ bulk_sms_from_csvツールを使用して一括送信
-```
-
 #### 音声通話
 
 ```text
@@ -628,51 +598,6 @@ phone,from,message
 「先ほどの通話の料金と時間を教えてください」
 → get_call_statusツールで通話詳細を確認
 ```
-
-## CSV一括送信機能
-
-### CSVファイル形式
-
-CSV一括送信機能では以下の形式のCSVファイルを使用します：
-
-```csv
-phone,from,message
-090-1234-5678,VonageMCP,テストメッセージです
-080-9876-5432,SalesTeam,お打ち合わせの件でご連絡しました
-070-1111-2222,Support,システムメンテナンスのお知らせ
-```
-
-#### フィールド仕様
-
-- **phone**: 送信先電話番号
-  - 日本の0ABJ形式（090-1234-5678）が推奨
-  - 自動的にE.164形式（+819012345678）に変換
-  
-- **from**: 送信者名
-  - 単発の `send_sms` とまったく同じルールが適用されます（[送信者ID（sender ID）のルール](#送信者idsender-idのルール)）
-  - 英数字1〜11文字（A-Z, a-z, 0-9）。数字始まりも可
-  - 日本宛では、電話番号と `INFO` などの汎用語は使用不可
-  - 例: `VonageMCP`, `SalesTeam`, `2FA`
-
-- **message**: 送信メッセージ
-  - 70文字以内推奨（超過時は警告表示）
-  - 日本語使用可能
-
-### バリデーション機能
-
-- 無効な行は自動的にスキップされ、処理継続
-- 詳細なエラーレポートを返却
-- 送信成功/失敗の件数と詳細を表示
-
-### サンプルCSVファイル
-
-プロジェクトには以下のサンプルCSVファイルが含まれています：
-
-- `csv/sample_contacts.csv` - 基本テスト用
-- `csv/meeting_reminder.csv` - 会議リマインダー用
-- `csv/emergency_notification.csv` - 緊急連絡用
-- `csv/sales_follow_up.csv` - 営業フォロー用
-- `csv/invalid_data_example.csv` - バリデーションテスト用
 
 ## Voice通話機能
 
@@ -809,15 +734,8 @@ vonage-mcp-server/
 │   ├── messageStatusStore.ts # SMS配信ステータスのオンメモリ保持
 │   ├── webhookAuth.ts     # Vonage署名付きWebhookの検証
 │   ├── vonage.ts          # Vonage SMS送信機能
-│   ├── csvUtils.ts        # CSV解析・バリデーション機能
 │   ├── voiceCall.ts       # Voice通話機能・NCCO生成
 │   └── callStatus.ts      # 通話ステータス取得機能
-├── csv/                    # サンプルCSVファイル
-│   ├── sample_contacts.csv        # 基本テスト用
-│   ├── meeting_reminder.csv       # 会議リマインダー用
-│   ├── emergency_notification.csv # 緊急連絡用
-│   ├── sales_follow_up.csv        # 営業フォロー用
-│   └── invalid_data_example.csv   # バリデーションテスト用
 ├── tests/                  # テストファイル
 │   ├── index.test.ts      # メイン機能のテスト
 │   ├── utils.test.ts      # ユーティリティのテスト
@@ -1087,7 +1005,7 @@ sending = McpToolset(
         url="https://your-server.example.com/mcp",
         headers={"Authorization": f"Bearer {MCP_AUTH_TOKEN}"},
     ),
-    tool_filter=["send_sms", "bulk_sms_from_csv", "make_voice_call"],
+    tool_filter=["send_sms", "make_voice_call"],
     require_confirmation=confirm_unless_dry_run,
 )
 ```
@@ -1119,7 +1037,6 @@ sending = McpToolset(
 - `@vonage/server-sdk` - Vonage SMS機能
 - `@vonage/voice` - Voice通話機能専用SDK
 - `@vonage/jwt` - Webhook の署名検証
-- `csv-parse` - CSVファイル解析
 - `@modelcontextprotocol/sdk` - MCP Server実装
 - `zod` - スキーマ検証
 - `zod-to-json-schema` - ZodスキーマからJSON Schemaを生成（HTTP版の `tools/list` 用）

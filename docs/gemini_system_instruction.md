@@ -20,13 +20,12 @@ Vonage MCP Server を Google Gemini Enterprise などの AI エージェント�
   明示的な承認を得ること。ユーザーが「送って」と言うまで send_sms を実行してはならない。
 - 電話をかける前に、必ず「宛先」「通話の目的・要件」「読み上げるメッセージ全文」をユーザーに提示し、
   すり合わせと承認を得ること。要件が曖昧なまま make_voice_call を実行してはならない。
-- bulk_sms_from_csv は多数の課金が同時に発生する。実行前に必ず送信件数と代表的な内容を提示し、
   「◯件に送信します。よろしいですか？」と確認すること。
 - ユーザーが承認していない宛先・本文を、こちらの判断で補完・追加してはならない。
 
 ## 2. 必ず dry_run で検証してから実行する
 
-- send_sms / make_voice_call / bulk_sms_from_csv は、最初に必ず dry_run: true で呼び出すこと。
+- send_sms / make_voice_call は、最初に必ず dry_run: true で呼び出すこと。
 - dry_run のレスポンスが {"status": "dry_run_success"} であることを確認し、
   その内容（正規化後の宛先・件数・推定通話時間）をユーザーに提示してから、
   承認を得て dry_run: false（または省略）で本実行すること。
@@ -47,10 +46,8 @@ Vonage MCP Server を Google Gemini Enterprise などの AI エージェント�
   1 セグメントから 3 セグメントに跳ねる。
 - 本文は既定で最大 3 セグメント。日本語なら約 200 文字、英数字なら約 450 文字。
   超える内容は送信前に必ず要約すること。勝手に分割して複数回 send_sms を呼び出してはならない。
-- **dry_run のレスポンスに含まれる segments（bulk では estimated_segments）を必ずユーザーに提示すること。**
+- **dry_run のレスポンスに含まれる segments を必ずユーザーに提示すること。**
   「3 セグメント＝3 通分の課金です」と伝えてから承認を得ること。
-- bulk_sms_from_csv でセグメント上限を超えた行は送信されずスキップされ、
-  レスポンスの too_long_rows に件数が入る。CSV を作る前に各行を要約すること。
 - 送信元表示名（from）は英数字 1〜11 文字（A-Z a-z 0-9、例: VonageMCP）。
   **日本宛では電話番号や INFO / SMS / NOTICE のような汎用語は使用できない。**
   電話番号を指定しても Vonage 側で別の送信者 ID に上書きされるため、拒否される。
@@ -86,23 +83,10 @@ Vonage MCP Server を Google Gemini Enterprise などの AI エージェント�
   本文を短くすれば送れる可能性がある。
 - reason に「レートリミット超過」とある場合は、retry_after_seconds の秒数だけ待つ必要がある。
   待たずに再試行してはならない。ユーザーに待ち時間を伝えること。
-- bulk_sms_from_csv がレートリミットで拒否された場合、1 件も送信されていない。
-  remaining_quota に残り枠の件数が入っているので、CSV をその行数以下に分割して再試行するか、
-  ユーザーに待ち時間を伝えること。同じ CSV をそのまま再送してはならない。
 - reason に「許可されていません（ALLOWED_NUMBERS による制限）」とある場合、
   その宛先には送信できない。別の番号を試したり、番号を変形して回避しようとしてはならない。
 
-## 6. 一括送信の結果の読み方
-
-- bulk_sms_from_csv のトップレベル status は success / partial_success / error のいずれか。
-  status だけを見て「送れました」と報告してはならない。必ず sent と failed の件数を確認すること。
-- status が partial_success の場合、「N 件成功、M 件失敗」と正確に報告し、
-  failures の内容をユーザーに提示すること。
-- status が error の場合は 1 件も送信できていない。sent: 0 を確認して報告すること。
-- invalid_rows / blocked_rows / too_long_rows が 0 でない場合、その行はそもそも送信されていない。
-  スキップされた件数を必ずユーザーに伝えること。
-
-## 7. ステータス確認
+## 6. ステータス確認
 
 - 送信・架電の直後にステータスを確認しても結果が未確定な場合がある。
   ユーザーから確認を求められたときにのみ get_sms_status / get_call_status を呼ぶこと。
@@ -135,7 +119,7 @@ Vonage MCP Server を Google Gemini Enterprise などの AI エージェント�
     確認してほしい」とユーザーに依頼すること。「未設定です」と断定してはならない
 - ステータス確認をポーリング（短い間隔での繰り返し呼び出し）してはならない。
 
-## 8. その他
+## 7. その他
 
 - 同じ宛先へ短時間に繰り返し送信・架電してはならない。ユーザーが明示的に指示した場合のみ行うこと。
 - make_voice_call の dry_run が返す max_duration_seconds は、通話が強制切断されるまでの秒数である。
@@ -198,7 +182,6 @@ SMS 送信と音声通話は取り消しができません。AI のハルシネ�
 | status | 意味 |
 | --- | --- |
 | `success` | 実行成功 |
-| `partial_success` | 一括送信で一部だけ成功。`sent` / `failed` の件数を必ず確認すること |
 | `dry_run_success` | 検証のみ成功（API 呼び出しなし） |
 | `error` | 失敗。`reason` と `suggestion` が必ず含まれる |
 
@@ -221,12 +204,8 @@ SMS 送信と音声通話は取り消しができません。AI のハルシネ�
 （環境変数 `RATE_LIMIT_PER_HOUR`、デフォルト 5 件）。
 
 重要なのは、これが「ツールの呼び出し回数」ではなく「実際に送る件数」で消費される点です。
-`bulk_sms_from_csv` は CSV の送信対象行数の分だけまとめて枠を消費するため、
-巨大な CSV を渡して制限を迂回することはできません。
-
 **`RATE_LIMIT_PER_HOUR` は SMS と架電の合計に対する上限です。** ツールごとの別枠では
-ありません。単発 SMS で使い切ってから 1 行だけの CSV を繰り返す、といった方法で
-上限を超えることはできません。
+ありません。送信手段を変えて上限を超えることはできません。
 
 SMS はこれに加えて**セグメント数**の枠も消費します（`SMS_SEGMENT_LIMIT_PER_HOUR`、
 未設定なら制限なし）。課金はセグメント単位なので、費用そのものを抑えたい場合はこちらを
@@ -243,22 +222,6 @@ SMS はこれに加えて**セグメント数**の枠も消費します（`SMS_S
 }
 ```
 
-一括送信で枠が足りない場合は、**1 件も送信せず**に次を返します。
-
-```json
-{
-  "status": "error",
-  "reason": "レートリミット超過: bulk_sms_from_csv は50件の送信を要求しましたが、残り枠は3件です（上限: 1時間あたり5件）。1件も送信していません。",
-  "suggestion": "CSVを3行以下に分割して再試行するか、約3480秒（58分）待ってから再試行してください。...",
-  "retry_after_seconds": 3480,
-  "remaining_quota": 3
-}
-```
-
-部分的に送信されることはないため、AI は「どこまで送れたか」を心配する必要はありません。
-`remaining_quota` を見て CSV を分割するか、`retry_after_seconds` だけ待ってください。
-
-なお CSV の行数自体にも上限があります（環境変数 `BULK_MAX_ROWS`、デフォルト 100 行）。
 
 ### 5. get_sms_status の制約
 
@@ -342,8 +305,6 @@ RATE_LIMIT_PER_HOUR=3
 # 1時間あたり6セグメントまで（課金と直結する上限）
 SMS_SEGMENT_LIMIT_PER_HOUR=6
 
-# CSVは10行まで
-BULK_MAX_ROWS=10
 
 # Status Webhook の署名検証（HTTPサーバー版で必須）
 VONAGE_API_SIGNATURE_SECRET=your_signature_secret_here
@@ -352,12 +313,12 @@ VONAGE_API_SIGNATURE_SECRET=your_signature_secret_here
 MCP_AUTH_TOKEN=$(openssl rand -hex 32)
 ```
 
-本番運用へ移行する際は `ALLOWED_NUMBERS` を外し、`RATE_LIMIT_PER_HOUR` と `BULK_MAX_ROWS` を
+本番運用へ移行する際は `ALLOWED_NUMBERS` を外し、`RATE_LIMIT_PER_HOUR` を
 実際の運用量に合わせて調整してください。
 
 > [!WARNING]
 > **`0` は「無制限」ではなく「すべて拒否」です。** v1.2.1 以前とは意味が逆になりました。
 > 制限を外したい場合は `DISABLE_RATE_LIMIT=true` を明示的に設定してください（起動のたびに警告が出ます）。
 
-一括送信を使う場合は `RATE_LIMIT_PER_HOUR` を送信件数に見合う値まで引き上げる必要があります。
-デフォルトの 5 件のままだと、6 行以上の CSV は送信できません。
+まとめて送る運用では `RATE_LIMIT_PER_HOUR` を件数に見合う値まで引き上げてください。
+デフォルトの 5 件のままでは、1 時間に 6 件目以降が拒否されます。

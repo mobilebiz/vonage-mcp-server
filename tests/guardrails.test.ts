@@ -7,7 +7,6 @@ import {
   checkAllowedNumber,
   getAllowedNumbers,
   getAllowedNumbersConfig,
-  getBulkMaxRows,
   getRateLimitPerHour,
   normalizeToE164,
   validateAndNormalizePhoneNumber,
@@ -21,7 +20,6 @@ describe('guardrails', () => {
   beforeEach(() => {
     delete process.env.ALLOWED_NUMBERS;
     delete process.env.RATE_LIMIT_PER_HOUR;
-    delete process.env.BULK_MAX_ROWS;
     delete process.env.DISABLE_RATE_LIMIT;
   });
 
@@ -365,27 +363,6 @@ describe('guardrails', () => {
     });
   });
 
-  describe('getBulkMaxRows', () => {
-    it('未設定ならデフォルト100', () => {
-      expect(getBulkMaxRows()).toBe(100);
-    });
-
-    it('数値を指定できる', () => {
-      process.env.BULK_MAX_ROWS = '250';
-      expect(getBulkMaxRows()).toBe(250);
-    });
-
-    it('0 は無制限ではなく全拒否（VONAGE_MCP-18 の破壊的変更）', () => {
-      process.env.BULK_MAX_ROWS = '0';
-      expect(getBulkMaxRows()).toBe(0);
-    });
-
-    it('不正な値は例外にする', () => {
-      process.env.BULK_MAX_ROWS = '-1';
-      expect(() => getBulkMaxRows()).toThrow(ConfigError);
-    });
-  });
-
   describe('buildRateLimitError', () => {
     it('待機秒数と再試行方針を含むメッセージを組み立てる', () => {
       const error = buildRateLimitError('send_sms', {
@@ -403,7 +380,7 @@ describe('guardrails', () => {
 
     it('cost > 1 のときは要求件数と残り枠を伝え、1件も送っていないと明示する', () => {
       const error = buildRateLimitError(
-        'bulk_sms_from_csv',
+        'send_sms',
         { allowed: false, limit: 5, remaining: 2, retryAfterSeconds: 300 },
         10
       );
@@ -484,7 +461,7 @@ describe('guardrails', () => {
       const limiter = new RateLimiter(60_000);
 
       // 上限5・使用0件。枠が全部空いていても10件は通らない
-      const result = limiter.check('bulk_sms_from_csv', 5, 1_000_000, 10);
+      const result = limiter.check('send_sms', 5, 1_000_000, 10);
 
       expect(result.allowed).toBe(false);
       expect(result.unsatisfiable).toBe(true);
@@ -514,7 +491,7 @@ describe('guardrails', () => {
 
     it('分割すれば通る場合は待機時間を案内する', () => {
       const limiter = new RateLimiter(60_000);
-      const result = limiter.check('bulk_sms_from_csv', 5, 1_000_000, 5);
+      const result = limiter.check('send_sms', 5, 1_000_000, 5);
 
       // 使用0件・上限5なのでちょうど通る
       expect(result.allowed).toBe(true);
@@ -522,7 +499,7 @@ describe('guardrails', () => {
 
     it('上限超過のエラー文面は待機を促さない', () => {
       const error = buildRateLimitError(
-        'bulk_sms_from_csv',
+        'send_sms',
         { allowed: false, limit: 5, remaining: 5, unsatisfiable: true },
         10,
         'global'
