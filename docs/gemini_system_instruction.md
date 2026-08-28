@@ -159,7 +159,9 @@ SMS 送信と音声通話は取り消しができません。AI のハルシネ�
   "tool": "send_sms",
   "to": "+819012345678",
   "from": "VonageMCP",
-  "characters": 42
+  "characters": 33,
+  "encoding": "UCS-2",
+  "segments": 1
 }
 ```
 
@@ -313,12 +315,16 @@ VONAGE_API_SIGNATURE_SECRET=your_signature_secret_here
 MCP_AUTH_TOKEN=$(openssl rand -hex 32)
 ```
 
-本番運用へ移行する際は `ALLOWED_NUMBERS` を外し、`RATE_LIMIT_PER_HOUR` を
-実際の運用量に合わせて調整してください。
+本番運用へ移行する際は、`RATE_LIMIT_PER_HOUR` を実際の運用量に合わせて調整してください。
+
+**`ALLOWED_NUMBERS` は、宛先が決まっている運用なら本番でも残してください。**
+これはプロンプトインジェクションや誤送信に対して**実際に効く最後の防御**です
+（→ 上記「Human-in-the-Loop」の項）。不特定の相手へ送る必要がある場合にだけ外し、
+そのときは Vonage アカウント側の利用額上限と地域制限で代替してください。
 
 > [!WARNING]
 > **`0` は「無制限」ではなく「すべて拒否」です。** v1.2.1 以前とは意味が逆になりました。
 > 制限を外したい場合は `DISABLE_RATE_LIMIT=true` を明示的に設定してください（起動のたびに警告が出ます）。
 
-まとめて送る運用では `RATE_LIMIT_PER_HOUR` を件数に見合う値まで引き上げてください。
+送信量が多い運用では `RATE_LIMIT_PER_HOUR` を件数に見合う値まで引き上げてください。
 デフォルトの 5 件のままでは、1 時間に 6 件目以降が拒否されます。

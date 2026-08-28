@@ -205,8 +205,12 @@ environment variable relaxes that.
 
 ### Rate limiting
 
-Consumption is counted in **messages sent**, not tool calls. Billing follows
-message count rather than which tool was used, so the buckets do too.
+Consumption is counted in **messages sent**, not tool calls — what matters is
+how many you sent, not which tool sent them.
+
+**SMS is billed per segment, though**, so the message buckets bound the number
+of operations rather than the cost. To bound the cost itself, use
+`SMS_SEGMENT_LIMIT_PER_HOUR`.
 
 | Variable | Default | Unit |
 | --- | --- | --- |
