@@ -119,7 +119,7 @@ npm run build:mcpb
 
 **Private Key Path は絶対パスです。** `./private.key` のような相対パスは、Claude Desktop の作業ディレクトリから解決されるため意図した場所を指しません。
 
-**最初の確認では `Enable SMS` だけを `true` にしてください。** 一括送信と音声通話は後から有効にできます。
+**最初の確認では `Enable SMS` だけを `true` にしてください。** 音声通話は後から有効にできます。
 
 **`Allowed Numbers` に自分の番号だけを入れることを強くお勧めします。**
 

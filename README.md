@@ -560,13 +560,10 @@ Claude Desktopの設定ファイル `claude_desktop_config.json` に以下の設
 | status | 意味 | 例 |
 | --- | --- | --- |
 | `success` | 実行成功 | `{"status":"success","message_id":"abc","to":"+819012345678"}` |
-| `partial_success` | 一括送信で一部だけ成功 | `{"status":"partial_success","sent":8,"failed":2,"failures":[...]}` |
 | `dry_run_success` | 検証のみ成功（API呼び出しなし） | `{"status":"dry_run_success","message":"Ready to send","to":"+819012345678","characters":12}` |
-| `error` | 失敗（一括送信の全件失敗を含む） | `{"status":"error","reason":"無効な電話番号形式です: 123","suggestion":"番号のフォーマットを確認してください。..."}` |
+| `error` | 失敗 | `{"status":"error","reason":"無効な電話番号形式です: 123","suggestion":"番号のフォーマットを確認してください。..."}` |
 
 エラー時は必ず `reason`（原因）と `suggestion`（AIが次に取るべき行動）が含まれます。再試行が無意味なケースでは `suggestion` にその旨が明記されるため、AIエージェントの無限リトライを防げます。
-
-一括送信は結果に応じて `success` / `partial_success` / `error` を返し分けます。トップレベルの `status` だけを見て「全件送れた」と誤認しないためです。
 
 ### 4. 使用例
 

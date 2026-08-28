@@ -53,14 +53,14 @@
     "enable_sms": {
       "type": "string",
       "title": "Enable SMS",
-      "description": "Enable send_sms and get_sms_status. Must be exactly \"true\" or \"false\" (lowercase). Every capability is OFF by default: with all three left as \"false\" this server exposes no tools at all. Turn on only what you intend to use — these tools spend money and reach real people.",
+      "description": "Enable send_sms and get_sms_status. Must be exactly \"true\" or \"false\" (lowercase). Every capability is OFF by default: with both left as \"false\" this server exposes no tools at all. Turn on only what you intend to use — these tools spend money and reach real people.",
       "required": false,
       "default": "false"
     },
     "enable_voice": {
       "type": "string",
       "title": "Enable Voice",
-      "description": "Enable make_voice_call and get_call_status. Must be exactly \"true\" or \"false\" (lowercase). Every capability is OFF by default: with all three left as \"false\" this server exposes no tools at all. Turn on only what you intend to use — these tools spend money and reach real people.",
+      "description": "Enable make_voice_call and get_call_status. Must be exactly \"true\" or \"false\" (lowercase). Every capability is OFF by default: with both left as \"false\" this server exposes no tools at all. Turn on only what you intend to use — these tools spend money and reach real people.",
       "required": false,
       "default": "false"
     },
@@ -80,7 +80,7 @@
     "rate_limit_per_hour": {
       "type": "string",
       "title": "Rate Limit Per Hour",
-      "description": "Maximum number of messages per hour, counted across SMS and voice together (not per tool). Bulk sending consumes one unit per message. Set to 0 to reject every send (0 is an emergency stop, NOT \"no limit\").",
+      "description": "Maximum number of messages per hour, counted across SMS and voice together (not per tool). Set to 0 to reject every send (0 is an emergency stop, NOT \"no limit\").",
       "required": false,
       "default": "5"
     }

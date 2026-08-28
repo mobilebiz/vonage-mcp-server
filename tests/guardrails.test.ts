@@ -378,17 +378,21 @@ describe('guardrails', () => {
       expect(error.suggestion).toContain('120秒');
     });
 
-    it('cost > 1 のときは要求件数と残り枠を伝え、1件も送っていないと明示する', () => {
+    // cost > 1 になるのはセグメントのバケットだけ（件数は1操作=1件）。
+    // 「分割して送れ」と案内しても分割できる単位が無いので、本文を短くさせる
+    it('cost > 1 のときは単位をセグメントで伝え、本文を短くするよう促す', () => {
       const error = buildRateLimitError(
         'send_sms',
         { allowed: false, limit: 5, remaining: 2, retryAfterSeconds: 300 },
-        10
+        10,
+        'segments'
       );
 
-      expect(error.reason).toContain('10件の送信を要求');
-      expect(error.reason).toContain('残り枠は2件');
-      expect(error.reason).toContain('1件も送信していません');
-      expect(error.suggestion).toContain('2行以下に分割');
+      expect(error.reason).toContain('10セグメントの送信を要求');
+      expect(error.reason).toContain('残り枠は2セグメント');
+      expect(error.reason).toContain('送信していません');
+      expect(error.suggestion).toContain('本文を短くして2セグメント以内');
+      expect(error.suggestion).not.toContain('分割');
       expect(error.remaining).toBe(2);
     });
 
@@ -497,18 +501,20 @@ describe('guardrails', () => {
       expect(result.allowed).toBe(true);
     });
 
-    it('上限超過のエラー文面は待機を促さない', () => {
+    it('上限超過のエラー文面は待機を促さず、実行できる対処を案内する', () => {
       const error = buildRateLimitError(
         'send_sms',
         { allowed: false, limit: 5, remaining: 5, unsatisfiable: true },
         10,
-        'global'
+        'segments'
       );
 
       expect(error.retry_after_seconds).toBe(0);
       expect(error.suggestion).toContain('待っても解決しません');
-      expect(error.suggestion).toContain('5行以下');
+      expect(error.suggestion).toContain('本文を短くして5セグメント以内');
       expect(error.suggestion).not.toContain('待ってから再試行');
+      // CSV一括送信は v3.0.0 で廃止した。分割できる単位が無い
+      expect(error.suggestion).not.toContain('分割');
     });
   });
 
