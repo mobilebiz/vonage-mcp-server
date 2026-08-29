@@ -78,7 +78,6 @@ Each tool belongs to a capability that is **off by default**.
 | --- | --- | --- |
 | `send_sms` | `ENABLE_SMS` | Send one SMS |
 | `get_sms_status` | `ENABLE_SMS` | Read a delivery status received by webhook |
-| `bulk_sms_from_csv` | `ENABLE_BULK_SMS` | Send many SMS from CSV |
 | `make_voice_call` | `ENABLE_VOICE` | Place a call that reads a message aloud |
 | `get_call_status` | `ENABLE_VOICE` | Read a call's status, price and duration |
 
@@ -91,7 +90,7 @@ SMS and the **enforced maximum duration** for calls — and consumes no quota.
 
 ### Tool annotations
 
-`send_sms`, `make_voice_call` and `bulk_sms_from_csv` are annotated
+`send_sms` and `make_voice_call` are annotated
 `destructiveHint: true`; `get_sms_status` and `get_call_status` are annotated
 `readOnlyHint: true`. Platforms that honour these annotations (Gemini Enterprise,
 for one) prompt the user before running a billable tool and skip the prompt for
@@ -184,11 +183,7 @@ be plain decimal. Every problem found is reported at once.
 | Variable | Default |
 | --- | --- |
 | `ENABLE_SMS` | `false` |
-| `ENABLE_BULK_SMS` | `false` |
 | `ENABLE_VOICE` | `false` |
-
-`ENABLE_BULK_SMS` is separate from `ENABLE_SMS` because the blast radius differs
-by orders of magnitude: one message versus hundreds per call.
 
 ### Destination guardrails
 
@@ -210,8 +205,12 @@ environment variable relaxes that.
 
 ### Rate limiting
 
-Consumption is counted in **messages sent**, not tool calls. A bulk send
-consumes one unit per row and is all-or-nothing.
+Consumption is counted in **messages sent**, not tool calls — what matters is
+how many you sent, not which tool sent them.
+
+**SMS is billed per segment, though**, so the message buckets bound the number
+of operations rather than the cost. To bound the cost itself, use
+`SMS_SEGMENT_LIMIT_PER_HOUR`.
 
 | Variable | Default | Unit |
 | --- | --- | --- |
@@ -220,11 +219,9 @@ consumes one unit per row and is all-or-nothing.
 | `VOICE_RATE_LIMIT_PER_HOUR` | unlimited | Calls only |
 | `SMS_SEGMENT_LIMIT_PER_HOUR` | unlimited | **Segments** — the billed unit |
 | `SMS_MAX_SEGMENTS` | `3` | Segments allowed in one message |
-| `BULK_MAX_ROWS` | `100` | CSV rows per call |
 | `DISABLE_RATE_LIMIT` | `false` | Dangerous. Warns on every startup |
 
-> **`RATE_LIMIT_PER_HOUR=0` and `BULK_MAX_ROWS=0` mean "deny everything", not
-> "unlimited".** An administrator reaching for `0` as a kill switch used to get
+> **`RATE_LIMIT_PER_HOUR=0` means "deny everything", not "unlimited".** An administrator reaching for `0` as a kill switch used to get
 > the opposite. For unlimited, set `DISABLE_RATE_LIMIT=true`.
 
 **SMS is billed per segment, not per message.** A segment holds 160 characters

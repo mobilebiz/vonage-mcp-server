@@ -42,14 +42,6 @@ export function successOutcome(fields: ToolPayload): ToolOutcome {
 }
 
 /**
- * 部分成功レスポンス（一括送信で一部だけ失敗した場合）
- * AIがトップレベルの status だけを見て「全部成功した」と誤報告しないようにする。
- */
-export function partialSuccessOutcome(fields: ToolPayload): ToolOutcome {
-  return { payload: { status: 'partial_success', ...fields }, isError: false };
-}
-
-/**
  * エラーレスポンス
  * AIが自己修復できるよう、原因(reason)と次に取るべき行動(suggestion)を必ず含める。
  */

@@ -1,6 +1,6 @@
 ---
 title: "Vonage MCP Server 導入・動作確認手順書"
-subtitle: "v2.0.0 対応"
+subtitle: "v3.0.0 対応"
 date: "2026-08-21"
 ---
 
@@ -108,12 +108,10 @@ npm run build:mcpb
 | **Vonage Application ID** | Dashboard で確認した Application ID |
 | **Private Key Path** | `private.key` の**絶対パス**（例: `/Users/yourname/vonage/private.key`） |
 | **Enable SMS** | SMS を使うなら `true` |
-| **Enable Bulk SMS** | CSV 一括送信を使うなら `true` |
 | **Enable Voice** | 音声通話を使うなら `true` |
 | **Voice Call From Number** | Enable Voice が `true` のときのみ必須。E.164 形式 |
 | **Allowed Numbers** | **送信先を限定する場合**にカンマ区切りで指定 |
 | **Rate Limit Per Hour** | 1時間あたりの上限（既定 5） |
-| **Bulk CSV Max Rows** | CSV の最大行数（既定 100） |
 
 ### 入力するときの注意
 
@@ -121,7 +119,7 @@ npm run build:mcpb
 
 **Private Key Path は絶対パスです。** `./private.key` のような相対パスは、Claude Desktop の作業ディレクトリから解決されるため意図した場所を指しません。
 
-**最初の確認では `Enable SMS` だけを `true` にしてください。** 一括送信と音声通話は後から有効にできます。
+**最初の確認では `Enable SMS` だけを `true` にしてください。** 音声通話は後から有効にできます。
 
 **`Allowed Numbers` に自分の番号だけを入れることを強くお勧めします。**
 
@@ -147,7 +145,7 @@ generate_jwt は使える？
 
 | 答え | 繋がっている先 |
 | --- | --- |
-| **使えない / そんなツールは無い** | **v2.0.0 です。** そのまま手順1へ進んでください |
+| **使えない / そんなツールは無い** | **v2.0.0 以降です。** そのまま手順1へ進んでください |
 | **使える** | **v1.2.x 系です。**ガードレールが1つも入っていません |
 
 `generate_jwt` は v2.0.0 で削除したツールなので、**これが見えるかどうかが最も確実な見分け方**です。
@@ -270,7 +268,7 @@ dry_run の内容に納得したら、送信します。
 
 ```
 [WARN] すべての機能が無効です。ツールは1つも公開されません。
-       利用する機能を ENABLE_SMS / ENABLE_BULK_SMS / ENABLE_VOICE のいずれかに
+       利用する機能を ENABLE_SMS / ENABLE_VOICE のいずれかに
        true を設定して有効化してください（既定はすべて OFF です）。
 ```
 
@@ -350,7 +348,7 @@ grep 'method="tools/call"' ~/Library/Logs/Claude/mcp-server-*.log | tail -3
 ## 5.1 Claude Desktop（最優先）
 
 - [ ] `.mcpb` をダブルクリックしてインストールできる
-- [ ] 設定画面に **Enable SMS / Enable Bulk SMS / Enable Voice** が表示される
+- [ ] 設定画面に **Enable SMS / Enable Voice** が表示される
 - [ ] すべて既定のまま（全 `false`）でインストールすると、**ツールが1つも出ない**
 - [ ] `Enable SMS` を `true` にすると `send_sms` と `get_sms_status` が出る
 - [ ] **ツール実行前に承認プロンプトが出る**

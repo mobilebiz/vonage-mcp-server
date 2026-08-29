@@ -7,7 +7,6 @@ import {
   checkAllowedNumber,
   getAllowedNumbers,
   getAllowedNumbersConfig,
-  getBulkMaxRows,
   getRateLimitPerHour,
   normalizeToE164,
   validateAndNormalizePhoneNumber,
@@ -21,7 +20,6 @@ describe('guardrails', () => {
   beforeEach(() => {
     delete process.env.ALLOWED_NUMBERS;
     delete process.env.RATE_LIMIT_PER_HOUR;
-    delete process.env.BULK_MAX_ROWS;
     delete process.env.DISABLE_RATE_LIMIT;
   });
 
@@ -365,27 +363,6 @@ describe('guardrails', () => {
     });
   });
 
-  describe('getBulkMaxRows', () => {
-    it('未設定ならデフォルト100', () => {
-      expect(getBulkMaxRows()).toBe(100);
-    });
-
-    it('数値を指定できる', () => {
-      process.env.BULK_MAX_ROWS = '250';
-      expect(getBulkMaxRows()).toBe(250);
-    });
-
-    it('0 は無制限ではなく全拒否（VONAGE_MCP-18 の破壊的変更）', () => {
-      process.env.BULK_MAX_ROWS = '0';
-      expect(getBulkMaxRows()).toBe(0);
-    });
-
-    it('不正な値は例外にする', () => {
-      process.env.BULK_MAX_ROWS = '-1';
-      expect(() => getBulkMaxRows()).toThrow(ConfigError);
-    });
-  });
-
   describe('buildRateLimitError', () => {
     it('待機秒数と再試行方針を含むメッセージを組み立てる', () => {
       const error = buildRateLimitError('send_sms', {
@@ -401,18 +378,36 @@ describe('guardrails', () => {
       expect(error.suggestion).toContain('120秒');
     });
 
-    it('cost > 1 のときは要求件数と残り枠を伝え、1件も送っていないと明示する', () => {
+    // cost > 1 になるのはセグメントのバケットだけ（件数は1操作=1件）。
+    // 「分割して送れ」と案内しても分割できる単位が無いので、本文を短くさせる
+    it('cost > 1 のときは単位をセグメントで伝え、本文を短くするよう促す', () => {
       const error = buildRateLimitError(
-        'bulk_sms_from_csv',
+        'send_sms',
         { allowed: false, limit: 5, remaining: 2, retryAfterSeconds: 300 },
-        10
+        10,
+        'segments'
       );
 
-      expect(error.reason).toContain('10件の送信を要求');
-      expect(error.reason).toContain('残り枠は2件');
-      expect(error.reason).toContain('1件も送信していません');
-      expect(error.suggestion).toContain('2行以下に分割');
+      expect(error.reason).toContain('10セグメントの送信を要求');
+      expect(error.reason).toContain('残り枠は2セグメント');
+      expect(error.reason).toContain('送信していません');
+      expect(error.suggestion).toContain('本文を短くして2セグメント以内');
+      expect(error.suggestion).not.toContain('分割');
       expect(error.remaining).toBe(2);
+    });
+
+    // cost === 1 の経路も通る（1セグメントのSMSでセグメント枠が尽きた場合）。
+    // ここだけ「件」のままだと、セグメントの上限を件数の上限として読ませてしまう
+    it('cost === 1 でもセグメントのバケットなら単位はセグメント', () => {
+      const error = buildRateLimitError(
+        'send_sms',
+        { allowed: false, limit: 5, remaining: 0, retryAfterSeconds: 300 },
+        1,
+        'segments'
+      );
+
+      expect(error.reason).toContain('1時間あたり5セグメントまで');
+      expect(error.reason).not.toContain('5件');
     });
 
     it('limit=0 は「停止中」として案内し、待機を促さない', () => {
@@ -484,7 +479,7 @@ describe('guardrails', () => {
       const limiter = new RateLimiter(60_000);
 
       // 上限5・使用0件。枠が全部空いていても10件は通らない
-      const result = limiter.check('bulk_sms_from_csv', 5, 1_000_000, 10);
+      const result = limiter.check('send_sms', 5, 1_000_000, 10);
 
       expect(result.allowed).toBe(false);
       expect(result.unsatisfiable).toBe(true);
@@ -514,24 +509,26 @@ describe('guardrails', () => {
 
     it('分割すれば通る場合は待機時間を案内する', () => {
       const limiter = new RateLimiter(60_000);
-      const result = limiter.check('bulk_sms_from_csv', 5, 1_000_000, 5);
+      const result = limiter.check('send_sms', 5, 1_000_000, 5);
 
       // 使用0件・上限5なのでちょうど通る
       expect(result.allowed).toBe(true);
     });
 
-    it('上限超過のエラー文面は待機を促さない', () => {
+    it('上限超過のエラー文面は待機を促さず、実行できる対処を案内する', () => {
       const error = buildRateLimitError(
-        'bulk_sms_from_csv',
+        'send_sms',
         { allowed: false, limit: 5, remaining: 5, unsatisfiable: true },
         10,
-        'global'
+        'segments'
       );
 
       expect(error.retry_after_seconds).toBe(0);
       expect(error.suggestion).toContain('待っても解決しません');
-      expect(error.suggestion).toContain('5行以下');
+      expect(error.suggestion).toContain('本文を短くして5セグメント以内');
       expect(error.suggestion).not.toContain('待ってから再試行');
+      // CSV一括送信は v3.0.0 で廃止した。分割できる単位が無い
+      expect(error.suggestion).not.toContain('分割');
     });
   });
 

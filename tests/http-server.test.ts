@@ -3,17 +3,16 @@ import request from 'supertest';
 import { createHash, createHmac } from 'crypto';
 
 // Vonage関数をモック化（ネットワークアクセスを避ける）
-const { mockSendSMS, mockMakeVoiceCall, mockSendBulkSMS } = vi.hoisted(() => {
+const { mockSendSMS, mockMakeVoiceCall } = vi.hoisted(() => {
   return {
     mockSendSMS: vi.fn(),
     mockMakeVoiceCall: vi.fn(),
-    mockSendBulkSMS: vi.fn(),
   };
 });
 
 vi.mock('../src/vonage.js', async () => {
   const actual = await vi.importActual<typeof import('../src/vonage.js')>('../src/vonage.js');
-  return { ...actual, sendSMS: mockSendSMS, sendBulkSMS: mockSendBulkSMS };
+  return { ...actual, sendSMS: mockSendSMS };
 });
 
 vi.mock('../src/voiceCall.js', async () => {
@@ -114,11 +113,9 @@ describe('HTTP MCP Wrapper', () => {
     process.env.DISABLE_RATE_LIMIT = 'true';
     // capability は既定で全 OFF。ツールの挙動を検証するテストでは明示的に有効化する
     process.env.ENABLE_SMS = 'true';
-    process.env.ENABLE_BULK_SMS = 'true';
     process.env.ENABLE_VOICE = 'true';
 
     delete process.env.ALLOWED_NUMBERS;
-    delete process.env.BULK_MAX_ROWS;
     delete process.env.VONAGE_API_SIGNATURE_SECRET;
     // Webhook認証は既定で fail-closed のため、明示的に設定してから検証する
     process.env.VONAGE_WEBHOOK_SECRET = 'test-webhook-secret';
@@ -304,14 +301,12 @@ describe('HTTP MCP Wrapper', () => {
   describe('capability トグル', () => {
     it('無効なツールは tools/list に現れない', async () => {
       delete process.env.ENABLE_VOICE;
-      delete process.env.ENABLE_BULK_SMS;
 
       const res = await callMcp({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
 
       const names = res.body.result.tools.map((t: any) => t.name);
       expect(names).not.toContain('make_voice_call');
       expect(names).not.toContain('get_call_status');
-      expect(names).not.toContain('bulk_sms_from_csv');
       expect(names).toContain('send_sms');
     });
 
@@ -479,7 +474,7 @@ describe('HTTP MCP Wrapper', () => {
       const res = await callMcp({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
 
       expect(res.status).toBe(200);
-      expect(res.body.result.tools.length).toBe(5);
+      expect(res.body.result.tools.length).toBe(4);
     });
 
     it('ping に応答する', async () => {

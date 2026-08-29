@@ -66,9 +66,9 @@ app.use((req, res, next) => {
 });
 // Webhookの署名検証（payload_hash）に生のボディが必要なため、パース時に保持しておく
 //
-// 上限は express.json() の既定（100KB）ではなく、現在の BULK_MAX_ROWS から
-// 算出する。既定の100行でも、日本語の本文が並べば100KBを超えてしまい、stdio
-// では通る CSV が HTTP でだけ 413 になる（VONAGE_MCP-4）。
+// 上限は express.json() の既定（100KB）ではなく getMaxRequestBodyBytes() を使う。
+// 既定では小さすぎて、トランスポートによって通る入力が変わってしまうため
+// （VONAGE_MCP-4）。
 app.use(
   express.json({
     limit: getMaxRequestBodyBytes(),

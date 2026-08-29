@@ -182,7 +182,7 @@ URL=$(gcloud run services describe $SERVICE_NAME --region=$REGION --format='valu
 
 # ヘルスチェック（認証不要）
 curl "$URL/health"
-# => {"status":"ok","connected":true,"version":"2.0.0"}
+# => {"status":"ok","connected":true,"version":"3.0.0"}
 
 # ツール一覧（Accept ヘッダーが必要）
 TOKEN=$(gcloud secrets versions access latest --secret=mcp-auth-token)

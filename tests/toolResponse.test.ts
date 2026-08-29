@@ -3,7 +3,6 @@ import {
   dryRunOutcome,
   errorOutcome,
   httpStatusForOutcome,
-  partialSuccessOutcome,
   successOutcome,
   toMcpResult,
 } from '../src/toolResponse.js';
@@ -33,7 +32,6 @@ describe('toolResponse', () => {
 
     it.each([
       ['success', successOutcome({})],
-      ['partial_success', partialSuccessOutcome({})],
       ['dry_run', dryRunOutcome()],
     ])('%s は 200', (_label, outcome) => {
       expect(httpStatusForOutcome(outcome)).toBe(200);

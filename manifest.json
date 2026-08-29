@@ -3,7 +3,7 @@
   "manifest_version": "0.2",
   "name": "@mobilebiz/vonage-mcp-server",
   "display_name": "Vonage MCP Server",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "Vonage SMS and Voice MCP Server - Send SMS and make voice calls using Vonage API",
   "long_description": "This extension provides Model Context Protocol (MCP) server capabilities for Vonage, allowing AI assistants to send SMS messages and make voice calls through the Vonage API.",
   "author": {
@@ -30,12 +30,10 @@
         "VONAGE_APPLICATION_ID": "${user_config.vonage_application_id}",
         "VONAGE_PRIVATE_KEY_PATH": "${user_config.vonage_private_key_path}",
         "ENABLE_SMS": "${user_config.enable_sms}",
-        "ENABLE_BULK_SMS": "${user_config.enable_bulk_sms}",
         "ENABLE_VOICE": "${user_config.enable_voice}",
         "VONAGE_VOICE_FROM": "${user_config.vonage_voice_from}",
         "ALLOWED_NUMBERS": "${user_config.allowed_numbers}",
-        "RATE_LIMIT_PER_HOUR": "${user_config.rate_limit_per_hour}",
-        "BULK_MAX_ROWS": "${user_config.bulk_max_rows}"
+        "RATE_LIMIT_PER_HOUR": "${user_config.rate_limit_per_hour}"
       }
     }
   },
@@ -55,21 +53,14 @@
     "enable_sms": {
       "type": "string",
       "title": "Enable SMS",
-      "description": "Enable send_sms and get_sms_status. Must be exactly \"true\" or \"false\" (lowercase). Every capability is OFF by default: with all three left as \"false\" this server exposes no tools at all. Turn on only what you intend to use — these tools spend money and reach real people.",
-      "required": false,
-      "default": "false"
-    },
-    "enable_bulk_sms": {
-      "type": "string",
-      "title": "Enable Bulk SMS",
-      "description": "Enable bulk_sms_from_csv (one call can send hundreds of messages). Must be exactly \"true\" or \"false\" (lowercase). Every capability is OFF by default: with all three left as \"false\" this server exposes no tools at all. Turn on only what you intend to use — these tools spend money and reach real people.",
+      "description": "Enable send_sms and get_sms_status. Must be exactly \"true\" or \"false\" (lowercase). Every capability is OFF by default: with both left as \"false\" this server exposes no tools at all. Turn on only what you intend to use — these tools spend money and reach real people.",
       "required": false,
       "default": "false"
     },
     "enable_voice": {
       "type": "string",
       "title": "Enable Voice",
-      "description": "Enable make_voice_call and get_call_status. Must be exactly \"true\" or \"false\" (lowercase). Every capability is OFF by default: with all three left as \"false\" this server exposes no tools at all. Turn on only what you intend to use — these tools spend money and reach real people.",
+      "description": "Enable make_voice_call and get_call_status. Must be exactly \"true\" or \"false\" (lowercase). Every capability is OFF by default: with both left as \"false\" this server exposes no tools at all. Turn on only what you intend to use — these tools spend money and reach real people.",
       "required": false,
       "default": "false"
     },
@@ -89,16 +80,9 @@
     "rate_limit_per_hour": {
       "type": "string",
       "title": "Rate Limit Per Hour",
-      "description": "Maximum number of messages per hour, counted across SMS and voice together (not per tool). Bulk sending consumes one unit per message. Set to 0 to reject every send (0 is an emergency stop, NOT \"no limit\").",
+      "description": "Maximum number of messages per hour, counted across SMS and voice together (not per tool). Set to 0 to reject every send (0 is an emergency stop, NOT \"no limit\").",
       "required": false,
       "default": "5"
-    },
-    "bulk_max_rows": {
-      "type": "string",
-      "title": "Bulk CSV Max Rows",
-      "description": "Maximum number of rows accepted by bulk_sms_from_csv in a single call. Set to 0 to reject every bulk send (0 is an emergency stop, NOT \"no limit\").",
-      "required": false,
-      "default": "100"
     }
   }
 }

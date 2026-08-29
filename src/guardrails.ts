@@ -23,10 +23,8 @@ import { JP_MAX_CONCATENATED_CHARS } from './smsSegments.js';
 
 // 既存の import 元を変えずに済むよう、設定系のシンボルはここからも再公開する。
 export {
-  DEFAULT_BULK_MAX_ROWS,
   DEFAULT_RATE_LIMIT_PER_HOUR,
   VOICE_MESSAGE_MAX_LENGTH,
-  getBulkMaxRows,
   getRateLimitPerHour,
 } from './config.js';
 
@@ -463,10 +461,11 @@ export interface RateLimitResult {
   /** 上限に達している場合、次に呼び出せるようになるまでの秒数 */
   retryAfterSeconds?: number;
   /**
-   * 要求件数が上限そのものを超えていて、**待っても永久に通らない**場合に true。
+   * 要求コストが上限そのものを超えていて、**待っても永久に通らない**場合に true。
    *
    * `limit === 0`（全拒否）と同じく、待機を促すと誤誘導になる。呼び出し側は
-   * 分割を案内すること。
+   * **要求コストを上限以下に減らす方法**を案内すること。セグメントの枠なら
+   * 本文を短くする、という具合に、バケットによって手段が違う。
    */
   unsatisfiable?: boolean;
 }
@@ -474,8 +473,8 @@ export interface RateLimitResult {
 /**
  * スライディングウィンドウ方式のオンメモリ・レートリミッタ。
  *
- * 1件の送信・架電を1単位としてカウントする。bulk_sms_from_csv のように1回の
- * ツール呼び出しで複数件を送るものは、送信件数分をまとめて消費する（cost）。
+ * 1件の送信・架電を1単位としてカウントする。1回のツール呼び出しで複数件を送る
+ * 場合に備えて、消費量は cost で指定できる。
  * プロセスが再起動するとカウントはリセットされる（簡易実装）。
  */
 export class RateLimiter {
@@ -589,8 +588,8 @@ export class RateLimiter {
 }
 
 /**
- * 課金が発生するツール（send_sms / bulk_sms_from_csv / make_voice_call）で共有するレートリミッタ。
- * ステータス取得系やJWT生成などの副作用のないツールはカウント対象外。
+ * 課金が発生するツール（send_sms / make_voice_call）で共有するレートリミッタ。
+ * ステータス取得系など副作用のないツールはカウント対象外。
  */
 export const toolRateLimiter = new RateLimiter();
 
@@ -607,6 +606,14 @@ export function buildRateLimitError(
   remaining: number;
 } {
   const envVar = RATE_LIMIT_ENV_VARS[bucket];
+  // セグメントのバケットだけ数える単位が違う。「件」で通すと、
+  // 3セグメントの1通が「3件送ろうとした」と読めてしまう。
+  const unit = bucket === 'segments' ? 'セグメント' : '件';
+  /** 収まるように減らす方法。分割できる単位が無いので本文を短くさせる */
+  const reduceHint = (max: number): string =>
+    bucket === 'segments'
+      ? `本文を短くして${max}セグメント以内に収めてから再試行してください。`
+      : `1時間あたり${max}件を超えないように送信してください。`;
 
   // 上限 0 は緊急停止。待機を促すのは誤誘導になる。
   if (result.limit === 0) {
@@ -621,14 +628,18 @@ export function buildRateLimitError(
 
   // 上限そのものを超える要求は、待っても通らない。limit === 0 と同じ理由で
   // 待機を案内しない。
+  //
+  // **cost > 1 になるのはセグメントのバケットだけ**（件数は1操作=1件）。
+  // 「分割して送れ」と案内しても分割できる単位が無いので、本文を短くする方へ
+  // 誘導する。ここを誤ると、エージェントは実行不可能な指示を繰り返す。
   if (result.unsatisfiable) {
     return {
       reason:
-        `${toolName} は${cost}件の送信を要求しましたが、${envVar} の上限が1時間あたり${result.limit}件です。` +
-        `枠が全部空いても1回では通りません。1件も送信していません。`,
+        `${toolName} は${cost}${unit}の送信を要求しましたが、${envVar} の上限が1時間あたり${result.limit}${unit}です。` +
+        `枠が全部空いても1回では通りません。送信していません。`,
       suggestion:
-        `待っても解決しません。CSVを${result.limit}行以下に分割して、1時間あたり${result.limit}件を超えないように送信してください。` +
-        `まとめて送る必要がある場合は、管理者に ${envVar} の引き上げを依頼してください。`,
+        `待っても解決しません。${reduceHint(result.limit)}` +
+        `それでも足りない場合は、管理者に ${envVar} の引き上げを依頼してください。`,
       retry_after_seconds: 0,
       remaining: result.remaining,
     };
@@ -639,10 +650,10 @@ export function buildRateLimitError(
 
   if (cost > 1) {
     return {
-      reason: `レートリミット超過: ${toolName} は${cost}件の送信を要求しましたが、残り枠は${result.remaining}件です（${envVar}: 1時間あたり${result.limit}件）。1件も送信していません。`,
+      reason: `レートリミット超過: ${toolName} は${cost}${unit}の送信を要求しましたが、残り枠は${result.remaining}${unit}です（${envVar}: 1時間あたり${result.limit}${unit}）。送信していません。`,
       suggestion:
         result.remaining > 0
-          ? `CSVを${result.remaining}行以下に分割して再試行するか、${waitMessage}管理者に ${envVar} の引き上げを依頼することもできます。`
+          ? `${reduceHint(result.remaining)}または${waitMessage}管理者に ${envVar} の引き上げを依頼することもできます。`
           : `${waitMessage}管理者に ${envVar} の引き上げを依頼することもできます。`,
       retry_after_seconds: retryAfter,
       remaining: result.remaining,
@@ -650,7 +661,7 @@ export function buildRateLimitError(
   }
 
   return {
-    reason: `レートリミット超過: ${toolName} は1時間あたり${result.limit}件までです（${envVar}）。`,
+    reason: `レートリミット超過: ${toolName} は1時間あたり${result.limit}${unit}までです（${envVar}）。`,
     suggestion: waitMessage,
     retry_after_seconds: retryAfter,
     remaining: result.remaining,
