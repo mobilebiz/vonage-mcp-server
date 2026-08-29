@@ -396,6 +396,20 @@ describe('guardrails', () => {
       expect(error.remaining).toBe(2);
     });
 
+    // cost === 1 の経路も通る（1セグメントのSMSでセグメント枠が尽きた場合）。
+    // ここだけ「件」のままだと、セグメントの上限を件数の上限として読ませてしまう
+    it('cost === 1 でもセグメントのバケットなら単位はセグメント', () => {
+      const error = buildRateLimitError(
+        'send_sms',
+        { allowed: false, limit: 5, remaining: 0, retryAfterSeconds: 300 },
+        1,
+        'segments'
+      );
+
+      expect(error.reason).toContain('1時間あたり5セグメントまで');
+      expect(error.reason).not.toContain('5件');
+    });
+
     it('limit=0 は「停止中」として案内し、待機を促さない', () => {
       const error = buildRateLimitError('send_sms', { allowed: false, limit: 0, remaining: 0 });
 

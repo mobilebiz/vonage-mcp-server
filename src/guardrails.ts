@@ -461,10 +461,11 @@ export interface RateLimitResult {
   /** 上限に達している場合、次に呼び出せるようになるまでの秒数 */
   retryAfterSeconds?: number;
   /**
-   * 要求件数が上限そのものを超えていて、**待っても永久に通らない**場合に true。
+   * 要求コストが上限そのものを超えていて、**待っても永久に通らない**場合に true。
    *
    * `limit === 0`（全拒否）と同じく、待機を促すと誤誘導になる。呼び出し側は
-   * 分割を案内すること。
+   * **要求コストを上限以下に減らす方法**を案内すること。セグメントの枠なら
+   * 本文を短くする、という具合に、バケットによって手段が違う。
    */
   unsatisfiable?: boolean;
 }
@@ -660,7 +661,7 @@ export function buildRateLimitError(
   }
 
   return {
-    reason: `レートリミット超過: ${toolName} は1時間あたり${result.limit}件までです（${envVar}）。`,
+    reason: `レートリミット超過: ${toolName} は1時間あたり${result.limit}${unit}までです（${envVar}）。`,
     suggestion: waitMessage,
     retry_after_seconds: retryAfter,
     remaining: result.remaining,
