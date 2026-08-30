@@ -54,7 +54,7 @@ SMS 送信と音声通話は**取り消せず、課金が発生し、相手に�
 | [Gemini Enterprise（コネクタ）](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server) | Streamable HTTP | **OAuth 2.0 か「認証なし」のみ** | あり（既定で必ず出る） | ⚠️ |
 | [Gemini Enterprise（ADK で自作）](docs/gemini-enterprise-adk.md) | Streamable HTTP | 任意ヘッダで Bearer | **あり**（ADK の `require_confirmation`。Apps に承認ウィンドウが出ます） | ✅ |
 | [AWS Bedrock AgentCore Gateway](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-target-MCPservers.html) | Streamable HTTP | OAuth / IAM SigV4 / API キー | ゲートウェイには無い | 📄 |
-| [Dify](https://docs.dify.ai/en/cloud/use-dify/build/mcp) | HTTP | 任意ヘッダで Bearer、または OAuth | Human Input ノードを置けば可 | 📄 |
+| [Dify](docs/dify.md) | HTTP | 任意ヘッダで Bearer、または OAuth | Human Input ノードを置けば可 | 📄 |
 | [n8n（MCP Client Tool）](https://docs.n8n.io/integrations/builtin/cluster-nodes/sub-nodes/n8n-nodes-langchain.toolmcp/) | HTTP Streamable / stdio | Bearer / 任意ヘッダ / OAuth2 | AI Agent ノードで有効化すれば可 | 📄 |
 
 > [!NOTE]

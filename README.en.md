@@ -121,7 +121,7 @@ Legend: ✅ verified on real hardware / 📄 documented as supported (not yet ve
 | [Gemini Enterprise (connector)](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server) | Streamable HTTP | **OAuth 2.0 or "no authentication" only** | yes, by default | ⚠️ |
 | [Gemini Enterprise (your own ADK agent)](docs/gemini-enterprise-adk.md) | Streamable HTTP | Bearer via arbitrary headers | **yes** (ADK `require_confirmation`; an approval window appears in Apps) | ✅ |
 | [AWS Bedrock AgentCore Gateway](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-target-MCPservers.html) | Streamable HTTP | OAuth / IAM SigV4 / API key | none at the gateway | 📄 |
-| [Dify](https://docs.dify.ai/en/cloud/use-dify/build/mcp) | HTTP | Bearer via arbitrary headers, or OAuth | only if you add a Human Input node | 📄 |
+| [Dify](docs/dify.md) | HTTP | Bearer via arbitrary headers, or OAuth | only if you add a Human Input node | 📄 |
 | [n8n (MCP Client Tool)](https://docs.n8n.io/integrations/builtin/cluster-nodes/sub-nodes/n8n-nodes-langchain.toolmcp/) | HTTP Streamable / stdio | Bearer / arbitrary headers / OAuth2 | only if enabled on the AI Agent node | 📄 |
 
 📄 means **we have not tried it yet**. The documentation says it should connect;
