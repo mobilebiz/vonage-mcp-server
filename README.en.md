@@ -121,7 +121,7 @@ Legend: ✅ verified on real hardware / 📄 documented as supported (not yet ve
 | [Gemini Enterprise (connector)](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server) | Streamable HTTP | **OAuth 2.0 or "no authentication" only** | yes, by default | ⚠️ |
 | [Gemini Enterprise (your own ADK agent)](docs/gemini-enterprise-adk.md) | Streamable HTTP | Bearer via arbitrary headers | **yes** (ADK `require_confirmation`; an approval window appears in Apps) | ✅ |
 | [AWS Bedrock AgentCore Gateway](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-target-MCPservers.html) | Streamable HTTP | OAuth / IAM SigV4 / API key | none at the gateway | 📄 |
-| [Dify](docs/dify.md) | HTTP | Bearer via arbitrary headers, or OAuth | only if you add a Human Input node | 📄 |
+| [Dify](docs/dify.md) | Streamable HTTP (it never opens SSE) | Bearer via arbitrary headers | **none.** Only if you add a Human Input node to a Workflow | ✅ |
 | [n8n (MCP Client Tool)](https://docs.n8n.io/integrations/builtin/cluster-nodes/sub-nodes/n8n-nodes-langchain.toolmcp/) | HTTP Streamable / stdio | Bearer / arbitrary headers / OAuth2 | only if enabled on the AI Agent node | 📄 |
 
 📄 means **we have not tried it yet**. The documentation says it should connect;
@@ -139,6 +139,13 @@ without it), `ALLOWED_NUMBERS`, SMS and voice all behave as designed, and
 **`get_sms_status` returns `delivered`** once the status webhook is registered.
 That last one is unreachable over stdio, where the server has nowhere to receive
 a delivery receipt.
+
+**Dify Cloud (Sandbox plan) was checked on 2026-08-31.** Bearer auth via a
+custom header, the tool list being imported, `dry_run`, **a real SMS arriving**,
+and `get_sms_status` reporting `delivered` all work. See [docs/dify.md](docs/dify.md).
+Note that **Dify has no pre-execution approval UI.** An Agent app runs a tool on
+the model's decision alone and ignores `destructiveHint`, so **`ALLOWED_NUMBERS`
+is the only defence there** — a Workflow can add a Human Input node instead.
 
 ### ⚠️ Gemini Enterprise custom MCP server connector
 

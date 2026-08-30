@@ -54,7 +54,7 @@ SMS 送信と音声通話は**取り消せず、課金が発生し、相手に�
 | [Gemini Enterprise（コネクタ）](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server) | Streamable HTTP | **OAuth 2.0 か「認証なし」のみ** | あり（既定で必ず出る） | ⚠️ |
 | [Gemini Enterprise（ADK で自作）](docs/gemini-enterprise-adk.md) | Streamable HTTP | 任意ヘッダで Bearer | **あり**（ADK の `require_confirmation`。Apps に承認ウィンドウが出ます） | ✅ |
 | [AWS Bedrock AgentCore Gateway](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-target-MCPservers.html) | Streamable HTTP | OAuth / IAM SigV4 / API キー | ゲートウェイには無い | 📄 |
-| [Dify](docs/dify.md) | HTTP | 任意ヘッダで Bearer、または OAuth | Human Input ノードを置けば可 | 📄 |
+| [Dify](docs/dify.md) | Streamable HTTP（SSE は使いません） | 任意ヘッダで Bearer | **無し。** Workflow に Human Input ノードを置けば可 | ✅ |
 | [n8n（MCP Client Tool）](https://docs.n8n.io/integrations/builtin/cluster-nodes/sub-nodes/n8n-nodes-langchain.toolmcp/) | HTTP Streamable / stdio | Bearer / 任意ヘッダ / OAuth2 | AI Agent ノードで有効化すれば可 | 📄 |
 
 > [!NOTE]
@@ -66,6 +66,9 @@ SMS 送信と音声通話は**取り消せず、課金が発生し、相手に�
 > **Streamable HTTP（Cloud Run）も同日に確認しました。** Bearer 認証（未認証は 401）、`ALLOWED_NUMBERS` によるブロック、SMS と音声通話の実行に加えて、
 > **`get_sms_status` が `delivered` を返すこと**（Status Webhook 経由）と、`get_call_status` が通話時間・料金を返すことを確認しています。
 > **配信ステータスは stdio では取得できません。** 受け取るには HTTP で待ち受け、Vonage に Status URL を登録する必要があります。
+>
+> **Dify Cloud（Sandbox プラン）は 2026-08-31 に確認しました。** カスタムヘッダでの Bearer 認証、`tools/list` の取り込み、`dry_run`、**SMS の実送信**、`get_sms_status` が `delivered` を返すところまで動作しています。手順は [docs/dify.md](docs/dify.md)。
+> ただし **Dify には実行前の承認 UI がありません。** Agent アプリはエージェントの判断だけでツールを実行し、`destructiveHint` は無視されます。**Agent アプリで使うなら `ALLOWED_NUMBERS` が唯一の防御です**（Workflow なら Human Input ノードを置けます）。
 
 ### ツール実行前の承認について
 
