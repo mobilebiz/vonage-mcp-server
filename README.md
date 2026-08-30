@@ -746,6 +746,9 @@ vonage-mcp-server/
 │   └── integration.test.ts # 統合テスト
 ├── docs/
 │   ├── deployment.md      # デプロイ手順
+│   ├── setup-guide.md     # セットアップガイド (PDF の元原稿)
+│   ├── gemini-enterprise-adk.md # Gemini Enterprise (ADK 経路) の手順
+│   ├── dify.md            # Dify から使う手順
 │   └── gemini_system_instruction.md # Gemini Enterprise向けSystem Instruction
 
 ### HTTPラッパー (Dify / 外部アプリ用)

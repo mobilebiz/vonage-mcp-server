@@ -2,10 +2,8 @@
 
 このサーバーを **Dify** のアプリから使うための手順です。
 
-> [!WARNING]
-> **この手順はまだ実機で通していません。** 公開ドキュメント（2026-08-30 時点）に基づく draft です。
-> 実際に通したら、この警告を消して確認できた内容を「5. 実機で確認できたこと」に記録してください。
-> **本プロジェクトでは「文書上は対応」と「実機で確認済み」を区別します**（README の対応表の 📄 と ✅）。
+> **2026-08-31、Dify Cloud（Sandbox プラン）で接続を確認しました。** 確認できた範囲と、
+> まだ確認できていないことは「5. 実機で確認できたこと」に書いてあります。
 
 ## Gemini Enterprise との違い
 
@@ -26,7 +24,7 @@ Vonage MCP Server on Cloud Run
 
 | | |
 |---|---|
-| Dify | Cloud（Sandbox プランで可。カード不要）またはセルフホスト |
+| Dify | Cloud（**Sandbox プランで動作確認済み**。カード不要）またはセルフホスト |
 | このサーバー | **HTTP 版が公開 HTTPS で到達できること。** stdio 版は使えません |
 | 認証 | `MCP_AUTH_TOKEN`（16文字以上）を設定しておくこと |
 
@@ -54,49 +52,82 @@ RATE_LIMIT_PER_HOUR=5
 
 ## 2. MCP サーバーとして登録する
 
-Dify の **Integrations → Tools** から追加します。
+左サイドバーの **連携 → ツール → MCP** を開き、「**MCP サーバー（HTTP）を追加**」を押します。
+
+> [!NOTE]
+> **「ツールプラグイン」ではありません。** そちらは Marketplace のプラグイン用で、
+> MCP サーバーは専用の `MCP` ページから追加します（`/integrations/tools/mcp`）。
+
+ダイアログの上半分に3つの欄があります。
 
 | 欄 | 入れる値 |
 |---|---|
-| **Server URL** | `https://<あなたのホスト>/mcp` |
-| **Name** | `Vonage`（表示名。任意） |
-| **Server identifier** | `vonage`（**あとから変えないこと**。アプリはこの ID でサーバーを参照するため、変更すると既存のツールが壊れます） |
+| **サーバーURL** | `https://<あなたのホスト>/mcp` |
+| **名前とアイコン** | `Vonage`（表示名。任意） |
+| **サーバー識別子** | `vonage`（小文字・数字・`_`・`-` のみ、24文字以内。**あとから変えないこと**。アプリはこの ID でサーバーを参照するため、変更すると既存のツールが壊れます） |
 
-### 認証（ここが要点）
+その下に **認証 / ヘッダー / 設定** の3タブがあります。
 
-**Dynamic Client Registration は既定で ON ですが、OFF にしてください。**
+### 認証タブ — 動的クライアント登録を OFF にする
+
+**「動的クライアント登録を使用する」は既定で ON ですが、OFF にしてください。**
 このサーバーは OAuth を喋りません。ON のままだと Dify が OAuth の自動登録を試みて失敗します。
 
-そのうえで **Custom Headers** に次を設定します。
+OFF にすると「OAuth リダイレクト URL を次のように設定してください」という注意書きと
+クライアント ID / シークレットの欄が現れますが、**どちらも空のままで構いません。**
+認証は次のヘッダータブで済ませます。
 
-| ヘッダー名 | 値 |
+### ヘッダータブ — ここが要点
+
+「**+ ヘッダーを追加**」を押して1行足し、次を入れます。
+
+| ヘッダー名 | ヘッダーの値 |
 |---|---|
 | `Authorization` | `Bearer <MCP_AUTH_TOKEN>` |
 
-Cloud Run で Secret Manager に入れている場合、値は次で取り出せます。
+**`Bearer ` を付け忘れないでください。** Cloud Run で Secret Manager に入れている場合、
+値は次で取り出せます。
 
 ```sh
 gcloud secrets versions access latest --secret=mcp-auth-token --project=<PROJECT_ID>
 ```
 
-> Dify のヘッダー値は `{{request.headers.X-Custom-Auth}}` のようなプレースホルダも書けますが、
-> **このサーバーでは固定値で構いません。** トークンは1デプロイに1つです。
+> トークンを端末に表示させたくない場合は、直接クリップボードへ渡せます。
+>
+> ```sh
+> printf 'Bearer %s' "$(gcloud secrets versions access latest \
+>   --secret=mcp-auth-token --project=<PROJECT_ID>)" | pbcopy
+> ```
+
+### 設定タブ — 既定のままで通ります
+
+| 項目 | 既定 |
+|---|---|
+| タイムアウト | 30 秒 |
+| SSE 読み取りタイムアウト | 300 秒 |
+
+**「SSE 読み取りタイムアウト」がありますが、変更は不要です。** このサーバーは
+`enableJsonResponse` で SSE ではなく通常の JSON を返しますが、**Dify は SSE ストリームを
+開かずに POST だけで通信するため、この値は使われません**（→ 5.）。
 
 ### 登録できたことの確認
 
-保存すると Dify が接続し、ツール一覧を取り込みます。**次の4つが出れば成功です。**
+「**追加して承認**」を押すと Dify が接続し、ツール一覧を取り込みます。
+カードに **`認証済み`（緑）** と表示され、**次の4つが出れば成功です。**
 
 - `send_sms`
 - `make_voice_call`
 - `get_sms_status`
 - `get_call_status`
 
+ツールの説明文は、サーバーが返した日本語がそのまま表示されます。
+
 > [!NOTE]
 > **ツールが1つも出ない場合、ほぼ確実に `ENABLE_*` の設定漏れです。**
 > このサーバーは既定でツールを1つも公開しません。サーバー側の環境変数に
 > `ENABLE_SMS=true` / `ENABLE_VOICE=true`（**小文字**）が入っているか確認してください。
 >
-> サーバー側で直接確かめるなら:
+> Dify に触る前にサーバー側で切り分けるなら:
 >
 > ```sh
 > curl -s -X POST https://<ホスト>/mcp \
@@ -105,6 +136,8 @@ gcloud secrets versions access latest --secret=mcp-auth-token --project=<PROJECT
 >   -H 'Accept: application/json, text/event-stream' \
 >   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 > ```
+>
+> **ここで4つ返るのに Dify で出ないなら、原因は認証ヘッダーです。**
 
 ## 3. アプリから呼ぶ
 
@@ -163,25 +196,47 @@ Dify v1.13.0 以降の **Human Input ノード**を使うと、ワークフロ�
 
 ## 5. 実機で確認できたこと
 
-> このセクションは実機検証後に記入してください。テンプレートを置いておきます。
+**2026-08-31 / Dify Cloud（Sandbox プラン、日本語 UI）/ サーバー v3.0.0 on Cloud Run。**
 
 | 確認項目 | 結果 |
 |---|---|
-| Custom Headers での Bearer 認証 | ⬜ |
-| `tools/list` に4ツールが出る | ⬜ |
-| capability が OFF のツールが**一覧に出ない** | ⬜ |
-| `dry_run` のレスポンスがエージェントに渡る | ⬜ |
-| 実送信（SMS が実機に届く） | ⬜ |
-| `get_sms_status` で `delivered` まで確認できる | ⬜ |
-| Human Input ノードで承認を挟める | ⬜ |
+| カスタムヘッダーでの Bearer 認証 | ✅ 401 は1件も出ず、最初のリクエストから通過 |
+| `tools/list` に4ツールが出る | ✅ `認証済み`（緑）+ 4件を取り込み |
+| ツール説明の日本語が保持される | ✅ そのまま表示された |
+| 動的クライアント登録 OFF での接続 | ✅ OAuth 系のアクセスは1件も発生せず |
+| **Streamable HTTP（JSON 応答）の互換性** | ✅ → 下記 |
+| `dry_run` のレスポンスがエージェントに渡る | ⬜ 未確認 |
+| 実送信（SMS が実機に届く） | ⬜ 未確認 |
+| `get_sms_status` で `delivered` まで確認できる | ⬜ 未確認 |
+| Human Input ノードで承認を挟める | ⬜ 未確認 |
 
-### 確認したい未確定事項
+### Dify は SSE を開かない
 
-- **Streamable HTTP の扱い。** 公式ドキュメントは「HTTP transport のみ対応」とだけ書いており、
-  Streamable HTTP という語がありません。このサーバーは `enableJsonResponse` で
-  **SSE ではなく通常の JSON を返す**構成なので通ると見ていますが、**未確認です**
-- **Agent ノードのツール呼び出しに対する自動の承認 UI があるか。** 公式ドキュメントに記載がなく、
-  Human Input ノードを自分で置く以外の方法があるかは分かっていません
+登録時に Cloud Run 側で観測したアクセスは、**すべて `POST` でした。**
+
+```
+POST 200   python-httpx/0.28.1   ← initialize
+POST 202   python-httpx/0.28.1   ← notifications/initialized
+POST 200   python-httpx/0.28.1   ← tools/list
+（同じ3件をもう一巡）
+```
+
+**`GET /mcp`（SSE ストリームの確立）が1件もありません。** Dify のクライアントは
+`python-httpx` で、リクエスト/レスポンスを1往復ずつ完結させています。
+
+これは2つの意味を持ちます。
+
+- **`enableJsonResponse`（SSE ではなく JSON を返す設定）のままで問題ありません。**
+  公式ドキュメントが「HTTP transport」としか書いておらず Streamable HTTP という語を
+  使っていないため懸念していましたが、**実測では JSON 応答で完結しました**
+- **ステートレス設計（D-7）と噛み合っています。** Dify は2巡目にも `initialize` から
+  やり直しますが、サーバーがセッションを保持しないため何も壊れません
+
+### まだ分かっていないこと
+
+- **Agent ノードのツール呼び出しに、Dify 側の承認 UI があるか。** 公式ドキュメントに記載が
+  なく、Human Input ノードを自分で置く以外の方法があるかは未確認です
+- **実際のツール実行**（`dry_run` および実送信）はまだ通していません。上表の ⬜ の行です
 
 ## 6. それでもサーバー側の設定を省かないこと
 
