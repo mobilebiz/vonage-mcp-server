@@ -141,8 +141,11 @@ That last one is unreachable over stdio, where the server has nowhere to receive
 a delivery receipt.
 
 **Dify Cloud (Sandbox plan) was checked on 2026-08-31.** Bearer auth via a
-custom header, the tool list being imported, `dry_run`, **a real SMS arriving**,
-and `get_sms_status` reporting `delivered` all work. See [docs/dify.md](docs/dify.md).
+custom header, the tool list being imported, `dry_run`, **a real SMS arriving
+and a real call being placed**, `get_sms_status` reporting `delivered`, and
+`get_call_status` returning price and duration all work. The call came back with
+`detail: ok` and `sip_code: 200`, so the event-webhook path that carries failure
+reasons works over this route too. See [docs/dify.md](docs/dify.md).
 Note that **Dify has no pre-execution approval UI.** An Agent app runs a tool on
 the model's decision alone and ignores `destructiveHint`, so **`ALLOWED_NUMBERS`
 is the only defence there** — a Workflow can add a Human Input node instead.

@@ -2,7 +2,7 @@
 
 このサーバーを **Dify** のアプリから使うための手順です。
 
-> **2026-08-31、Dify Cloud（Sandbox プラン）で SMS の実送信まで確認しました。**
+> **2026-08-31、Dify Cloud（Sandbox プラン）で SMS の実送信と音声の実発信まで確認しました。**
 > 確認できた範囲と、まだ確認できていないことは「5. 実機で確認できたこと」に書いてあります。
 
 ## Gemini Enterprise との違い
@@ -209,6 +209,9 @@ Dify v1.13.0 以降の **Human Input ノード**を使うと、ワークフロ�
 | `dry_run` のレスポンスがエージェントに渡る | ✅ セグメント数・エンコーディングまで正しく提示された |
 | **実送信（SMS が実機に届く）** | ✅ 1セグメントが届いた |
 | `get_sms_status` で `delivered` まで確認できる | ✅ Status Webhook 経由で `delivered` |
+| **実発信（`make_voice_call` で電話が鳴る）** | ✅ 7秒で `completed` |
+| `get_call_status` が料金・通話時間を返す | ✅ |
+| **`detail` / `sip_code` が返る（Event Webhook 経由）** | ✅ `detail: ok` / `sip_code: 200` |
 | **ツール実行前に Dify 側の承認 UI が出るか** | ❌ **出ない**（→ 下記） |
 | Human Input ノードで承認を挟める | ⬜ 未確認（ドキュメント上は可） |
 
@@ -252,7 +255,7 @@ Agent アプリで「まず dry_run で確認してください」と依頼し�
 Agent アプリにはワークフローが無いため、**2 は使えません。**
 Agent アプリで運用するなら 1 は必須です。
 
-### 実測の記録
+### 実測の記録 — SMS
 
 ```
 dry_run:  to=+819045327751 from=VonageMCP 15文字 UCS-2 segments=1 → Ready to send
@@ -264,10 +267,36 @@ dry_run:  to=+819045327751 from=VonageMCP 15文字 UCS-2 segments=1 → Ready to
 渡っています。** SMS の課金は文字数ではなくセグメント単位なので、この値が見えることが
 実運用では効きます。
 
+### 実測の記録 — 音声通話
+
+```
+dry_run:  to=+819045327751 voice=女性
+          estimated_duration_seconds=10  max_duration_seconds=40  duration_cap_seconds=300
+実発信:    Call ID 86f03353-…
+結果:      status=completed  duration=7秒  sip_code=200  price=0.01630183  detail=ok
+```
+
+**`detail` と `sip_code` が返っていることが、この結果のいちばん重要な部分です。**
+Voice API の `GET /v1/calls/{uuid}` はこの2つを返しません（`detail` は常に `null`）。
+**返る経路は Event Webhook だけ**です。
+
+つまりこの1回の発信で、次の経路がすべて通ったことになります。
+
+```
+Dify ──Bearer──▶ MCP サーバー ──▶ Vonage（発信）
+                      ▲                 │
+                      └──Event Webhook──┘   （署名検証を通過）
+                      │
+                      └─▶ Dify（API の応答に受信済みの理由を重ねて返す）
+```
+
+Dify の UI はツールのリクエスト/レスポンスを展開表示できるので、
+**`dry_run: true` が実際に送られていることを目視で確認できます。**
+検証時はこれを開いて確かめてください。
+
 ### まだ確認していないこと
 
 - **Human Input ノードによる承認**（Workflow / Chatflow が必要。Agent アプリでは組めません）
-- **`make_voice_call` の実発信**と `get_call_status`
 - **`ALLOWED_NUMBERS` によるブロック**が Dify 経由でも返ること
   （サーバー側の判定であり transport に依存しないため、他基盤での確認をもって足りると判断）
 

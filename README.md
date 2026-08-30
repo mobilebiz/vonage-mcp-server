@@ -67,7 +67,7 @@ SMS 送信と音声通話は**取り消せず、課金が発生し、相手に�
 > **`get_sms_status` が `delivered` を返すこと**（Status Webhook 経由）と、`get_call_status` が通話時間・料金を返すことを確認しています。
 > **配信ステータスは stdio では取得できません。** 受け取るには HTTP で待ち受け、Vonage に Status URL を登録する必要があります。
 >
-> **Dify Cloud（Sandbox プラン）は 2026-08-31 に確認しました。** カスタムヘッダでの Bearer 認証、`tools/list` の取り込み、`dry_run`、**SMS の実送信**、`get_sms_status` が `delivered` を返すところまで動作しています。手順は [docs/dify.md](docs/dify.md)。
+> **Dify Cloud（Sandbox プラン）は 2026-08-31 に確認しました。** カスタムヘッダでの Bearer 認証、`tools/list` の取り込み、`dry_run`、**SMS の実送信と音声の実発信**、`get_sms_status` の `delivered`、`get_call_status` の料金・通話時間まで動作しています。**`detail: ok` / `sip_code: 200` も返っており、Event Webhook 経由の失敗理由の伝達もこの経路で動いています。** 手順は [docs/dify.md](docs/dify.md)。
 > ただし **Dify には実行前の承認 UI がありません。** Agent アプリはエージェントの判断だけでツールを実行し、`destructiveHint` は無視されます。**Agent アプリで使うなら `ALLOWED_NUMBERS` が唯一の防御です**（Workflow なら Human Input ノードを置けます）。
 
 ### ツール実行前の承認について
