@@ -120,7 +120,7 @@ Legend: ✅ verified on real hardware / 📄 documented as supported (not yet ve
 | [Claude.ai / Desktop (remote)](https://claude.com/docs/connectors/building/authentication) | Streamable HTTP | OAuth, or static headers (beta, set by an org admin) | yes | 📄 |
 | [Gemini Enterprise (connector)](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server) | Streamable HTTP | **OAuth 2.0 or "no authentication" only** | yes, by default | ⚠️ |
 | [Gemini Enterprise (your own ADK agent)](docs/gemini-enterprise-adk.md) | Streamable HTTP | Bearer via arbitrary headers | **yes** (ADK `require_confirmation`; an approval window appears in Apps) | ✅ |
-| [AWS Bedrock AgentCore Gateway](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-target-MCPservers.html) | Streamable HTTP | OAuth / IAM SigV4 / API key | none at the gateway | 📄 |
+| [AWS Bedrock AgentCore Gateway](docs/agentcore.md) | Streamable HTTP (it never opens SSE) | **API key provider** puts Bearer in a header. **IAM SigV4 does not work** (see below) | **none** | ✅ |
 | [Dify](docs/dify.md) | Streamable HTTP (it never opens SSE) | Bearer via arbitrary headers | **none.** Only if you add a Human Input node to a Workflow | ✅ |
 | [n8n (MCP Client Tool)](https://docs.n8n.io/integrations/builtin/cluster-nodes/sub-nodes/n8n-nodes-langchain.toolmcp/) | HTTP Streamable / stdio | Bearer / arbitrary headers / OAuth2 | only if enabled on the AI Agent node | 📄 |
 
@@ -149,6 +149,18 @@ reasons works over this route too. See [docs/dify.md](docs/dify.md).
 Note that **Dify has no pre-execution approval UI.** An Agent app runs a tool on
 the model's decision alone and ignores `destructiveHint`, so **`ALLOWED_NUMBERS`
 is the only defence there** — a Workflow can add a Human Input node instead.
+
+**AWS Bedrock AgentCore Gateway was checked on 2026-08-31 in `ap-northeast-1`.**
+Bearer auth through an API key provider, the automatic sync on target creation,
+listing tools over SigV4, and a `dry_run` via `tools/call` all work. See
+[docs/agentcore.md](docs/agentcore.md). **No real send was made over this route**,
+since the same Cloud Run server was already verified through Dify.
+**IAM SigV4 outbound does not work here.** The gateway only signs; the target must
+verify SigV4, and only API Gateway, Lambda Function URLs, and AgentCore Runtime do
+— **Cloud Run does not**. The gateway is an API, not a UI, so there is no approval
+step at all, and `ALLOWED_NUMBERS` is again the only defence. Note also that the
+gateway **prefixes tool names with `<targetName>___`**, so any prompt that names a
+tool needs rewriting.
 
 ### ⚠️ Gemini Enterprise custom MCP server connector
 

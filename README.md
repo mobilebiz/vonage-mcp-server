@@ -53,7 +53,7 @@ SMS 送信と音声通話は**取り消せず、課金が発生し、相手に�
 | [Claude.ai / Desktop（リモート）](https://claude.com/docs/connectors/building/authentication) | Streamable HTTP | OAuth、または静的ヘッダ（beta・組織管理者が設定） | あり | 📄 |
 | [Gemini Enterprise（コネクタ）](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server) | Streamable HTTP | **OAuth 2.0 か「認証なし」のみ** | あり（既定で必ず出る） | ⚠️ |
 | [Gemini Enterprise（ADK で自作）](docs/gemini-enterprise-adk.md) | Streamable HTTP | 任意ヘッダで Bearer | **あり**（ADK の `require_confirmation`。Apps に承認ウィンドウが出ます） | ✅ |
-| [AWS Bedrock AgentCore Gateway](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway-target-MCPservers.html) | Streamable HTTP | OAuth / IAM SigV4 / API キー | ゲートウェイには無い | 📄 |
+| [AWS Bedrock AgentCore Gateway](docs/agentcore.md) | Streamable HTTP（SSE は使いません） | **API キープロバイダ**で任意ヘッダに Bearer。**IAM SigV4 は使えません**（下記） | **無し** | ✅ |
 | [Dify](docs/dify.md) | Streamable HTTP（SSE は使いません） | 任意ヘッダで Bearer | **無し。** Workflow に Human Input ノードを置けば可 | ✅ |
 | [n8n（MCP Client Tool）](https://docs.n8n.io/integrations/builtin/cluster-nodes/sub-nodes/n8n-nodes-langchain.toolmcp/) | HTTP Streamable / stdio | Bearer / 任意ヘッダ / OAuth2 | AI Agent ノードで有効化すれば可 | 📄 |
 
@@ -69,6 +69,10 @@ SMS 送信と音声通話は**取り消せず、課金が発生し、相手に�
 >
 > **Dify Cloud（Sandbox プラン）は 2026-08-31 に確認しました。** カスタムヘッダでの Bearer 認証、`tools/list` の取り込み、`dry_run`、**SMS の実送信と音声の実発信**、`get_sms_status` の `delivered`、`get_call_status` の料金・通話時間まで動作しています。**`detail: ok` / `sip_code: 200` も返っており、Event Webhook 経由の失敗理由の伝達もこの経路で動いています。** 手順は [docs/dify.md](docs/dify.md)。
 > ただし **Dify には実行前の承認 UI がありません。** Agent アプリはエージェントの判断だけでツールを実行し、`destructiveHint` は無視されます。**Agent アプリで使うなら `ALLOWED_NUMBERS` が唯一の防御です**（Workflow なら Human Input ノードを置けます）。
+>
+> **AWS Bedrock AgentCore Gateway は 2026-08-31 に `ap-northeast-1` で確認しました。** API キープロバイダによる Bearer 認証、ターゲット作成時の自動同期、SigV4 でのツール一覧取得、`tools/call` による `dry_run` まで動作しています。手順は [docs/agentcore.md](docs/agentcore.md)。**この経路での実送信は行っていません**（同じ Cloud Run のサーバーに対して Dify 経由で確認済みのため）。
+> **IAM SigV4 の outbound はこのサーバーでは使えません。** Gateway は署名するだけで、ターゲット側が SigV4 を検証できる必要があり、対応するのは API Gateway / Lambda Function URLs / AgentCore Runtime です。**Cloud Run は含まれません。**
+> **Gateway は API であって UI ではないため、承認は一切ありません。** ここでも `ALLOWED_NUMBERS` が唯一の防御です。また **ツール名に `<ターゲット名>___` が前置される**ので、ツール名を名指しする指示文はそのままでは使えません。
 
 ### ツール実行前の承認について
 
@@ -752,6 +756,7 @@ vonage-mcp-server/
 │   ├── setup-guide.md     # セットアップガイド (PDF の元原稿)
 │   ├── gemini-enterprise-adk.md # Gemini Enterprise (ADK 経路) の手順
 │   ├── dify.md            # Dify から使う手順
+│   ├── agentcore.md       # AWS Bedrock AgentCore Gateway の手順
 │   └── gemini_system_instruction.md # Gemini Enterprise向けSystem Instruction
 
 ### HTTPラッパー (Dify / 外部アプリ用)
