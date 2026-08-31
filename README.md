@@ -70,7 +70,7 @@ SMS 送信と音声通話は**取り消せず、課金が発生し、相手に�
 > **Dify Cloud（Sandbox プラン）は 2026-08-31 に確認しました。** カスタムヘッダでの Bearer 認証、`tools/list` の取り込み、`dry_run`、**SMS の実送信と音声の実発信**、`get_sms_status` の `delivered`、`get_call_status` の料金・通話時間まで動作しています。**`detail: ok` / `sip_code: 200` も返っており、Event Webhook 経由の失敗理由の伝達もこの経路で動いています。** 手順は [docs/dify.md](docs/dify.md)。
 > ただし **Dify には実行前の承認 UI がありません。** Agent アプリはエージェントの判断だけでツールを実行し、`destructiveHint` は無視されます。**Agent アプリで使うなら `ALLOWED_NUMBERS` が唯一の防御です**（Workflow なら Human Input ノードを置けます）。
 >
-> **AWS Bedrock AgentCore Gateway は 2026-08-31 に `ap-northeast-1` で確認しました。** API キープロバイダによる Bearer 認証、ターゲット作成時の自動同期、SigV4 でのツール一覧取得、`tools/call` による `dry_run` まで動作しています。手順は [docs/agentcore.md](docs/agentcore.md)。**この経路での実送信は行っていません**（同じ Cloud Run のサーバーに対して Dify 経由で確認済みのため）。
+> **AWS Bedrock AgentCore Gateway は 2026-08-31 に `ap-northeast-1` で確認しました。** API キープロバイダによる Bearer 認証、ターゲット作成時の自動同期、**Strands + Bedrock のエージェントが自分でツールを選んでの SMS 実送信（`delivered`）と音声実発信（`completed` / `sip_code: 200` / `detail: ok`）**まで動作しています。手順は [docs/agentcore.md](docs/agentcore.md)。
 > **IAM SigV4 の outbound はこのサーバーでは使えません。** Gateway は署名するだけで、ターゲット側が SigV4 を検証できる必要があり、対応するのは API Gateway / Lambda Function URLs / AgentCore Runtime です。**Cloud Run は含まれません。**
 > **Gateway は API であって UI ではないため、承認は一切ありません。** ここでも `ALLOWED_NUMBERS` が唯一の防御です。また **ツール名に `<ターゲット名>___` が前置される**ので、ツール名を名指しする指示文はそのままでは使えません。
 

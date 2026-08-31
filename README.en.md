@@ -152,9 +152,9 @@ is the only defence there** — a Workflow can add a Human Input node instead.
 
 **AWS Bedrock AgentCore Gateway was checked on 2026-08-31 in `ap-northeast-1`.**
 Bearer auth through an API key provider, the automatic sync on target creation,
-listing tools over SigV4, and a `dry_run` via `tools/call` all work. See
-[docs/agentcore.md](docs/agentcore.md). **No real send was made over this route**,
-since the same Cloud Run server was already verified through Dify.
+and a Strands agent on Bedrock picking the tools itself to send a real SMS
+(`delivered`) and place a real call (`completed`, `sip_code: 200`, `detail: ok`)
+all work. See [docs/agentcore.md](docs/agentcore.md).
 **IAM SigV4 outbound does not work here.** The gateway only signs; the target must
 verify SigV4, and only API Gateway, Lambda Function URLs, and AgentCore Runtime do
 — **Cloud Run does not**. The gateway is an API, not a UI, so there is no approval

@@ -6,6 +6,26 @@ Vonage MCP Server を Google Gemini Enterprise などの AI エージェント�
 - 「そのまま貼り付ける本文」は [そのまま貼り付ける System Instruction](#そのまま貼り付ける-system-instruction) にあります。
 - その下に、各ルールの背景と補足を記載しています。
 
+> [!IMPORTANT]
+> **ツール名を書き換える基盤では、この本文をそのまま使えません。**
+> 以下の本文は `send_sms` や `make_voice_call` をツール名で名指ししています。
+> **AWS Bedrock AgentCore Gateway はツール名に `<ターゲット名>___` を前置する**ため
+> （`send_sms` → `VonageCloudRun___send_sms`）、名指しした指示が空振りします。
+>
+> **対処は2つあります。**
+>
+> 1. 本文中のツール名を、その基盤で実際に見える名前に置換する
+> 2. **ツール名への依存をやめる** — 本文末尾に次の1行を足したうえで、
+>    「send_sms を実行してはならない」を「SMS を送信するツールを実行してはならない」の
+>    ように読み替える
+>
+> ```text
+> ツール名は基盤側で接頭辞が付く場合があります。名前ではなく説明を読んで選んでください。
+> ```
+>
+> **2 は実測で機能しました** — AgentCore Gateway 経由のエージェントが、接頭辞つきの
+> `VonageCloudRun___send_sms` を正しく選んでいます（`docs/agentcore.md`）。
+
 ---
 
 ## そのまま貼り付ける System Instruction
