@@ -38,7 +38,13 @@
  * アクセストークンは Vonage には一切渡らない。構造上すでに満たしている。
  */
 
-import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey, type JWTPayload } from 'jose';
+import {
+  createRemoteJWKSet,
+  decodeProtectedHeader,
+  jwtVerify,
+  type JWTVerifyGetKey,
+  type JWTPayload,
+} from 'jose';
 
 import { getOAuthConfig, type OAuthConfig } from './config.js';
 
@@ -232,7 +238,34 @@ export function extractScopes(payload: JWTPayload): string[] {
 const TOKEN_CAUSED_KEY_ERROR_CODES: ReadonlySet<string> = new Set([
   'ERR_JWKS_NO_MATCHING_KEY',
   'ERR_JWKS_MULTIPLE_MATCHING_KEYS',
+  // 「対応していない」は、常に受け取ったトークンの中身についての話であって、
+  // JWKS に到達できたかどうかとは関係がない
+  'ERR_JOSE_NOT_SUPPORTED',
 ]);
+
+/**
+ * 受け付ける署名アルゴリズム。
+ *
+ * **HMAC 系（HS256 など）は入れない。** 検証鍵を JWKS から取る構成で対称鍵を
+ * 許すと、公開されている鍵素材で署名したトークンを受け入れる余地ができる。
+ * 認可サーバーが使うのは非対称鍵であり、これで十分である。
+ *
+ * ここで先に弾くのは、`alg` の不一致が **鍵の解決中に** 例外になるためでもある。
+ * 落ちた場所で「こちらの障害か、トークンの問題か」を判定しているので、
+ * トークンの問題だと分かっているものは鍵を引きに行く前に返す。
+ */
+const ALLOWED_ALGORITHMS = [
+  'RS256',
+  'RS384',
+  'RS512',
+  'PS256',
+  'PS384',
+  'PS512',
+  'ES256',
+  'ES384',
+  'ES512',
+  'EdDSA',
+] as const;
 
 /**
  * Authorization ヘッダーの解釈結果。
@@ -293,6 +326,26 @@ export async function verifyAccessToken(token: string, config: OAuthConfig): Pro
   // 取得失敗側に落ち、接頭辞で判定すれば `ERR_JOSE_GENERIC`（JWKS が 429 や 503 を
   // 返したとき）がトークン側に落ちる。**jose のコード体系はこの2つを区別する
   // ようにはできていない。**
+  // alg は鍵を引きに行く前に確かめる（→ ALLOWED_ALGORITHMS）
+  try {
+    const header = decodeProtectedHeader(token);
+    if (typeof header.alg !== 'string' || !(ALLOWED_ALGORITHMS as readonly string[]).includes(header.alg)) {
+      return {
+        ok: false,
+        status: 401,
+        error: 'invalid_token',
+        description: `アクセストークンの署名アルゴリズム（${header.alg ?? '不明'}）には対応していません。`,
+      };
+    }
+  } catch {
+    return {
+      ok: false,
+      status: 401,
+      error: 'invalid_token',
+      description: 'アクセストークンの形式が JWT ではありません。',
+    };
+  }
+
   const resolveKey = jwksFor(config);
   let keyError: unknown = null;
 
@@ -309,6 +362,7 @@ export async function verifyAccessToken(token: string, config: OAuthConfig): Pro
     const verified = await jwtVerify(token, guardedResolveKey, {
       issuer: config.issuer,
       audience: config.audience,
+      algorithms: [...ALLOWED_ALGORITHMS],
       // **exp を必須にする。** jwtVerify は「あれば検査する」だけなので、
       // 指定しないと exp を持たないトークンが無期限に通る。漏れた1本を
       // 失効させる手段が無くなり、IdP 側でセッションを切っても効かない。

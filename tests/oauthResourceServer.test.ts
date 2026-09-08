@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 import request from 'supertest';
-import { SignJWT, generateKeyPair } from 'jose';
+import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair } from 'jose';
 
 // Vonage 関数をモック化（ネットワークアクセスを避ける）
 const { mockSendSMS, mockMakeVoiceCall } = vi.hoisted(() => {
@@ -53,6 +53,17 @@ const MCP_ACCEPT = 'application/json, text/event-stream';
 
 /** 署名鍵。1度だけ作って使い回す（鍵生成は遅い） */
 const keys = await generateKeyPair('RS256');
+
+/**
+ * ネットワークに出ない JWKS 解決器。
+ *
+ * **公開鍵をそのまま返すだけのモックにはしない。** それだと jose の鍵選択
+ * （kid の照合、alg の対応可否）を通らず、実際には鍵の解決中に落ちるケースを
+ * 「解決に成功した」ものとして扱ってしまう。`createLocalJWKSet` は本番と同じ
+ * 選択ロジックを通る。 */
+const localJwks = createLocalJWKSet({
+  keys: [{ ...(await exportJWK(keys.publicKey)), alg: 'RS256' }],
+});
 
 function configure(overrides: Record<string, string | undefined> = {}): void {
   process.env.OAUTH_ISSUER = ISSUER;
@@ -107,9 +118,9 @@ beforeEach(() => {
   }
 
   clearJwksCache();
-  // JWKS の取得はネットワークに出るため、公開鍵を直接返す解決器に差し替える。
+  // JWKS の取得はネットワークに出るため、手元の鍵集合に差し替える。
   // 差し替えないと、認証まわりのテストが IdP の可用性に依存する。
-  setJwksResolverForTesting(async () => keys.publicKey as never);
+  setJwksResolverForTesting(localJwks);
 });
 
 afterAll(() => {
@@ -456,10 +467,28 @@ describe('アクセストークンの検証', () => {
 
   // 鍵の解決が成功しているなら、落ちた原因はトークンの側にある。**エラーコードで
   // 分類しようとして2周続けて外した**ので、コードではなく落ちた場所で判定している
-  it('鍵の解決が成功していれば、検証時のどんなエラーでも 401', async () => {
-    // alg: none のトークン。jose は署名検証以前の段階で、また別の体系の
-    // エラーを投げるが、鍵の解決には至っていないのでトークン起因と分かる
+  // 実際の鍵選択は alg の不一致を**鍵の解決中に**投げる。落ちた場所だけで
+  // 判定していると、これが「こちらの障害」に落ちて 503 になる
+  it('alg: none のトークンは 401', async () => {
     const result = await verifyAccessToken('eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0.', config());
+
+    expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
+  });
+
+  // JWKS から検証鍵を取る構成で対称鍵を許すと、公開された鍵素材で署名した
+  // トークンを受け入れる余地ができる
+  it('HS256 のトークンは 401（対称鍵は受け付けない）', async () => {
+    const header = Buffer.from(JSON.stringify({ alg: 'HS256' })).toString('base64url');
+    const payload = Buffer.from(JSON.stringify({ sub: 'x' })).toString('base64url');
+
+    const result = await verifyAccessToken(`${header}.${payload}.AA`, config());
+
+    expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
+    expect(result.ok === false && result.description).toContain('HS256');
+  });
+
+  it('JWT の形をしていない文字列は 401', async () => {
+    const result = await verifyAccessToken('not-a-jwt', config());
 
     expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
   });
