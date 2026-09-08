@@ -103,12 +103,16 @@ async function issueToken(
     sub?: string;
     /** true にすると exp を付けない（無期限トークン） */
     withoutExpiry?: boolean;
+    /** true にすると typ を付けない（ID トークンと見分けが付かないトークン） */
+    withoutTypeHeader?: boolean;
   } = {}
 ): Promise<string> {
   let jwt = new SignJWT({
     ...(claims.scope === undefined ? {} : { scope: claims.scope }),
   })
-    .setProtectedHeader({ alg: 'RS256' })
+    // 既定で RFC 9068 の typ を付ける。本番の既定が「typ を要求する」なので、
+    // テストの既定も本物のアクセストークンに合わせる
+    .setProtectedHeader({ alg: 'RS256', ...(claims.withoutTypeHeader === true ? {} : { typ: 'at+jwt' }) })
     .setIssuedAt()
     .setIssuer(claims.iss ?? ISSUER)
     .setAudience(claims.aud ?? RESOURCE)
@@ -151,8 +155,9 @@ describe('OAuth 設定の解釈', () => {
       jwksUri: JWKS_URI,
       scopesSupported: null,
       requiredScope: null,
-      requireAtJwt: false,
+      requireAtJwt: true,
       loopbackHttp: false,
+      loopbackBindHost: null,
     });
   });
 
@@ -274,6 +279,37 @@ describe('OAuth 設定の解釈', () => {
     expect(getOAuthConfig()?.issuer).toBe('http://[::1]:8080');
   });
 
+  // ID トークンとアクセストークンを区別できるものが1つも無い状態で起動させない
+  it('OAUTH_REQUIRE_AT_JWT=false で OAUTH_REQUIRED_SCOPE が無ければ起動エラー', () => {
+    configure({ OAUTH_REQUIRE_AT_JWT: 'false' });
+
+    expect(() => getOAuthConfig()).toThrow(ConfigError);
+  });
+
+  it('OAUTH_REQUIRE_AT_JWT=false でも scope があれば通る', () => {
+    configure({ OAUTH_REQUIRE_AT_JWT: 'false', OAUTH_REQUIRED_SCOPE: 'sms:send' });
+
+    expect(getOAuthConfig()?.requireAtJwt).toBe(false);
+  });
+
+  it('OAUTH_REQUIRE_AT_JWT の既定は true', () => {
+    configure();
+
+    expect(getOAuthConfig()?.requireAtJwt).toBe(true);
+  });
+
+  // 配っている URI と待ち受け先が食い違うと、設定どおりに繋ぎに来た
+  // クライアントが接続できない
+  it('IPv6 のループバックを配るなら ::1 で待ち受ける', () => {
+    configure({
+      OAUTH_ISSUER: 'http://[::1]:8080',
+      OAUTH_RESOURCE: 'http://[::1]:3000/mcp',
+      OAUTH_JWKS_URI: 'http://[::1]:8080/jwks',
+    });
+
+    expect(getBindHost()).toBe('::1');
+  });
+
   it('OAUTH_SCOPES_SUPPORTED はカンマ区切りで読む', () => {
     configure({ OAUTH_SCOPES_SUPPORTED: 'sms:send, sms:read ' });
 
@@ -348,8 +384,9 @@ describe('保護リソースメタデータ', () => {
       jwksUri: JWKS_URI,
       scopesSupported: null,
       requiredScope: null,
-      requireAtJwt: false,
+      requireAtJwt: true,
       loopbackHttp: false,
+      loopbackBindHost: null,
       ...overrides,
     };
   }
@@ -408,8 +445,9 @@ describe('WWW-Authenticate', () => {
     jwksUri: JWKS_URI,
     scopesSupported: null,
     requiredScope: null,
-    requireAtJwt: false,
+    requireAtJwt: true,
     loopbackHttp: false,
+    loopbackBindHost: null,
   };
 
   it('resource_metadata を必ず載せる（discovery の起点）', () => {
@@ -501,8 +539,9 @@ describe('アクセストークンの検証', () => {
       jwksUri: JWKS_URI,
       scopesSupported: null,
       requiredScope: null,
-      requireAtJwt: false,
+      requireAtJwt: true,
       loopbackHttp: false,
+      loopbackBindHost: null,
       ...overrides,
     };
   }
@@ -602,7 +641,7 @@ describe('アクセストークンの検証', () => {
     setJwksResolverForTesting(createLocalJWKSet({ keys: [{ ...(await exportJWK(pair.publicKey)), alg }] }));
 
     const token = await new SignJWT({})
-      .setProtectedHeader({ alg })
+      .setProtectedHeader({ alg, typ: 'at+jwt' })
       .setIssuedAt()
       .setIssuer(ISSUER)
       .setAudience(RESOURCE)
@@ -664,7 +703,7 @@ describe('アクセストークンの検証', () => {
   // 呼べてしまう構成がある（同じ鍵・同じ issuer・audience にクライアント識別子）
   it('ID トークン（at_hash を持つ）はアクセストークンとして受け付けない', async () => {
     const token = await new SignJWT({ at_hash: 'abc' })
-      .setProtectedHeader({ alg: 'RS256' })
+      .setProtectedHeader({ alg: 'RS256', typ: 'at+jwt' })
       .setIssuedAt()
       .setIssuer(ISSUER)
       .setAudience(RESOURCE)
@@ -677,22 +716,21 @@ describe('アクセストークンの検証', () => {
     expect(result.ok === false && result.description).toContain('ID トークン');
   });
 
-  it('OAUTH_REQUIRE_AT_JWT=true なら typ が at+jwt でないトークンを拒否する', async () => {
-    const result = await verifyAccessToken(await issueToken(), config({ requireAtJwt: true }));
+  // at_hash / c_hash は条件付きの claim で、認可コードフローの ID トークンには
+  // 入っていない。「無いこと」は根拠にならないので、既定では typ を要求する
+  it('既定では typ が at+jwt でないトークンを拒否する', async () => {
+    const result = await verifyAccessToken(await issueToken({ withoutTypeHeader: true }), config());
 
     expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
   });
 
-  it('OAUTH_REQUIRE_AT_JWT=true でも typ: at+jwt なら通る', async () => {
-    const token = await new SignJWT({})
-      .setProtectedHeader({ alg: 'RS256', typ: 'at+jwt' })
-      .setIssuedAt()
-      .setIssuer(ISSUER)
-      .setAudience(RESOURCE)
-      .setExpirationTime('5m')
-      .sign(keys.privateKey);
+  it('OAUTH_REQUIRE_AT_JWT=false なら typ を要求しない', async () => {
+    const result = await verifyAccessToken(
+      await issueToken({ withoutTypeHeader: true, scope: 'sms:send' }),
+      config({ requireAtJwt: false, requiredScope: 'sms:send' })
+    );
 
-    expect((await verifyAccessToken(token, config({ requireAtJwt: true }))).ok).toBe(true);
+    expect(result.ok).toBe(true);
   });
 
   it('必須 scope が無ければ 403 insufficient_scope', async () => {

@@ -811,7 +811,7 @@ curl -X POST http://localhost:3000/mcp \
 | `OAUTH_AUDIENCE` | | トークンの `aud` に期待する値。既定は `OAUTH_RESOURCE` と同じ。IdP の API 識別子が URI と異なる場合だけ設定します。 |
 | `OAUTH_SCOPES_SUPPORTED` | | 保護リソースメタデータに載せる scope（カンマ区切り）。 |
 | `OAUTH_REQUIRED_SCOPE` | | `/mcp` を呼ぶために必須の scope。設定すると、これを持たないトークンは `403 insufficient_scope` になります。 |
-| `OAUTH_REQUIRE_AT_JWT` | | `true` にすると、RFC 9068 の `typ: at+jwt` を持つトークンだけを受け付けます。**IdP が付けてくれるなら有効にしてください**（下記の ID トークン対策として最も確実です）。 |
+| `OAUTH_REQUIRE_AT_JWT` | | **既定は `true`。** RFC 9068 の `typ: at+jwt` を持つトークンだけを受け付けます。`false` にする場合は `OAUTH_REQUIRED_SCOPE` が必須になります（下記）。 |
 
 ```sh
 OAUTH_ISSUER=https://your-tenant.example.com
@@ -833,11 +833,22 @@ OAUTH_JWKS_URI=https://your-tenant.example.com/.well-known/jwks.json
 > `OAUTH_REQUIRED_SCOPE` / `OAUTH_SCOPES_SUPPORTED` に空白・二重引用符・バックスラッシュ・非 ASCII を含めると起動エラーになります（RFC 6749 の scope の文字集合）。`OAUTH_ISSUER` にクエリやフラグメントを含めることもできません（RFC 8414）。
 
 > [!IMPORTANT]
-> **`http://localhost` を使えるのは手元での確認だけです。** issuer / resource / JWKS のいずれかが http の場合、`BIND_HOST` を指定しなければ **`127.0.0.1` で待ち受けます**（認証が構成済みでも `0.0.0.0` にはしません）。平文でアクセストークンを受け取るサーバーを外部に出さないためです。この構成で `BIND_HOST` に外部アドレスを指定すると**起動時にエラーで停止**します。**`MCP_AUTH_TOKEN` を併用していても同じです** — 認証は「どちらか一方」で通るので、静的トークンがあってもアクセストークンは平文で流れます。
+> **`http://localhost` を使えるのは手元での確認だけです。** issuer / resource / JWKS のいずれかが http の場合、`BIND_HOST` を指定しなければ **`OAUTH_RESOURCE` が指しているループバックアドレスで待ち受けます**（`http://[::1]:3000/mcp` を配るなら `::1`）（認証が構成済みでも `0.0.0.0` にはしません）。平文でアクセストークンを受け取るサーバーを外部に出さないためです。この構成で `BIND_HOST` に外部アドレスを指定すると**起動時にエラーで停止**します。**`MCP_AUTH_TOKEN` を併用していても同じです** — 認証は「どちらか一方」で通るので、静的トークンがあってもアクセストークンは平文で流れます。
 
 > [!WARNING]
-> **`OAUTH_AUDIENCE` にクライアント識別子（client_id）を設定しないでください。** ID トークンの `aud` はクライアント識別子です。同じ IdP が同じ鍵・同じ issuer で ID トークンも発行する構成でこれを一致させると、**ログインできるだけの利用者が、API の委譲を受けないまま SMS を送れます。**
-> このサーバーは `at_hash` / `c_hash` を持つトークン（＝ ID トークン）を拒否しますが、**それは最後の網です。** `OAUTH_AUDIENCE` は API / リソースの識別子にし、IdP が `typ: at+jwt` を付けるなら `OAUTH_REQUIRE_AT_JWT=true` も設定してください。
+> **ID トークンをアクセストークンとして受け取らないための設定が必須です。**
+> ID トークンの `aud` はクライアント識別子です。同じ IdP が同じ鍵・同じ issuer で ID トークンも発行する構成で `OAUTH_AUDIENCE` をクライアント識別子に合わせてしまうと、`iss` / `aud` / `exp` では両者を区別できません。**ログインできるだけの利用者が、API の委譲を受けないまま SMS を送れます。**
+>
+> そのため、**「アクセストークンであることを積極的に示すもの」を必ず1つ要求します。** 次のどちらかが必要で、両方欠けていると**起動時にエラーで停止**します。
+>
+> | 方法 | 設定 | 使える条件 |
+> | --- | --- | --- |
+> | RFC 9068 の `typ` | `OAUTH_REQUIRE_AT_JWT=true`（**既定**） | IdP がアクセストークンに `typ: at+jwt` を付ける（Auth0 など） |
+> | API の scope | `OAUTH_REQUIRE_AT_JWT=false` + `OAUTH_REQUIRED_SCOPE=...` | IdP が `typ` を付けない（Keycloak / Entra ID など）。**ID トークンは API の scope を運びません** |
+>
+> `at_hash` / `c_hash` を持つトークンも拒否しますが、**これは当てにできません** — どちらも条件付きの claim で、認可コードフローの ID トークンには通常入っていないためです。「無いこと」は根拠になりません。
+>
+> あわせて、**`OAUTH_AUDIENCE` は API / リソースの識別子にしてください。** クライアント識別子を指定しないでください。
 
 > [!IMPORTANT]
 > **アクセストークンは audience を検証します。** 同じ IdP が別のサービス向けに発行したトークンでは通りません（MCP 仕様の MUST）。IdP 側でこの MCP サーバーを1つの API / Resource として登録し、`aud` にその識別子が入るようにしてください。ここを省くと、**「別のサービスを使う」つもりで同意しただけの利用者のトークンで SMS が送れてしまいます。**

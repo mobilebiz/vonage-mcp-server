@@ -409,10 +409,12 @@ export interface OAuthConfig {
   scopesSupported: string[] | null;
   /** /mcp を呼ぶために必須の scope。未設定ならスコープを検査しない */
   requiredScope: string | null;
-  /** RFC 9068 の `typ: at+jwt` を必須にするか */
+  /** RFC 9068 の `typ: at+jwt` を必須にするか。既定は true */
   requireAtJwt: boolean;
   /** issuer / resource / JWKS のいずれかが http（＝ループバック限定の構成）か */
   loopbackHttp: boolean;
+  /** ループバック構成のとき、resource が指しているホスト（bind 先に使う） */
+  loopbackBindHost: string | null;
 }
 
 /**
@@ -549,6 +551,32 @@ export function getOAuthConfig(): OAuthConfig | null {
     validateScopeToken('OAUTH_REQUIRED_SCOPE', raw.OAUTH_REQUIRED_SCOPE, problems);
   }
 
+  // 既定は true。**アクセストークンであることを積極的に示すものを必ず1つ要求する。**
+  const requireAtJwt =
+    raw.OAUTH_REQUIRE_AT_JWT === undefined ? true : parseBooleanEnv('OAUTH_REQUIRE_AT_JWT');
+
+  // ID トークンとアクセストークンは、同じ IdP・同じ鍵・同じ issuer で発行されうる。
+  // `aud` にクライアント識別子が入っていれば `iss` / `aud` / `exp` では区別できず、
+  // **ログインできるだけの利用者が課金の発生するツールを呼べる**。
+  //
+  // `at_hash` / `c_hash` の拒否だけでは足りない。**あの2つは条件付きの claim で、
+  // 認可コードフローの ID トークンには通常入っていない。** 「無いこと」を根拠には
+  // できないので、**「アクセストークンであることを示すものが有る」**を要求する。
+  // 使えるのは次のどちらか:
+  //   - RFC 9068 の `typ: at+jwt`（IdP が付けてくれる場合）
+  //   - API 側の scope（ID トークンは API の scope を運ばない）
+  if (!requireAtJwt && (raw.OAUTH_REQUIRED_SCOPE === undefined || problems.length > 0)) {
+    if (raw.OAUTH_REQUIRED_SCOPE === undefined) {
+      problems.push(
+        'OAUTH_REQUIRE_AT_JWT=false にする場合は OAUTH_REQUIRED_SCOPE が必須です。' +
+          'どちらも無いと、ID トークンをアクセストークンとして受け取る余地が残ります' +
+          '（同じ IdP が同じ鍵・同じ issuer で両方を発行し、aud が一致する構成があるため）。' +
+          'IdP が typ: at+jwt を付けるなら OAUTH_REQUIRE_AT_JWT を外して既定の true に戻し、' +
+          '付けないなら API 側の scope を OAUTH_REQUIRED_SCOPE に指定してください。'
+      );
+    }
+  }
+
   if (problems.length > 0) {
     throw new ConfigError(problems);
   }
@@ -567,11 +595,16 @@ export function getOAuthConfig(): OAuthConfig | null {
     jwksUri: raw.OAUTH_JWKS_URI!,
     scopesSupported,
     requiredScope: raw.OAUTH_REQUIRED_SCOPE ?? null,
-    requireAtJwt: parseBooleanEnv('OAUTH_REQUIRE_AT_JWT'),
+    requireAtJwt,
     // http を許しているのは「ループバックでの動作確認のあいだだけ」という前提。
     // その前提が bind するアドレスにも効いていないと、平文でトークンを受け取る
     // サーバーが全インターフェースで待ち受ける（→ getBindHost）。
     loopbackHttp: [issuer, resource, jwks].some((url) => url?.protocol === 'http:'),
+    // クライアントが繋ぎに来るのは resource の URI である。IPv4 のループバックに
+    // 決め打つと、`http://[::1]:3000/mcp` を配っておきながら **その宛先では
+    // 待ち受けていない**サーバーになる。
+    loopbackBindHost:
+      resource?.protocol === 'http:' ? resource.hostname.replace(/^\[|\]$/g, '') : null,
   };
 }
 
@@ -674,8 +707,11 @@ export function getBindHost(): string {
   // 「手元で試すあいだだけ」という前提であり、その構成で 0.0.0.0 に bind すると
   // **平文でアクセストークンを受け取るサーバーが全インターフェースに出る**。
   // 認証が構成済みだからといって、外部公開してよいとは限らない。
-  if (isLoopbackHttpOAuthConfigured()) {
-    return '127.0.0.1';
+  const oauth = getOAuthConfig();
+  if (oauth?.loopbackHttp === true) {
+    // 配っている URI と待ち受け先を揃える（localhost は名前解決に委ねず 127.0.0.1）。
+    const host = oauth.loopbackBindHost;
+    return host === null || host === 'localhost' ? '127.0.0.1' : host;
   }
 
   return '0.0.0.0';

@@ -289,7 +289,7 @@ Entra ID, Keycloak, …).
 | `OAUTH_AUDIENCE` | | Expected `aud`. Defaults to `OAUTH_RESOURCE`; set it only when your IdP's API identifier differs |
 | `OAUTH_SCOPES_SUPPORTED` | | Comma-separated scopes advertised in the protected resource metadata |
 | `OAUTH_REQUIRED_SCOPE` | | Scope required to call `/mcp`. Tokens without it get `403 insufficient_scope` |
-| `OAUTH_REQUIRE_AT_JWT` | | `true` accepts only tokens carrying RFC 9068's `typ: at+jwt`. Turn it on if your IdP sets it — it is the surest defence against ID tokens |
+| `OAUTH_REQUIRE_AT_JWT` | | **Defaults to `true`** — only tokens carrying RFC 9068's `typ: at+jwt` are accepted. Setting it to `false` requires `OAUTH_REQUIRED_SCOPE` |
 
 All three required variables must be present together — a partial configuration
 fails at startup rather than silently falling back to the static token.
@@ -308,17 +308,27 @@ slash included, because they are OAuth identifiers rather than URLs to normalise
 Scope values must fit RFC 6749's character set (printable ASCII, no space, quote
 or backslash) or startup fails.
 
-**Never set `OAUTH_AUDIENCE` to a client id.** An ID token's `aud` *is* the
-client id, so if the same IdP signs ID tokens with the same keys and issuer,
-matching them lets anyone who can merely log in send SMS without ever being
-delegated API access. Tokens carrying `at_hash` / `c_hash` are rejected as ID
-tokens, but that is the last net, not the design: point `OAUTH_AUDIENCE` at the
-API/resource identifier, and set `OAUTH_REQUIRE_AT_JWT=true` if your IdP marks
-access tokens.
+**One affirmative access-token marker is mandatory.** An ID token's `aud` *is*
+the client id, so if the same IdP signs ID tokens with the same keys and issuer
+and `OAUTH_AUDIENCE` points at that client id, `iss`/`aud`/`exp` cannot tell the
+two apart — anyone who can merely log in could send SMS without ever being
+delegated API access. So the server insists on one of:
+
+| Marker | Configuration | When it applies |
+| --- | --- | --- |
+| RFC 9068 `typ` | `OAUTH_REQUIRE_AT_JWT=true` (**default**) | Your IdP stamps access tokens with `typ: at+jwt` (Auth0 and others) |
+| An API scope | `OAUTH_REQUIRE_AT_JWT=false` plus `OAUTH_REQUIRED_SCOPE` | Your IdP does not stamp `typ` (Keycloak, Entra ID). ID tokens do not carry API scopes |
+
+Startup fails if neither is present. Tokens carrying `at_hash` / `c_hash` are
+also rejected, but that check cannot be relied on: both claims are conditional
+and are usually absent from authorization-code ID tokens, so their absence
+proves nothing. Point `OAUTH_AUDIENCE` at the API/resource identifier, never at
+a client id.
 
 `http://localhost` is for local testing only. When any of the issuer, resource
-or JWKS URL is plaintext http, the server **binds loopback** unless `BIND_HOST`
-says otherwise, and refuses to start if `BIND_HOST` names an external address —
+or JWKS URL is plaintext http, the server **binds the loopback address
+`OAUTH_RESOURCE` names** (so `http://[::1]:3000/mcp` listens on `::1`) unless
+`BIND_HOST` says otherwise, and refuses to start if `BIND_HOST` names an external address —
 a server that accepts bearer tokens in the clear should not be reachable from
 off-host. `OAUTH_ISSUER` may not carry a query or fragment (RFC 8414).
 

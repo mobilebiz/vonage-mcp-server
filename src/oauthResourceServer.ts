@@ -343,6 +343,15 @@ export async function verifyAccessToken(token: string, config: OAuthConfig): Pro
   try {
     const header = decodeProtectedHeader(token);
 
+    if (typeof header.alg !== 'string' || !(ALLOWED_ALGORITHMS as readonly string[]).includes(header.alg)) {
+      return {
+        ok: false,
+        status: 401,
+        error: 'invalid_token',
+        description: `アクセストークンの署名アルゴリズム（${header.alg ?? '不明'}）には対応していません。`,
+      };
+    }
+
     // RFC 9068 の `typ`。既定では要求しない（設定する IdP と設定しない IdP が
     // 混在しており、必須にすると繋がらない基盤が出る）。**設定できる環境では
     // 有効にするのが最も確実な ID トークン対策**なので、明示的に選べるようにする。
@@ -357,15 +366,6 @@ export async function verifyAccessToken(token: string, config: OAuthConfig): Pro
             `OAUTH_REQUIRE_AT_JWT=true のため、typ が at+jwt のアクセストークンだけを受け付けます（受信: ${header.typ ?? '無し'}）。`,
         };
       }
-    }
-
-    if (typeof header.alg !== 'string' || !(ALLOWED_ALGORITHMS as readonly string[]).includes(header.alg)) {
-      return {
-        ok: false,
-        status: 401,
-        error: 'invalid_token',
-        description: `アクセストークンの署名アルゴリズム（${header.alg ?? '不明'}）には対応していません。`,
-      };
     }
   } catch {
     return {
