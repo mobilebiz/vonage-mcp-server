@@ -487,6 +487,23 @@ describe('アクセストークンの検証', () => {
     expect(result.ok === false && result.description).toContain('HS256');
   });
 
+  // EdDSA だけ許して Ed25519 を落とすと、そのアルゴリズムを使う IdP では
+  // 一切認証できなくなる
+  it.each(['EdDSA', 'Ed25519', 'ES256'])('%s で署名されたトークンも通る', async (alg) => {
+    const pair = await generateKeyPair(alg);
+    setJwksResolverForTesting(createLocalJWKSet({ keys: [{ ...(await exportJWK(pair.publicKey)), alg }] }));
+
+    const token = await new SignJWT({})
+      .setProtectedHeader({ alg })
+      .setIssuedAt()
+      .setIssuer(ISSUER)
+      .setAudience(RESOURCE)
+      .setExpirationTime('5m')
+      .sign(pair.privateKey);
+
+    expect((await verifyAccessToken(token, config())).ok).toBe(true);
+  });
+
   it('JWT の形をしていない文字列は 401', async () => {
     const result = await verifyAccessToken('not-a-jwt', config());
 

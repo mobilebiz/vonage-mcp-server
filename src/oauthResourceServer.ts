@@ -265,6 +265,9 @@ const ALLOWED_ALGORITHMS = [
   'ES384',
   'ES512',
   'EdDSA',
+  // jose は Ed25519 を EdDSA の別名ではなく**独立した alg 値**として扱う。
+  // 片方だけ許すと、Ed25519 を使う IdP の正当なトークンが 401 になる。
+  'Ed25519',
 ] as const;
 
 /**
