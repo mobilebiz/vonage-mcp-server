@@ -382,7 +382,21 @@ describe('OAuth 設定の解釈', () => {
     expect(() => validateStartupConfig()).not.toThrow();
   });
 
-  // localhost はどちらにも解決しうるので、どちらとも矛盾しない
+  // Node の listen は名前解決の結果から1つだけを選ぶ。IPv6 が優先される環境では
+  // ::1 になり、IPv4 の URI を配っていると繋がらない
+  it('BIND_HOST=localhost は、具体的なアドレスを配っているなら起動エラー', () => {
+    configure({
+      OAUTH_ISSUER: 'http://127.0.0.1:8080',
+      OAUTH_RESOURCE: 'http://127.0.0.1:3000/mcp',
+      OAUTH_JWKS_URI: 'http://127.0.0.1:8080/jwks',
+      PORT: '3000',
+      BIND_HOST: 'localhost',
+    });
+
+    expect(() => validateStartupConfig()).toThrow(ConfigError);
+  });
+
+  // 配る側の localhost は、クライアントが解決した候補を順に試せるので事情が違う
   it('localhost を配るなら BIND_HOST がどちらの系統でも通る', () => {
     configure({
       OAUTH_ISSUER: 'http://localhost:8080',

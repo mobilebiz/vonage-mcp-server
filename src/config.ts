@@ -1014,22 +1014,27 @@ export function validateStartupConfig(): string[] {
       // **アドレスの系統も揃っている必要がある。** `http://[::1]:3000/mcp` を配って
       // `BIND_HOST=127.0.0.1` で待ち受けると、ポートは合っていても IPv4 でしか
       // 受け付けない。配った宛先には繋がらない。
-      // `localhost` はどちらにも解決しうるので、どちらとも矛盾しないものとして扱う。
       const advertised = oauth.loopbackBindHost;
       const listening = bindHost === undefined || bindHost === '' ? advertised : bindHost;
 
-      if (
-        advertised !== null &&
-        listening !== null &&
-        advertised !== 'localhost' &&
-        listening !== 'localhost' &&
-        advertised !== listening
-      ) {
-        problems.push(
-          `OAUTH_RESOURCE のホスト（${advertised}）と BIND_HOST（${listening}）が違います。` +
-            'IPv4 と IPv6 は別々のアドレスなので、配っている URI の系統で待ち受けていないと、' +
-            'メタデータを見て繋ぎに来たクライアントが接続できません。'
-        );
+      if (advertised !== null && listening !== null && advertised !== listening) {
+        // **待ち受け側の `localhost` は「どちらでもよい」ではない。** Node の listen は
+        // 名前解決の結果から**1つだけ**を選ぶので、IPv6 が優先される環境では `::1` に
+        // なり、IPv4 の URI を配っていると繋がらない。配る側の `localhost` は
+        // クライアントが解決した候補を順に試せるため、こちらとは事情が違う。
+        if (listening === 'localhost') {
+          problems.push(
+            `BIND_HOST=localhost は名前解決の結果から1つのアドレスだけで待ち受けます。` +
+              `OAUTH_RESOURCE は ${advertised} を配っているので、環境によっては繋がりません。` +
+              `BIND_HOST に ${advertised} を明示してください。`
+          );
+        } else if (advertised !== 'localhost') {
+          problems.push(
+            `OAUTH_RESOURCE のホスト（${advertised}）と BIND_HOST（${listening}）が違います。` +
+              'IPv4 と IPv6 は別々のアドレスなので、配っている URI の系統で待ち受けていないと、' +
+              'メタデータを見て繋ぎに来たクライアントが接続できません。'
+          );
+        }
       }
     }
   } catch {
