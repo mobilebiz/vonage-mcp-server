@@ -1010,6 +1010,27 @@ export function validateStartupConfig(): string[] {
             'メタデータを見て繋ぎに来たクライアントが接続できません。PORT か OAUTH_RESOURCE を揃えてください。'
         );
       }
+
+      // **アドレスの系統も揃っている必要がある。** `http://[::1]:3000/mcp` を配って
+      // `BIND_HOST=127.0.0.1` で待ち受けると、ポートは合っていても IPv4 でしか
+      // 受け付けない。配った宛先には繋がらない。
+      // `localhost` はどちらにも解決しうるので、どちらとも矛盾しないものとして扱う。
+      const advertised = oauth.loopbackBindHost;
+      const listening = bindHost === undefined || bindHost === '' ? advertised : bindHost;
+
+      if (
+        advertised !== null &&
+        listening !== null &&
+        advertised !== 'localhost' &&
+        listening !== 'localhost' &&
+        advertised !== listening
+      ) {
+        problems.push(
+          `OAUTH_RESOURCE のホスト（${advertised}）と BIND_HOST（${listening}）が違います。` +
+            'IPv4 と IPv6 は別々のアドレスなので、配っている URI の系統で待ち受けていないと、' +
+            'メタデータを見て繋ぎに来たクライアントが接続できません。'
+        );
+      }
     }
   } catch {
     // OAUTH_* / PORT のパースエラーは上で報告済み

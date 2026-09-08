@@ -356,6 +356,45 @@ describe('OAuth 設定の解釈', () => {
     expect(() => validateStartupConfig()).not.toThrow();
   });
 
+  // IPv4 と IPv6 は別々のアドレス。ポートが合っていても、系統が違えば
+  // 配った宛先には繋がらない
+  it('IPv6 を配って BIND_HOST が IPv4 なら起動エラー', () => {
+    configure({
+      OAUTH_ISSUER: 'http://[::1]:8080',
+      OAUTH_RESOURCE: 'http://[::1]:3000/mcp',
+      OAUTH_JWKS_URI: 'http://[::1]:8080/jwks',
+      PORT: '3000',
+      BIND_HOST: '127.0.0.1',
+    });
+
+    expect(() => validateStartupConfig()).toThrow(ConfigError);
+  });
+
+  it('IPv6 を配って BIND_HOST も ::1 なら通る', () => {
+    configure({
+      OAUTH_ISSUER: 'http://[::1]:8080',
+      OAUTH_RESOURCE: 'http://[::1]:3000/mcp',
+      OAUTH_JWKS_URI: 'http://[::1]:8080/jwks',
+      PORT: '3000',
+      BIND_HOST: '::1',
+    });
+
+    expect(() => validateStartupConfig()).not.toThrow();
+  });
+
+  // localhost はどちらにも解決しうるので、どちらとも矛盾しない
+  it('localhost を配るなら BIND_HOST がどちらの系統でも通る', () => {
+    configure({
+      OAUTH_ISSUER: 'http://localhost:8080',
+      OAUTH_RESOURCE: 'http://localhost:3000/mcp',
+      OAUTH_JWKS_URI: 'http://localhost:8080/jwks',
+      PORT: '3000',
+      BIND_HOST: '::1',
+    });
+
+    expect(() => validateStartupConfig()).not.toThrow();
+  });
+
   // https は上流で TLS を終端する構成が普通で、外向きと待ち受けのポートが
   // 違うのは正常
   it('https の resource ではポートを検査しない', () => {

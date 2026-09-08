@@ -328,8 +328,8 @@ a client id.
 `http://localhost` is for local testing only. When any of the issuer, resource
 or JWKS URL is plaintext http, the server **binds the loopback address
 `OAUTH_RESOURCE` names** (so `http://[::1]:3000/mcp` listens on `::1`) unless
-`BIND_HOST` says otherwise, requires `PORT` to match the port in
-`OAUTH_RESOURCE`, and refuses to start if `BIND_HOST` names an external address —
+`BIND_HOST` says otherwise, requires `PORT` and the address family to match
+`OAUTH_RESOURCE` (`localhost` resolves either way, so it is exempt), and refuses to start if `BIND_HOST` names an external address —
 a server that accepts bearer tokens in the clear should not be reachable from
 off-host. `OAUTH_ISSUER` may not carry a query or fragment (RFC 8414).
 
