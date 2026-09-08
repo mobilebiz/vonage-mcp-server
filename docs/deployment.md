@@ -323,7 +323,7 @@ stdio では Webhook を受け取れないため、**`get_sms_status` は常に 
 | `/mcp` が `400` | `Authorization` は送っているが `Bearer <トークン>` として読めない |
 | `/mcp` が `403` | `OAUTH_REQUIRED_SCOPE` を持たないアクセストークン（`WWW-Authenticate` に必要な scope が入っています） |
 | `/mcp` が `503` | 認可サーバーの JWKS を取得できない。**トークンは無効とは限りません**。`OAUTH_JWKS_URI` への到達性を確認する |
-| `/mcp` が `500` で `misconfigured` | `OAUTH_*` の設定が不完全。3つ揃えるか、すべて削除する |
+| **起動時に `OAUTH_ISSUER / OAUTH_RESOURCE / OAUTH_JWKS_URI が未設定です` で停止** | `OAUTH_*` の設定が不完全。3つ揃えるか、すべて削除する（部分設定は起動時に落とします） |
 | Webhook が `503` | `VONAGE_API_SIGNATURE_SECRET` も `VONAGE_WEBHOOK_SECRET` も未設定 |
 | Webhook が `401` | 署名・`payload_hash`・`iat`・`jti` のいずれかが不正または欠落 |
 | 外部から接続できない | 認証未設定のためループバックに bind されている |
