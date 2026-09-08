@@ -287,7 +287,7 @@ Entra ID, Keycloak, …).
 | `OAUTH_RESOURCE` | ✅ | **Canonical URI of this MCP server** (RFC 8707 / RFC 9728 `resource`), e.g. `https://example.com/mcp`. No fragment, no query |
 | `OAUTH_JWKS_URI` | ✅ | Where to fetch the token signing keys — the `jwks_uri` from your IdP's discovery document |
 | `OAUTH_AUDIENCE` | | Expected `aud`. Defaults to `OAUTH_RESOURCE`; set it only when your IdP's API identifier differs |
-| `OAUTH_SCOPES_SUPPORTED` | | Comma-separated scopes advertised in the protected resource metadata |
+| `OAUTH_SCOPES_SUPPORTED` | | Comma-separated scopes advertised in the protected resource metadata. Must include `OAUTH_REQUIRED_SCOPE` if that is set — startup fails otherwise, since a client following the metadata would fetch a token the server immediately rejects |
 | `OAUTH_REQUIRED_SCOPE` | | Scope required to call `/mcp`. Tokens without it get `403 insufficient_scope` |
 | `OAUTH_REQUIRE_AT_JWT` | | **Defaults to `true`** — only tokens carrying RFC 9068's `typ: at+jwt` are accepted. Setting it to `false` requires `OAUTH_REQUIRED_SCOPE` |
 
@@ -328,7 +328,8 @@ a client id.
 `http://localhost` is for local testing only. When any of the issuer, resource
 or JWKS URL is plaintext http, the server **binds the loopback address
 `OAUTH_RESOURCE` names** (so `http://[::1]:3000/mcp` listens on `::1`) unless
-`BIND_HOST` says otherwise, and refuses to start if `BIND_HOST` names an external address —
+`BIND_HOST` says otherwise, requires `PORT` to match the port in
+`OAUTH_RESOURCE`, and refuses to start if `BIND_HOST` names an external address —
 a server that accepts bearer tokens in the clear should not be reachable from
 off-host. `OAUTH_ISSUER` may not carry a query or fragment (RFC 8414).
 

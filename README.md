@@ -809,7 +809,7 @@ curl -X POST http://localhost:3000/mcp \
 | `OAUTH_RESOURCE` | ✅ | **この MCP サーバーの正規 URI**（RFC 8707 / RFC 9728 の `resource`）。例: `https://example.com/mcp`。フラグメントとクエリは指定できません。 |
 | `OAUTH_JWKS_URI` | ✅ | アクセストークンの署名鍵の取得先。IdP の `/.well-known/openid-configuration` にある `jwks_uri` を使います。 |
 | `OAUTH_AUDIENCE` | | トークンの `aud` に期待する値。既定は `OAUTH_RESOURCE` と同じ。IdP の API 識別子が URI と異なる場合だけ設定します。 |
-| `OAUTH_SCOPES_SUPPORTED` | | 保護リソースメタデータに載せる scope（カンマ区切り）。 |
+| `OAUTH_SCOPES_SUPPORTED` | | 保護リソースメタデータに載せる scope（カンマ区切り）。`OAUTH_REQUIRED_SCOPE` を設定するなら、**それをここにも含めてください**（含めないと起動エラーです。クライアントはこの一覧から認可要求を組み立てるため、案内どおりに取ったトークンが必ず `403` になります）。 |
 | `OAUTH_REQUIRED_SCOPE` | | `/mcp` を呼ぶために必須の scope。設定すると、これを持たないトークンは `403 insufficient_scope` になります。 |
 | `OAUTH_REQUIRE_AT_JWT` | | **既定は `true`。** RFC 9068 の `typ: at+jwt` を持つトークンだけを受け付けます。`false` にする場合は `OAUTH_REQUIRED_SCOPE` が必須になります（下記）。 |
 
@@ -833,7 +833,7 @@ OAUTH_JWKS_URI=https://your-tenant.example.com/.well-known/jwks.json
 > `OAUTH_REQUIRED_SCOPE` / `OAUTH_SCOPES_SUPPORTED` に空白・二重引用符・バックスラッシュ・非 ASCII を含めると起動エラーになります（RFC 6749 の scope の文字集合）。`OAUTH_ISSUER` にクエリやフラグメントを含めることもできません（RFC 8414）。
 
 > [!IMPORTANT]
-> **`http://localhost` を使えるのは手元での確認だけです。** issuer / resource / JWKS のいずれかが http の場合、`BIND_HOST` を指定しなければ **`OAUTH_RESOURCE` が指しているループバックアドレスで待ち受けます**（`http://[::1]:3000/mcp` を配るなら `::1`）（認証が構成済みでも `0.0.0.0` にはしません）。平文でアクセストークンを受け取るサーバーを外部に出さないためです。この構成で `BIND_HOST` に外部アドレスを指定すると**起動時にエラーで停止**します。**`MCP_AUTH_TOKEN` を併用していても同じです** — 認証は「どちらか一方」で通るので、静的トークンがあってもアクセストークンは平文で流れます。
+> **`http://localhost` を使えるのは手元での確認だけです。** issuer / resource / JWKS のいずれかが http の場合、`BIND_HOST` を指定しなければ **`OAUTH_RESOURCE` が指しているループバックアドレスで待ち受けます**（`http://[::1]:3000/mcp` を配るなら `::1`。認証が構成済みでも `0.0.0.0` にはしません）。**`OAUTH_RESOURCE` のポートと `PORT` も揃っている必要があります**（揃っていないと起動エラーです。配った URI に繋ぎに来たクライアントが接続できないため）。平文でアクセストークンを受け取るサーバーを外部に出さないためです。この構成で `BIND_HOST` に外部アドレスを指定すると**起動時にエラーで停止**します。**`MCP_AUTH_TOKEN` を併用していても同じです** — 認証は「どちらか一方」で通るので、静的トークンがあってもアクセストークンは平文で流れます。
 
 > [!WARNING]
 > **ID トークンをアクセストークンとして受け取らないための設定が必須です。**
