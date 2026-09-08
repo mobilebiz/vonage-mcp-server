@@ -373,6 +373,146 @@ export function getMcpAuthToken(): string | null {
   return token;
 }
 
+/**
+ * OAuth リソースサーバーモードで読む環境変数。
+ *
+ * MCP 仕様（2025-11-25 / Authorization）は、HTTP トランスポートで認可する場合の
+ * 標準的な手段として OAuth 2.1 を定めている。`MCP_AUTH_TOKEN` の静的 Bearer は
+ * 仕様には存在せず、**基盤側が任意ヘッダを設定させてくれる場合にだけ**使える。
+ * ChatGPT や Gemini Enterprise のコネクタのように「OAuth か無認証か」しか
+ * 選べない基盤には、この経路でしか繋がらない。
+ *
+ * このサーバーが担うのは **リソースサーバー（RS）だけ**である。認可サーバー（AS）は
+ * 仕様上もスコープ外で、外部 IdP に委ねる。
+ */
+export const OAUTH_ENV_VARS = [
+  'OAUTH_ISSUER',
+  'OAUTH_RESOURCE',
+  'OAUTH_JWKS_URI',
+  'OAUTH_AUDIENCE',
+  'OAUTH_SCOPES_SUPPORTED',
+  'OAUTH_REQUIRED_SCOPE',
+] as const;
+
+/** OAuth リソースサーバーモードの設定。未設定なら getOAuthConfig() が null を返す */
+export interface OAuthConfig {
+  /** 認可サーバーの issuer。トークンの iss と照合する */
+  issuer: string;
+  /** この MCP サーバーの正規 URI（RFC 8707 / RFC 9728 の resource） */
+  resource: string;
+  /** トークンの aud に期待する値。既定は resource と同じ */
+  audience: string;
+  /** アクセストークンの署名鍵を取りに行く先 */
+  jwksUri: string;
+  /** 保護リソースメタデータに載せる scope の一覧。未設定なら載せない */
+  scopesSupported: string[] | null;
+  /** /mcp を呼ぶために必須の scope。未設定ならスコープを検査しない */
+  requiredScope: string | null;
+}
+
+/**
+ * https の絶対 URL として解釈する。
+ *
+ * ループバックだけは http を許す。手元で試すときに証明書を用意させると、
+ * 「とりあえず動かす」段階で詰まるため。それ以外で http を許すと、
+ * アクセストークンが平文で流れる経路を設定ミスで作れてしまう。
+ */
+function parseHttpsUrl(name: string, raw: string, problems: string[]): URL | null {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    problems.push(`${name} が URL として解釈できません（${raw}）。https から始まる絶対 URL を指定してください。`);
+    return null;
+  }
+
+  if (url.protocol === 'http:' && !isLoopbackHost(url.hostname)) {
+    problems.push(
+      `${name} が http です（${raw}）。アクセストークンが平文で流れるため、https を指定してください` +
+        '（localhost / 127.0.0.1 での動作確認のときだけ http を許可します）。'
+    );
+    return null;
+  }
+
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    problems.push(`${name} のスキームが https ではありません（${raw}）。`);
+    return null;
+  }
+
+  return url;
+}
+
+/**
+ * OAuth リソースサーバーモードの設定。1つも設定されていなければ null。
+ *
+ * **部分的な設定は起動エラーにする。** OAUTH_ISSUER だけ書いて JWKS を書き忘れた
+ * 状態で黙って静的トークンモードに落ちると、「OAuth にしたつもりのサーバーが
+ * 実は別の認証で動いていた」という最も気づきにくい形になる。
+ */
+export function getOAuthConfig(): OAuthConfig | null {
+  const raw: Record<string, string> = {};
+  for (const name of OAUTH_ENV_VARS) {
+    const value = process.env[name];
+    if (value !== undefined && value.trim() !== '') {
+      raw[name] = value.trim();
+    }
+  }
+
+  if (Object.keys(raw).length === 0) {
+    return null;
+  }
+
+  const problems: string[] = [];
+  for (const name of ['OAUTH_ISSUER', 'OAUTH_RESOURCE', 'OAUTH_JWKS_URI'] as const) {
+    if (raw[name] === undefined) {
+      problems.push(
+        `${name} が未設定です。OAuth リソースサーバーモードを使う場合、` +
+          'OAUTH_ISSUER / OAUTH_RESOURCE / OAUTH_JWKS_URI の3つは必須です。' +
+          'OAuth を使わないのであれば OAUTH_ で始まる環境変数をすべて削除してください。'
+      );
+    }
+  }
+
+  const issuer = raw.OAUTH_ISSUER === undefined ? null : parseHttpsUrl('OAUTH_ISSUER', raw.OAUTH_ISSUER, problems);
+  const jwks = raw.OAUTH_JWKS_URI === undefined ? null : parseHttpsUrl('OAUTH_JWKS_URI', raw.OAUTH_JWKS_URI, problems);
+  const resource =
+    raw.OAUTH_RESOURCE === undefined ? null : parseHttpsUrl('OAUTH_RESOURCE', raw.OAUTH_RESOURCE, problems);
+
+  // RFC 8707 の canonical URI はフラグメントを持てない。クエリ付きも
+  // 「このサーバーを指す識別子」としては曖昧なので受け付けない。
+  if (resource !== null && (resource.hash !== '' || resource.search !== '')) {
+    problems.push(
+      `OAUTH_RESOURCE にフラグメントまたはクエリが含まれています（${raw.OAUTH_RESOURCE}）。` +
+        'RFC 8707 の正規 URI はどちらも持てません。例: https://example.com/mcp'
+    );
+  }
+
+  const scopesSupported = raw.OAUTH_SCOPES_SUPPORTED?.split(',').map((v) => v.trim()).filter((v) => v !== '') ?? null;
+  if (scopesSupported !== null && scopesSupported.length === 0) {
+    problems.push('OAUTH_SCOPES_SUPPORTED が設定されていますが、有効な scope が1件もありません。');
+  }
+
+  if (problems.length > 0) {
+    throw new ConfigError(problems);
+  }
+
+  const resourceUri = resource!.toString().replace(/\/$/, '');
+
+  return {
+    issuer: issuer!.toString().replace(/\/$/, ''),
+    resource: resourceUri,
+    audience: raw.OAUTH_AUDIENCE ?? resourceUri,
+    jwksUri: jwks!.toString(),
+    scopesSupported,
+    requiredScope: raw.OAUTH_REQUIRED_SCOPE ?? null,
+  };
+}
+
+/** OAuth リソースサーバーモードが構成されているか */
+export function isOAuthConfigured(): boolean {
+  return getOAuthConfig() !== null;
+}
+
 /** VONAGE_PRIVATE_KEY_PATH が未設定のときに使う既定のパス */
 export const DEFAULT_PRIVATE_KEY_PATH = './private.key';
 
@@ -428,9 +568,15 @@ export function isUpstreamAuthTrusted(): boolean {
   return parseBooleanEnv('TRUST_UPSTREAM_AUTH');
 }
 
-/** HTTP トランスポートの認証が何らかの形で構成されているか */
+/**
+ * HTTP トランスポートの認証が何らかの形で構成されているか。
+ *
+ * OAuth リソースサーバーモードもここに含める。含め忘れると、OAuth だけを
+ * 設定したサーバーが「認証なし」と判定されて 127.0.0.1 にしか bind されず、
+ * **正しく設定したのに外から繋がらない**という形で失敗する。
+ */
 export function isHttpAuthConfigured(): boolean {
-  return getMcpAuthToken() !== null || isUpstreamAuthTrusted();
+  return getMcpAuthToken() !== null || isUpstreamAuthTrusted() || isOAuthConfigured();
 }
 
 /** ループバックアドレスか */
@@ -605,6 +751,7 @@ export function validateStartupConfig(): string[] {
   collect(() => parseBooleanEnv('ALLOW_PREMIUM_NUMBERS'));
   collect(() => getWebhookMaxAgeSeconds());
   collect(() => getMcpAuthToken());
+  collect(() => getOAuthConfig());
   collect(() => parseBooleanEnv('TRUST_UPSTREAM_AUTH'));
   collect(() => getPort());
   collect(() => getAllowedOrigins());
@@ -714,8 +861,42 @@ export function validateStartupConfig(): string[] {
   } else if (!httpAuthConfigured) {
     warnings.push(
       'MCP_AUTH_TOKEN が未設定のため、HTTPサーバーは 127.0.0.1 でのみ待ち受けます。' +
-        '外部から利用する場合は MCP_AUTH_TOKEN を設定してください。'
+        '外部から利用する場合は MCP_AUTH_TOKEN を設定するか、OAuth リソースサーバーモード' +
+        '（OAUTH_ISSUER / OAUTH_RESOURCE / OAUTH_JWKS_URI）を構成してください。'
     );
+  }
+
+  // 認証経路が2本ある構成は、それ自体は誤りではない（OAuth しか喋れない基盤と
+  // 任意ヘッダを送れる基盤を、同じデプロイに同時に繋ぐのは実際にある）。ただし
+  // **黙って2本開いているのが最悪**なので、起動のたびに名指しで知らせる。
+  let oauthConfigured = false;
+  try {
+    oauthConfigured = isOAuthConfigured();
+  } catch {
+    // OAUTH_* のパースエラーは上で報告済み
+  }
+
+  if (oauthConfigured) {
+    let staticToken: string | null = null;
+    try {
+      staticToken = getMcpAuthToken();
+    } catch {
+      staticToken = null;
+    }
+
+    if (staticToken !== null) {
+      warnings.push(
+        'OAuth リソースサーバーモードと MCP_AUTH_TOKEN の両方が設定されています。' +
+          '/mcp は**どちらの資格情報でも通ります**。OAuth だけに絞る場合は MCP_AUTH_TOKEN を削除してください。'
+      );
+    }
+
+    if (parseBooleanEnv('TRUST_UPSTREAM_AUTH')) {
+      warnings.push(
+        'TRUST_UPSTREAM_AUTH=true が OAuth 設定より優先されるため、アクセストークンは検証されません。' +
+          '上流で検証していない場合は TRUST_UPSTREAM_AUTH を外してください。'
+      );
+    }
   }
 
   // 全 OFF は「動くはずのものが動かない」という問い合わせに直結するので明示する

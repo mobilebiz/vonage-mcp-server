@@ -118,10 +118,11 @@ Legend: ✅ verified on real hardware / 📄 documented as supported (not yet ve
 | [Claude Code](https://code.claude.com/docs/en/mcp) | stdio / HTTP | Bearer via `--header` | yes | 📄 |
 | **Streamable HTTP in general** (Cloud Run, etc.) | Streamable HTTP | Bearer / upstream IAM | depends on the client | ✅ |
 | [Claude.ai / Desktop (remote)](https://claude.com/docs/connectors/building/authentication) | Streamable HTTP | OAuth, or static headers (beta, set by an org admin) | yes | 📄 |
-| [Gemini Enterprise (connector)](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server) | Streamable HTTP | **OAuth 2.0 or "no authentication" only** | yes, by default | ⚠️ |
+| [Gemini Enterprise (connector)](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server) | Streamable HTTP | **OAuth 2.0 or "no authentication" only** (supported via [OAuth mode](#oauth-21-resource-server-mode)) | yes, by default | 📄 |
 | [Gemini Enterprise (your own ADK agent)](docs/gemini-enterprise-adk.md) | Streamable HTTP | Bearer via arbitrary headers | **yes** (ADK `require_confirmation`; an approval window appears in Apps) | ✅ |
 | [AWS Bedrock AgentCore Gateway](docs/agentcore.md) | Streamable HTTP (it never opens SSE) | **API key provider** puts Bearer in a header. **IAM SigV4 does not work** (see below) | **none** | ✅ |
 | [Dify](docs/dify.md) | Streamable HTTP (it never opens SSE) | Bearer via arbitrary headers | **none.** Only if you add a Human Input node to a Workflow | ✅ |
+| ChatGPT (custom plugin / connector) | Streamable HTTP | **OAuth 2.0 or "no authentication" only** (supported via [OAuth mode](#oauth-21-resource-server-mode)) | client-dependent | 📄 |
 | [n8n (MCP Client Tool)](https://docs.n8n.io/integrations/builtin/cluster-nodes/sub-nodes/n8n-nodes-langchain.toolmcp/) | HTTP Streamable / stdio | Bearer / arbitrary headers / OAuth2 | only if enabled on the AI Agent node | 📄 |
 
 📄 means **we have not tried it yet**. The documentation says it should connect;
@@ -171,8 +172,12 @@ The connector also requires the server to be reachable at a public HTTPS
 endpoint.
 
 Choosing "no authentication" therefore **exposes a server that can spend your
-money to the entire internet. Do not do it.** Two workable setups:
+money to the entire internet. Do not do it.** Three workable setups:
 
+0. **Turn on this server's own OAuth resource-server mode** — see
+   [OAuth 2.1 resource server mode](#oauth-21-resource-server-mode) below. This
+   is the path the MCP specification actually defines; it is implemented but not
+   yet confirmed against a live connector.
 1. **Terminate OAuth 2.0 upstream** — put an API gateway or Identity-Aware Proxy
    in front and set `TRUST_UPSTREAM_AUTH=true` on this server.
 2. **Write an ADK agent instead of using the connector** (verified, recommended)
@@ -262,6 +267,56 @@ body to UCS-2**. So `RATE_LIMIT_PER_HOUR=5` permits up to
 | `PORT` | `3000` | |
 | `ALLOWED_ORIGINS` | unset — **all cross-origin denied** | CORS allowlist |
 | `ALLOWED_HOSTS` | loopback names when bound to loopback | Host header allowlist (DNS rebinding) |
+
+### OAuth 2.1 resource server mode
+
+**OAuth 2.1 is what the MCP specification defines for HTTP transports.** The
+static `MCP_AUTH_TOKEN` above is *not* in the specification — it works only where
+the platform lets you set arbitrary headers (Claude Code, ADK, Dify, AgentCore,
+n8n). End-user surfaces — ChatGPT custom plugins, the Gemini Enterprise connector
+— offer **only OAuth or no authentication**, and "no authentication" is not an
+option for a server that spends money.
+
+This server implements the **resource server (RS) role only**. The authorization
+server is out of scope per the specification; bring your own IdP (Auth0, Okta,
+Entra ID, Keycloak, …).
+
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `OAUTH_ISSUER` | ✅ | Authorization server issuer, matched against the token's `iss`. https only (http allowed for loopback) |
+| `OAUTH_RESOURCE` | ✅ | **Canonical URI of this MCP server** (RFC 8707 / RFC 9728 `resource`), e.g. `https://example.com/mcp`. No fragment, no query |
+| `OAUTH_JWKS_URI` | ✅ | Where to fetch the token signing keys — the `jwks_uri` from your IdP's discovery document |
+| `OAUTH_AUDIENCE` | | Expected `aud`. Defaults to `OAUTH_RESOURCE`; set it only when your IdP's API identifier differs |
+| `OAUTH_SCOPES_SUPPORTED` | | Comma-separated scopes advertised in the protected resource metadata |
+| `OAUTH_REQUIRED_SCOPE` | | Scope required to call `/mcp`. Tokens without it get `403 insufficient_scope` |
+
+All three required variables must be present together — a partial configuration
+fails at startup rather than silently falling back to the static token.
+
+Enabling it turns on two things:
+
+- `GET /.well-known/oauth-protected-resource` (and `/.well-known/oauth-protected-resource/<resource path>`)
+  — RFC 9728 protected resource metadata, **unauthenticated** by design: clients
+  read it before they have a token
+- `WWW-Authenticate: Bearer resource_metadata="..."` on every 401/403 from `/mcp`
+  — this header is the discovery entry point
+
+**Access tokens are audience-validated** (a MUST in the specification): a token
+the same IdP issued for another service will not work here. Without that check, a
+user who consented to *some other service* would be authorising SMS sends.
+
+If `MCP_AUTH_TOKEN` is also set, **either credential is accepted** and the server
+warns at startup. Connecting an OAuth-only platform and a header-capable platform
+to the same deployment is a real configuration, so neither is silently disabled.
+Remove `MCP_AUTH_TOKEN` to go OAuth-only.
+
+Whether a given platform can connect depends on your IdP's client registration
+support (Client ID Metadata Documents or Dynamic Client Registration) — clients
+like ChatGPT and Claude have no pre-existing relationship with your IdP.
+
+**Not yet confirmed against a live connector.** The implementation follows the
+[MCP 2025-11-25 authorization spec](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization)
+and is covered by tests; reports from real deployments are welcome.
 
 Without authentication the server **binds loopback**. Asking for an external
 `BIND_HOST` without authentication fails at startup. Per-request localhost

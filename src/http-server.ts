@@ -10,6 +10,15 @@ import { ingestCallEvent, setCallEventWebhookHosted } from './callEventStore.js'
 import { generateNCCO } from './voiceCall.js';
 import { authenticateWebhook, isWebhookAuthConfigured, safeEqual } from './webhookAuth.js';
 import {
+  activeOAuthConfig,
+  buildWwwAuthenticate,
+  PROTECTED_RESOURCE_METADATA_PREFIX,
+  extractBearerToken,
+  protectedResourceMetadata,
+  protectedResourceMetadataPaths,
+  verifyAccessToken,
+} from './oauthResourceServer.js';
+import {
   applyStartupConfig,
   getMaxRequestBodyBytes,
   extractHostname,
@@ -89,36 +98,78 @@ app.use(
  * bind されておらず（getBindHost 参照）、外部からは到達できない。リクエストごとに
  * 接続元を見て localhost か判定する方式は、プロキシ配下で誤判定するため採らない。
  */
-function requireMcpAuth(
+async function requireMcpAuth(
   req: express.Request,
   res: express.Response,
   next: express.NextFunction
-): void {
+): Promise<void> {
   if (isUpstreamAuthTrusted()) {
     next();
     return;
   }
 
+  const oauth = activeOAuthConfig();
   const expected = getMcpAuthToken();
-  if (expected === null) {
+
+  if (oauth === null && expected === null) {
     next();
     return;
   }
 
-  const header = req.headers['authorization'];
-  const value = Array.isArray(header) ? header[0] : header;
-  const match = typeof value === 'string' ? /^Bearer\s+(.+)$/i.exec(value.trim()) : null;
+  const presented = extractBearerToken(req.headers['authorization']);
 
-  if (!match || !safeEqual(match[1].trim(), expected)) {
-    res.status(401).json({
-      jsonrpc: '2.0',
-      error: { code: -32000, message: 'Unauthorized: missing or invalid bearer token' },
-      id: null,
-    });
+  if (presented === null) {
+    denyMcp(res, oauth, 401, 'invalid_request', 'Unauthorized: missing or invalid bearer token');
     return;
   }
 
-  next();
+  // 静的トークンを先に見る。両方設定されている構成では、どちらの資格情報でも
+  // 通る（起動時に警告済み）。OAuth しか喋れない基盤と任意ヘッダを送れる基盤を、
+  // 同じデプロイに同時に繋ぐのは実際にある構成なので、片方を黙って無効化しない。
+  if (expected !== null && safeEqual(presented, expected)) {
+    next();
+    return;
+  }
+
+  if (oauth === null) {
+    denyMcp(res, null, 401, 'invalid_token', 'Unauthorized: missing or invalid bearer token');
+    return;
+  }
+
+  const result = await verifyAccessToken(presented, oauth);
+
+  if (result.ok) {
+    next();
+    return;
+  }
+
+  denyMcp(res, oauth, result.status, result.error, result.description);
+}
+
+/**
+ * /mcp の認証失敗を返す。
+ *
+ * OAuth モードでは `WWW-Authenticate` を必ず付ける。**これが無いと、クライアントは
+ * どこへ認可を取りに行けばよいか分からない。** 仕様上、401 に載せるこのヘッダーが
+ * discovery の起点であり、付け忘れると「認証が要るのは分かるが繋ぎようがない」
+ * サーバーになる。
+ */
+function denyMcp(
+  res: express.Response,
+  oauth: ReturnType<typeof activeOAuthConfig>,
+  status: 401 | 403,
+  error: string,
+  description: string
+): void {
+  if (oauth !== null) {
+    res.setHeader('WWW-Authenticate', buildWwwAuthenticate(oauth, error));
+  }
+
+  res.status(status).json({
+    jsonrpc: '2.0',
+    error: { code: -32000, message: description },
+    id: null,
+  });
 }
 
 /**
@@ -156,6 +207,28 @@ function requireAllowedHost(
 
   next();
 }
+
+/**
+ * RFC 9728 の保護リソースメタデータ
+ * GET /.well-known/oauth-protected-resource[/<リソースのパス>]
+ *
+ * **認証不要。** クライアントは「まだトークンを持っていない」状態でここを読む。
+ * 保護すると discovery が成立しない。載っているのは issuer と自分の URI だけで、
+ * 秘密は含まれない。
+ *
+ * OAuth モードでないときは 404 を返す。空のメタデータを返すと、クライアントは
+ * 「OAuth に対応しているが認可サーバーが無い」と読んで別の失敗の仕方をする。
+ */
+app.get(`${PROTECTED_RESOURCE_METADATA_PREFIX}{/*path}`, (req, res) => {
+  const oauth = activeOAuthConfig();
+
+  if (oauth === null || !protectedResourceMetadataPaths(oauth).includes(req.path)) {
+    res.status(404).json({ error: 'Not found' });
+    return;
+  }
+
+  res.json(protectedResourceMetadata(oauth));
+});
 
 app.use('/mcp', requireAllowedHost, requireMcpAuth);
 
