@@ -301,6 +301,12 @@ Enabling it turns on two things:
 - `WWW-Authenticate: Bearer resource_metadata="..."` on every 401/403 from `/mcp`
   — this header is the discovery entry point
 
+Tokens **must carry `exp`** — an access token that never expires cannot be
+revoked. `OAUTH_ISSUER` and `OAUTH_RESOURCE` are used **verbatim**, trailing
+slash included, because they are OAuth identifiers rather than URLs to normalise.
+Scope values must fit RFC 6749's character set (printable ASCII, no space, quote
+or backslash) or startup fails.
+
 **Access tokens are audience-validated** (a MUST in the specification): a token
 the same IdP issued for another service will not work here. Without that check, a
 user who consented to *some other service* would be authorising SMS sends.

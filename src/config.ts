@@ -443,6 +443,25 @@ function parseHttpsUrl(name: string, raw: string, problems: string[]): URL | nul
 }
 
 /**
+ * scope の値を RFC 6749 の scope-token として検証する。
+ *
+ * 使えるのは印字可能な ASCII のうち、空白・`"`・`\` を除いたもの。
+ * **ここを通してしまうと、401 のチャレンジに載せられる値と実際に検査する値が
+ * 食い違う。** ヘッダーには ASCII しか入れられないため（oauthResourceServer の
+ * quote 参照）、`sms:送信` は `scope="sms:"` として案内されるのに、検査は
+ * `sms:送信` のまま行われる。案内どおりのトークンを取ってきても 403 が
+ * 解消しない、という直しようのない状態になる。
+ */
+function validateScopeToken(name: string, value: string, problems: string[]): void {
+  if (!/^[\u0021\u0023-\u005b\u005d-\u007e]+$/.test(value)) {
+    problems.push(
+      `${name} に scope として使えない文字が含まれています（${value}）。` +
+        'RFC 6749 の scope は、空白・二重引用符・バックスラッシュを除く印字可能な ASCII だけで構成されます。'
+    );
+  }
+}
+
+/**
  * OAuth リソースサーバーモードの設定。1つも設定されていなければ null。
  *
  * **部分的な設定は起動エラーにする。** OAUTH_ISSUER だけ書いて JWKS を書き忘れた
@@ -473,8 +492,14 @@ export function getOAuthConfig(): OAuthConfig | null {
     }
   }
 
-  const issuer = raw.OAUTH_ISSUER === undefined ? null : parseHttpsUrl('OAUTH_ISSUER', raw.OAUTH_ISSUER, problems);
-  const jwks = raw.OAUTH_JWKS_URI === undefined ? null : parseHttpsUrl('OAUTH_JWKS_URI', raw.OAUTH_JWKS_URI, problems);
+  // URL としての妥当性だけ確かめる。**値そのものは書かれたとおりに使う**
+  // （末尾スラッシュを含めて OAuth の識別子だから。下の return を参照）。
+  if (raw.OAUTH_ISSUER !== undefined) {
+    parseHttpsUrl('OAUTH_ISSUER', raw.OAUTH_ISSUER, problems);
+  }
+  if (raw.OAUTH_JWKS_URI !== undefined) {
+    parseHttpsUrl('OAUTH_JWKS_URI', raw.OAUTH_JWKS_URI, problems);
+  }
   const resource =
     raw.OAUTH_RESOURCE === undefined ? null : parseHttpsUrl('OAUTH_RESOURCE', raw.OAUTH_RESOURCE, problems);
 
@@ -492,17 +517,30 @@ export function getOAuthConfig(): OAuthConfig | null {
     problems.push('OAUTH_SCOPES_SUPPORTED が設定されていますが、有効な scope が1件もありません。');
   }
 
+  for (const scope of scopesSupported ?? []) {
+    validateScopeToken('OAUTH_SCOPES_SUPPORTED', scope, problems);
+  }
+
+  if (raw.OAUTH_REQUIRED_SCOPE !== undefined) {
+    validateScopeToken('OAUTH_REQUIRED_SCOPE', raw.OAUTH_REQUIRED_SCOPE, problems);
+  }
+
   if (problems.length > 0) {
     throw new ConfigError(problems);
   }
 
-  const resourceUri = resource!.toString().replace(/\/$/, '');
+  // **末尾のスラッシュは削らない。** issuer は OAuth の識別子で、`https://idp/` と
+  // `https://idp` は別物として扱われる。こちらで正規化すると、IdP の設定どおりに
+  // 書いた運用者のトークンが iss 不一致で 401 になる（しかも「設定は合っている
+  // のに通らない」という最も追いにくい形で）。resource と audience も同じ理由で
+  // そのまま使う。
+  const resourceUri = raw.OAUTH_RESOURCE!;
 
   return {
-    issuer: issuer!.toString().replace(/\/$/, ''),
+    issuer: raw.OAUTH_ISSUER!,
     resource: resourceUri,
     audience: raw.OAUTH_AUDIENCE ?? resourceUri,
-    jwksUri: jwks!.toString(),
+    jwksUri: raw.OAUTH_JWKS_URI!,
     scopesSupported,
     requiredScope: raw.OAUTH_REQUIRED_SCOPE ?? null,
   };

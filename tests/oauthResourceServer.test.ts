@@ -22,8 +22,8 @@ import { ConfigError, getOAuthConfig, isHttpAuthConfigured, type OAuthConfig } f
 import {
   buildWwwAuthenticate,
   clearJwksCache,
-  extractBearerToken,
   extractScopes,
+  parseAuthorizationHeader,
   protectedResourceMetadata,
   protectedResourceMetadataPaths,
   resourceMetadataUrl,
@@ -75,7 +75,15 @@ function configure(overrides: Record<string, string | undefined> = {}): void {
  * 壊して、その1つが検証されていることを確かめる。
  */
 async function issueToken(
-  claims: { aud?: string; iss?: string; scope?: string; expiresIn?: string; sub?: string } = {}
+  claims: {
+    aud?: string;
+    iss?: string;
+    scope?: string;
+    expiresIn?: string;
+    sub?: string;
+    /** true にすると exp を付けない（無期限トークン） */
+    withoutExpiry?: boolean;
+  } = {}
 ): Promise<string> {
   let jwt = new SignJWT({
     ...(claims.scope === undefined ? {} : { scope: claims.scope }),
@@ -86,7 +94,9 @@ async function issueToken(
     .setAudience(claims.aud ?? RESOURCE)
     .setSubject(claims.sub ?? 'user-1');
 
-  jwt = jwt.setExpirationTime(claims.expiresIn ?? '5m');
+  if (claims.withoutExpiry !== true) {
+    jwt = jwt.setExpirationTime(claims.expiresIn ?? '5m');
+  }
 
   return jwt.sign(keys.privateKey);
 }
@@ -177,10 +187,22 @@ describe('OAuth 設定の解釈', () => {
     expect(() => getOAuthConfig()).toThrow(ConfigError);
   });
 
-  it('末尾のスラッシュは落として正規化する', () => {
-    configure({ OAUTH_RESOURCE: 'https://mcp.example.com/' });
+  // issuer は OAuth の識別子で、末尾スラッシュの有無で別物として扱われる。
+  // こちらで正規化すると、IdP の設定どおりに書いた運用者のトークンが
+  // iss 不一致で 401 になる
+  it('末尾のスラッシュを含め、書かれたとおりの値を使う', () => {
+    configure({ OAUTH_ISSUER: 'https://idp.example.com/', OAUTH_RESOURCE: 'https://mcp.example.com/' });
 
-    expect(getOAuthConfig()?.resource).toBe('https://mcp.example.com');
+    expect(getOAuthConfig()?.issuer).toBe('https://idp.example.com/');
+    expect(getOAuthConfig()?.resource).toBe('https://mcp.example.com/');
+  });
+
+  it('scope に使えない文字があれば起動エラー', () => {
+    configure({ OAUTH_REQUIRED_SCOPE: 'sms:送信' });
+    expect(() => getOAuthConfig()).toThrow(ConfigError);
+
+    configure({ OAUTH_SCOPES_SUPPORTED: 'sms:send, sms send' });
+    expect(() => getOAuthConfig()).toThrow(ConfigError);
   });
 
   it('OAUTH_SCOPES_SUPPORTED はカンマ区切りで読む', () => {
@@ -315,14 +337,20 @@ describe('scope の取り出し', () => {
   });
 });
 
-describe('Bearer トークンの取り出し', () => {
+describe('Authorization ヘッダーの解釈', () => {
   it('Bearer を大文字小文字を問わず読む', () => {
-    expect(extractBearerToken('bearer abc')).toBe('abc');
+    expect(parseAuthorizationHeader('bearer abc')).toEqual({ kind: 'bearer', token: 'abc' });
   });
 
-  it('Bearer 以外は null', () => {
-    expect(extractBearerToken('Basic abc')).toBeNull();
-    expect(extractBearerToken(undefined)).toBeNull();
+  // 「送っていない」と「送ったが形式が違う」で返すべき応答が違う（RFC 6750 3.1）
+  it('未送信は absent', () => {
+    expect(parseAuthorizationHeader(undefined)).toEqual({ kind: 'absent' });
+    expect(parseAuthorizationHeader('   ')).toEqual({ kind: 'absent' });
+  });
+
+  it('Bearer 以外や中身の無い Bearer は malformed', () => {
+    expect(parseAuthorizationHeader('Basic abc')).toEqual({ kind: 'malformed' });
+    expect(parseAuthorizationHeader('Bearer   ')).toEqual({ kind: 'malformed' });
   });
 });
 
@@ -364,6 +392,21 @@ describe('アクセストークンの検証', () => {
 
     expect(result).toMatchObject({ ok: false, status: 401 });
     expect(result.ok === false && result.description).toContain('有効期限');
+  });
+
+  // exp を必須にしないと、漏れた1本を失効させる手段が無くなる
+  it('有効期限を持たないトークンは拒否する', async () => {
+    const result = await verifyAccessToken(await issueToken({ withoutExpiry: true }), config());
+
+    expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
+    expect(result.ok === false && result.description).toContain('exp');
+  });
+
+  it('末尾スラッシュ付きの issuer でも、設定どおりなら通る', async () => {
+    const issuer = 'https://idp.example.com/';
+    const result = await verifyAccessToken(await issueToken({ iss: issuer }), config({ issuer }));
+
+    expect(result.ok).toBe(true);
   });
 
   it('署名が壊れていれば拒否する', async () => {
@@ -440,6 +483,54 @@ describe('HTTP 経路', () => {
     expect(res.headers['www-authenticate']).toContain(
       'resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp"'
     );
+  });
+
+  // 認証情報がまったく無いリクエストへの 401 に error を載せると、
+  // クライアントによっては「認可を取りに行く」のではなく「失敗した」と扱う
+  it('トークン未送信の 401 には error を載せない', async () => {
+    configure();
+
+    const res = await request(app)
+      .post('/mcp')
+      .set('Accept', MCP_ACCEPT)
+      .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+
+    expect(res.status).toBe(401);
+    expect(res.headers['www-authenticate']).not.toContain('error=');
+  });
+
+  it('Bearer として読めない Authorization は 400 invalid_request', async () => {
+    configure();
+
+    const res = await request(app)
+      .post('/mcp')
+      .set('Accept', MCP_ACCEPT)
+      .set('Authorization', 'Basic dXNlcjpwYXNz')
+      .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+
+    expect(res.status).toBe(400);
+    expect(res.headers['www-authenticate']).toContain('error="invalid_request"');
+  });
+
+  // 壊れた設定で素通りさせると、無認証のサーバーができる
+  it('OAUTH_* が部分設定なら、素通りさせず 500 を返す', async () => {
+    process.env.OAUTH_ISSUER = ISSUER;
+
+    const res = await request(app)
+      .post('/mcp')
+      .set('Accept', MCP_ACCEPT)
+      .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.message).toContain('misconfigured');
+  });
+
+  it('部分設定ではメタデータも 500 を返す', async () => {
+    process.env.OAUTH_ISSUER = ISSUER;
+
+    const res = await request(app).get('/.well-known/oauth-protected-resource');
+
+    expect(res.status).toBe(500);
   });
 
   it('有効なアクセストークンなら通る', async () => {

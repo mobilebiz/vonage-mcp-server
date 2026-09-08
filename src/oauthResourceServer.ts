@@ -42,6 +42,9 @@ import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey, type JWTPayload } 
 
 import { getOAuthConfig, type OAuthConfig } from './config.js';
 
+/** OAuth モードの設定、または未設定 */
+export type OAuthConfigOrNull = OAuthConfig | null;
+
 /** RFC 9728 が定める保護リソースメタデータの well-known プレフィックス */
 export const PROTECTED_RESOURCE_METADATA_PREFIX = '/.well-known/oauth-protected-resource';
 
@@ -219,15 +222,33 @@ export function extractScopes(payload: JWTPayload): string[] {
   return [];
 }
 
-/** Authorization ヘッダーから Bearer トークンを取り出す。無ければ null */
-export function extractBearerToken(header: string | string[] | undefined): string | null {
+/**
+ * Authorization ヘッダーの解釈結果。
+ *
+ * **「送っていない」と「送ったが形式が違う」を区別する。** RFC 6750 は、認証情報が
+ * まったく無いリクエストへの 401 には error コードを**載せるべきでない**としている。
+ * 未認証は異常ではなく、認可フローの1歩目だからである。エラーを載せると、
+ * クライアントによっては「認可を取りに行く」のではなく「失敗した」と扱う。
+ */
+export type AuthorizationHeader =
+  | { kind: 'absent' }
+  | { kind: 'malformed' }
+  | { kind: 'bearer'; token: string };
+
+/** Authorization ヘッダーを解釈する */
+export function parseAuthorizationHeader(header: string | string[] | undefined): AuthorizationHeader {
   const value = Array.isArray(header) ? header[0] : header;
-  if (typeof value !== 'string') {
-    return null;
+  if (typeof value !== 'string' || value.trim() === '') {
+    return { kind: 'absent' };
   }
 
   const match = /^Bearer\s+(.+)$/i.exec(value.trim());
-  return match === null ? null : match[1].trim();
+  if (match === null) {
+    return { kind: 'malformed' };
+  }
+
+  const token = match[1].trim();
+  return token === '' ? { kind: 'malformed' } : { kind: 'bearer', token };
 }
 
 /**
@@ -250,6 +271,10 @@ export async function verifyAccessToken(token: string, config: OAuthConfig): Pro
     const verified = await jwtVerify(token, jwksFor(config), {
       issuer: config.issuer,
       audience: config.audience,
+      // **exp を必須にする。** jwtVerify は「あれば検査する」だけなので、
+      // 指定しないと exp を持たないトークンが無期限に通る。漏れた1本を
+      // 失効させる手段が無くなり、IdP 側でセッションを切っても効かない。
+      requiredClaims: ['exp'],
     });
     payload = verified.payload;
   } catch (error: unknown) {
@@ -257,15 +282,19 @@ export async function verifyAccessToken(token: string, config: OAuthConfig): Pro
 
     // 「なぜ落ちたか」は返す。トークンの中身は返さない。クライアントは自分の
     // トークンについてしか問い合わせできないので、原因の粒度は安全側で足りる。
+    const claim = (error as { claim?: string }).claim;
+
     const description =
       code === 'ERR_JWT_EXPIRED'
         ? 'アクセストークンの有効期限が切れています。'
-        : code === 'ERR_JWT_CLAIM_VALIDATION_FAILED'
-          ? `アクセストークンの ${(error as { claim?: string }).claim ?? 'claim'} がこのサーバー向けではありません。` +
-            `期待する issuer は ${config.issuer}、audience は ${config.audience} です。`
-          : code === 'ERR_JWKS_NO_MATCHING_KEY'
-            ? 'アクセストークンの署名鍵が認可サーバーの JWKS に見つかりません。'
-            : 'アクセストークンを検証できませんでした。';
+        : code === 'ERR_JWT_CLAIM_VALIDATION_FAILED' && claim === 'exp'
+          ? '有効期限（exp）を持たないアクセストークンは受け付けません。'
+          : code === 'ERR_JWT_CLAIM_VALIDATION_FAILED'
+            ? `アクセストークンの ${claim ?? 'claim'} がこのサーバー向けではありません。` +
+              `期待する issuer は ${config.issuer}、audience は ${config.audience} です。`
+            : code === 'ERR_JWKS_NO_MATCHING_KEY'
+              ? 'アクセストークンの署名鍵が認可サーバーの JWKS に見つかりません。'
+              : 'アクセストークンを検証できませんでした。';
 
     return { ok: false, status: 401, error: 'invalid_token', description };
   }
@@ -291,14 +320,11 @@ export async function verifyAccessToken(token: string, config: OAuthConfig): Pro
 /**
  * 現在の設定で OAuth リソースサーバーモードが有効なら、その設定を返す。
  *
- * 設定のパースに失敗している場合は起動時に落ちている（applyStartupConfig）ため、
- * ここでは例外を伝播させる必要はない。テストが app だけを import した場合に
- * 備えて null に倒す。
+ * **設定エラーを握り潰して null を返してはいけない。** null は「OAuth モードでは
+ * ない」を意味し、静的トークンも無ければ認証ミドルウェアは素通りする。つまり
+ * `OAUTH_ISSUER` だけ書いて JWKS を書き忘れた状態が、**起動時検証を経ずに
+ * app を読み込む経路では無認証のサーバーになる**。壊れた設定は拒否に倒す。
  */
 export function activeOAuthConfig(): OAuthConfig | null {
-  try {
-    return getOAuthConfig();
-  } catch {
-    return null;
-  }
+  return getOAuthConfig();
 }

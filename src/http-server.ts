@@ -13,10 +13,11 @@ import {
   activeOAuthConfig,
   buildWwwAuthenticate,
   PROTECTED_RESOURCE_METADATA_PREFIX,
-  extractBearerToken,
+  parseAuthorizationHeader,
   protectedResourceMetadata,
   protectedResourceMetadataPaths,
   verifyAccessToken,
+  type OAuthConfigOrNull,
 } from './oauthResourceServer.js';
 import {
   applyStartupConfig,
@@ -103,40 +104,60 @@ async function requireMcpAuth(
   res: express.Response,
   next: express.NextFunction
 ): Promise<void> {
-  if (isUpstreamAuthTrusted()) {
-    next();
+  let oauth: OAuthConfigOrNull;
+  let expected: string | null;
+
+  // 設定の解釈で落ちたら**拒否に倒す**。ここで例外を握り潰して素通りさせると、
+  // 壊れた設定のサーバーが無認証で動く。通常は applyStartupConfig が起動時に
+  // 止めるが、この経路自体が安全側でなければ「起動時検証を通らない読み込まれ方」
+  // で穴になる。
+  try {
+    if (isUpstreamAuthTrusted()) {
+      next();
+      return;
+    }
+
+    oauth = activeOAuthConfig();
+    expected = getMcpAuthToken();
+  } catch (error) {
+    denyMisconfigured(res, error);
     return;
   }
-
-  const oauth = activeOAuthConfig();
-  const expected = getMcpAuthToken();
 
   if (oauth === null && expected === null) {
     next();
     return;
   }
 
-  const presented = extractBearerToken(req.headers['authorization']);
+  const authorization = parseAuthorizationHeader(req.headers['authorization']);
 
-  if (presented === null) {
-    denyMcp(res, oauth, 401, 'invalid_request', 'Unauthorized: missing or invalid bearer token');
+  // 認証情報がまったく無いリクエストへの 401 には error を載せない（RFC 6750 3.1）。
+  // 未認証は異常ではなく、認可フローの1歩目である。
+  if (authorization.kind === 'absent') {
+    denyMcp(res, oauth, 401, undefined, 'Unauthorized: missing bearer token');
+    return;
+  }
+
+  // 送ってきたが Bearer として読めない。これは要求そのものが壊れているので 400。
+  if (authorization.kind === 'malformed') {
+    denyMcp(res, oauth, 400, 'invalid_request', 'Bad Request: malformed Authorization header');
     return;
   }
 
   // 静的トークンを先に見る。両方設定されている構成では、どちらの資格情報でも
   // 通る（起動時に警告済み）。OAuth しか喋れない基盤と任意ヘッダを送れる基盤を、
   // 同じデプロイに同時に繋ぐのは実際にある構成なので、片方を黙って無効化しない。
-  if (expected !== null && safeEqual(presented, expected)) {
+  if (expected !== null && safeEqual(authorization.token, expected)) {
     next();
     return;
   }
 
   if (oauth === null) {
-    denyMcp(res, null, 401, 'invalid_token', 'Unauthorized: missing or invalid bearer token');
+    denyMcp(res, null, 401, 'invalid_token', 'Unauthorized: invalid bearer token');
     return;
   }
 
-  const result = await verifyAccessToken(presented, oauth);
+  const result = await verifyAccessToken(authorization.token, oauth);
 
   if (result.ok) {
     next();
@@ -144,6 +165,25 @@ async function requireMcpAuth(
   }
 
   denyMcp(res, oauth, result.status, result.error, result.description);
+}
+
+/**
+ * 設定の解釈に失敗したときの応答。
+ *
+ * **例外を素通りさせない。** Express の既定のエラーハンドラに任せると 500 は返るが、
+ * ミドルウェアの並びによっては例外が認証より前で起きて、そこから先の判断が
+ * まるごと飛ぶ。設定が読めない状態は「誰も通さない」に倒す。
+ */
+function denyMisconfigured(res: express.Response, error: unknown): void {
+  console.error('設定の解釈に失敗しました:', error);
+  res.status(500).json({
+    jsonrpc: '2.0',
+    error: {
+      code: -32603,
+      message: 'Server misconfigured: settings could not be parsed',
+    },
+    id: null,
+  });
 }
 
 /**
@@ -156,9 +196,9 @@ async function requireMcpAuth(
  */
 function denyMcp(
   res: express.Response,
-  oauth: ReturnType<typeof activeOAuthConfig>,
-  status: 401 | 403,
-  error: string,
+  oauth: OAuthConfigOrNull,
+  status: 400 | 401 | 403,
+  error: string | undefined,
   description: string
 ): void {
   if (oauth !== null) {
@@ -189,7 +229,17 @@ function requireAllowedHost(
   res: express.Response,
   next: express.NextFunction
 ): void {
-  const allowed = getAllowedHostnames();
+  let allowed: string[] | null;
+
+  // getAllowedHostnames() は BIND_HOST の既定を通じて認証設定まで読む。
+  // 認証設定が壊れていればここで落ちるので、拒否に倒す。
+  try {
+    allowed = getAllowedHostnames();
+  } catch (error) {
+    denyMisconfigured(res, error);
+    return;
+  }
+
   if (allowed === null) {
     next();
     return;
@@ -220,7 +270,15 @@ function requireAllowedHost(
  * 「OAuth に対応しているが認可サーバーが無い」と読んで別の失敗の仕方をする。
  */
 app.get(`${PROTECTED_RESOURCE_METADATA_PREFIX}{/*path}`, (req, res) => {
-  const oauth = activeOAuthConfig();
+  let oauth: OAuthConfigOrNull;
+
+  try {
+    oauth = activeOAuthConfig();
+  } catch (error) {
+    console.error('認証設定の解釈に失敗しました:', error);
+    res.status(500).json({ error: 'Server misconfigured: authentication settings could not be parsed' });
+    return;
+  }
 
   if (oauth === null || !protectedResourceMetadataPaths(oauth).includes(req.path)) {
     res.status(404).json({ error: 'Not found' });
