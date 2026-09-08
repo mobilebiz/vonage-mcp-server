@@ -224,26 +224,15 @@ export function extractScopes(payload: JWTPayload): string[] {
 }
 
 /**
- * 鍵を取りに行けなかったことを意味する jose のエラーコード。
+ * 鍵の解決中に起きたが、**原因はトークンの側**にあるエラーコード。
  *
- * JWKS の取得がタイムアウトしただけで `invalid_token` を返すと、クライアントは
- * 正当なトークンを捨てて取り直しに行く。認可サーバーが不調なときに、こちらから
- * 追加の負荷を掛けにいくことになる。
+ * トークンが名指しした `kid` が JWKS に無い（あるいは複数一致する）のは、こちらの
+ * 障害ではない。再試行しても直らないので 401 に倒す。
  */
-const KEY_RETRIEVAL_ERROR_CODES: ReadonlySet<string> = new Set(['ERR_JWKS_TIMEOUT']);
-
-/**
- * jose が付けるエラーコードか。
- *
- * **「トークン起因のコードを列挙する」形にはしない。** 一度その形で書いたところ、
- * 列挙から漏れた `ERR_JOSE_NOT_SUPPORTED`（未対応の `crit` ヘッダーを持つトークン）が
- * 「鍵を取得できなかった」側に落ち、**何度再試行しても直らないのに再試行を促す**
- * 503 を返していた。jose のコードが付いているなら、それは受け取ったトークンを
- * 処理した結果である。鍵の取得失敗だけを名指しして、残りはトークン起因に倒す。
- */
-function isJoseErrorCode(code: string): boolean {
-  return /^ERR_(JWT|JWS|JWE|JWK|JOSE)/.test(code);
-}
+const TOKEN_CAUSED_KEY_ERROR_CODES: ReadonlySet<string> = new Set([
+  'ERR_JWKS_NO_MATCHING_KEY',
+  'ERR_JWKS_MULTIPLE_MATCHING_KEYS',
+]);
 
 /**
  * Authorization ヘッダーの解釈結果。
@@ -298,8 +287,26 @@ export function parseAuthorizationHeader(header: string | string[] | undefined):
 export async function verifyAccessToken(token: string, config: OAuthConfig): Promise<AccessTokenResult> {
   let payload: JWTPayload;
 
+  // 「鍵を取りに行って失敗した」のか「トークンが正しくない」のかを、**エラー
+  // コードの分類ではなく、どこで落ちたかで**判定する。コードで分類しようとして
+  // 2周続けて外した — 列挙すれば `ERR_JOSE_NOT_SUPPORTED`（未対応の crit）が
+  // 取得失敗側に落ち、接頭辞で判定すれば `ERR_JOSE_GENERIC`（JWKS が 429 や 503 を
+  // 返したとき）がトークン側に落ちる。**jose のコード体系はこの2つを区別する
+  // ようにはできていない。**
+  const resolveKey = jwksFor(config);
+  let keyError: unknown = null;
+
+  const guardedResolveKey: JWTVerifyGetKey = async (header, input) => {
+    try {
+      return await resolveKey(header, input);
+    } catch (error) {
+      keyError = error;
+      throw error;
+    }
+  };
+
   try {
-    const verified = await jwtVerify(token, jwksFor(config), {
+    const verified = await jwtVerify(token, guardedResolveKey, {
       issuer: config.issuer,
       audience: config.audience,
       // **exp を必須にする。** jwtVerify は「あれば検査する」だけなので、
@@ -311,9 +318,9 @@ export async function verifyAccessToken(token: string, config: OAuthConfig): Pro
   } catch (error: unknown) {
     const code = (error as { code?: string })?.code ?? '';
 
-    // 鍵を取りに行けなかっただけなら、トークンは無効ではない。
-    // fetch が投げる TypeError のようにコードを持たないものも、こちら側の障害。
-    if (KEY_RETRIEVAL_ERROR_CODES.has(code) || !isJoseErrorCode(code)) {
+    // 鍵の解決で落ちていて、しかもトークン起因でないなら、こちら側の障害。
+    // トークンは無効とは限らないので、捨てて取り直させない。
+    if (keyError !== null && !TOKEN_CAUSED_KEY_ERROR_CODES.has(code)) {
       return {
         ok: false,
         status: 503,

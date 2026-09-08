@@ -454,17 +454,12 @@ describe('アクセストークンの検証', () => {
     expect(result).toMatchObject({ ok: false, status: 503, error: undefined });
   });
 
-  // 列挙から漏れたトークン起因のエラーが 503 に落ちると、何度再試行しても
-  // 直らないのに再試行を促すことになる
-  it('未対応のヘッダーを持つトークンは 503 ではなく 401', async () => {
-    const token = await issueToken();
-    setJwksResolverForTesting(() => {
-      const error = new Error('unsupported crit') as Error & { code: string };
-      error.code = 'ERR_JOSE_NOT_SUPPORTED';
-      throw error;
-    });
-
-    const result = await verifyAccessToken(token, config());
+  // 鍵の解決が成功しているなら、落ちた原因はトークンの側にある。**エラーコードで
+  // 分類しようとして2周続けて外した**ので、コードではなく落ちた場所で判定している
+  it('鍵の解決が成功していれば、検証時のどんなエラーでも 401', async () => {
+    // alg: none のトークン。jose は署名検証以前の段階で、また別の体系の
+    // エラーを投げるが、鍵の解決には至っていないのでトークン起因と分かる
+    const result = await verifyAccessToken('eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0.', config());
 
     expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
   });
@@ -478,6 +473,37 @@ describe('アクセストークンの検証', () => {
     const result = await verifyAccessToken(token, config());
 
     expect(result).toMatchObject({ ok: false, status: 503 });
+  });
+
+  // jose は JWKS が 429 / 503 を返したときも JSON が壊れていたときも
+  // ERR_JOSE_GENERIC を投げる。コードでは取得失敗と区別できない
+  it('JWKS が汎用エラーを返しても 503（コードでは区別できない）', async () => {
+    const token = await issueToken();
+    setJwksResolverForTesting(() => {
+      const error = new Error('Expected 200 OK from the JSON Web Key Set HTTP response') as Error & {
+        code: string;
+      };
+      error.code = 'ERR_JOSE_GENERIC';
+      throw error;
+    });
+
+    const result = await verifyAccessToken(token, config());
+
+    expect(result).toMatchObject({ ok: false, status: 503 });
+  });
+
+  // 鍵の解決中に落ちても、原因がトークンの側なら再試行しても直らない
+  it('トークンの kid が JWKS に無ければ 401', async () => {
+    const token = await issueToken();
+    setJwksResolverForTesting(() => {
+      const error = new Error('no applicable key found') as Error & { code: string };
+      error.code = 'ERR_JWKS_NO_MATCHING_KEY';
+      throw error;
+    });
+
+    const result = await verifyAccessToken(token, config());
+
+    expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
   });
 
   it('必須 scope が無ければ 403 insufficient_scope', async () => {
