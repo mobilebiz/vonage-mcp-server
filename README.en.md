@@ -289,6 +289,7 @@ Entra ID, Keycloak, …).
 | `OAUTH_AUDIENCE` | | Expected `aud`. Defaults to `OAUTH_RESOURCE`; set it only when your IdP's API identifier differs |
 | `OAUTH_SCOPES_SUPPORTED` | | Comma-separated scopes advertised in the protected resource metadata |
 | `OAUTH_REQUIRED_SCOPE` | | Scope required to call `/mcp`. Tokens without it get `403 insufficient_scope` |
+| `OAUTH_REQUIRE_AT_JWT` | | `true` accepts only tokens carrying RFC 9068's `typ: at+jwt`. Turn it on if your IdP sets it — it is the surest defence against ID tokens |
 
 All three required variables must be present together — a partial configuration
 fails at startup rather than silently falling back to the static token.
@@ -306,6 +307,20 @@ revoked. `OAUTH_ISSUER` and `OAUTH_RESOURCE` are used **verbatim**, trailing
 slash included, because they are OAuth identifiers rather than URLs to normalise.
 Scope values must fit RFC 6749's character set (printable ASCII, no space, quote
 or backslash) or startup fails.
+
+**Never set `OAUTH_AUDIENCE` to a client id.** An ID token's `aud` *is* the
+client id, so if the same IdP signs ID tokens with the same keys and issuer,
+matching them lets anyone who can merely log in send SMS without ever being
+delegated API access. Tokens carrying `at_hash` / `c_hash` are rejected as ID
+tokens, but that is the last net, not the design: point `OAUTH_AUDIENCE` at the
+API/resource identifier, and set `OAUTH_REQUIRE_AT_JWT=true` if your IdP marks
+access tokens.
+
+`http://localhost` is for local testing only. When any of the issuer, resource
+or JWKS URL is plaintext http, the server **binds loopback** unless `BIND_HOST`
+says otherwise, and refuses to start if `BIND_HOST` names an external address —
+a server that accepts bearer tokens in the clear should not be reachable from
+off-host. `OAUTH_ISSUER` may not carry a query or fragment (RFC 8414).
 
 **Access tokens are audience-validated** (a MUST in the specification): a token
 the same IdP issued for another service will not work here. Without that check, a

@@ -18,7 +18,14 @@ vi.mock('../src/voiceCall.js', async () => {
 });
 
 import { app } from '../src/http-server.js';
-import { ConfigError, getOAuthConfig, isHttpAuthConfigured, type OAuthConfig } from '../src/config.js';
+import {
+  ConfigError,
+  getBindHost,
+  getOAuthConfig,
+  isHttpAuthConfigured,
+  validateStartupConfig,
+  type OAuthConfig,
+} from '../src/config.js';
 import {
   buildWwwAuthenticate,
   clearJwksCache,
@@ -39,8 +46,10 @@ const MANAGED_ENV = [
   'OAUTH_AUDIENCE',
   'OAUTH_SCOPES_SUPPORTED',
   'OAUTH_REQUIRED_SCOPE',
+  'OAUTH_REQUIRE_AT_JWT',
   'MCP_AUTH_TOKEN',
   'TRUST_UPSTREAM_AUTH',
+  'BIND_HOST',
   'ALLOWED_HOSTS',
   'ALLOWED_ORIGINS',
 ];
@@ -142,6 +151,8 @@ describe('OAuth 設定の解釈', () => {
       jwksUri: JWKS_URI,
       scopesSupported: null,
       requiredScope: null,
+      requireAtJwt: false,
+      loopbackHttp: false,
     });
   });
 
@@ -201,6 +212,16 @@ describe('OAuth 設定の解釈', () => {
   // issuer は OAuth の識別子で、末尾スラッシュの有無で別物として扱われる。
   // こちらで正規化すると、IdP の設定どおりに書いた運用者のトークンが
   // iss 不一致で 401 になる
+  // issuer 識別子はクエリもフラグメントも持てない（RFC 8414）。持ったまま起動できると、
+  // メタデータには載るのに discovery の URL を組み立てる段階で落ちる
+  it('OAUTH_ISSUER のフラグメントとクエリは拒否する', () => {
+    configure({ OAUTH_ISSUER: 'https://idp.example.com#x' });
+    expect(() => getOAuthConfig()).toThrow(ConfigError);
+
+    configure({ OAUTH_ISSUER: 'https://idp.example.com?x=1' });
+    expect(() => getOAuthConfig()).toThrow(ConfigError);
+  });
+
   it('末尾のスラッシュを含め、書かれたとおりの値を使う', () => {
     configure({ OAUTH_ISSUER: 'https://idp.example.com/', OAUTH_RESOURCE: 'https://mcp.example.com/' });
 
@@ -244,6 +265,42 @@ describe('OAuth 設定の解釈', () => {
     configure();
 
     expect(isHttpAuthConfigured()).toBe(true);
+    expect(getBindHost()).toBe('0.0.0.0');
+  });
+
+  // http を許しているのは「手元で試すあいだだけ」という前提。その構成で
+  // 0.0.0.0 に bind すると、平文でトークンを受け取るサーバーが外に出る
+  it('ループバックの http な OAuth 設定では 0.0.0.0 に bind しない', () => {
+    configure({
+      OAUTH_ISSUER: 'http://localhost:8080',
+      OAUTH_RESOURCE: 'http://localhost:3000/mcp',
+      OAUTH_JWKS_URI: 'http://localhost:8080/jwks',
+    });
+
+    expect(getOAuthConfig()?.loopbackHttp).toBe(true);
+    expect(getBindHost()).toBe('127.0.0.1');
+  });
+
+  it('ループバックの http な OAuth 設定で外部アドレスを指定すると起動エラー', () => {
+    configure({
+      OAUTH_ISSUER: 'http://localhost:8080',
+      OAUTH_RESOURCE: 'http://localhost:3000/mcp',
+      OAUTH_JWKS_URI: 'http://localhost:8080/jwks',
+      BIND_HOST: '0.0.0.0',
+    });
+
+    expect(() => validateStartupConfig()).toThrow(ConfigError);
+  });
+
+  it('MCP_AUTH_TOKEN があれば、http な OAuth 設定でも外部 bind の判断は妨げない', () => {
+    configure({
+      OAUTH_ISSUER: 'http://localhost:8080',
+      OAUTH_RESOURCE: 'http://localhost:3000/mcp',
+      OAUTH_JWKS_URI: 'http://localhost:8080/jwks',
+      MCP_AUTH_TOKEN: 'a'.repeat(32),
+    });
+
+    expect(getBindHost()).toBe('0.0.0.0');
   });
 });
 
@@ -256,6 +313,8 @@ describe('保護リソースメタデータ', () => {
       jwksUri: JWKS_URI,
       scopesSupported: null,
       requiredScope: null,
+      requireAtJwt: false,
+      loopbackHttp: false,
       ...overrides,
     };
   }
@@ -263,6 +322,16 @@ describe('保護リソースメタデータ', () => {
   // クライアントによって「パス付きを先に試す」ものと「ルートに落とす」ものがある
   it('パス付きとルートの両方を配る', () => {
     expect(protectedResourceMetadataPaths(config())).toEqual([
+      '/.well-known/oauth-protected-resource/mcp',
+      '/.well-known/oauth-protected-resource',
+    ]);
+  });
+
+  // RFC 9728 はリソースのパスをそのまま差し込む。削って配ると、導出した
+  // エンドポイントを引くクライアントが 404 を受け取る
+  it('リソースパスの末尾スラッシュを保ったまま配る', () => {
+    expect(protectedResourceMetadataPaths(config({ resource: 'https://mcp.example.com/mcp/' }))).toEqual([
+      '/.well-known/oauth-protected-resource/mcp/',
       '/.well-known/oauth-protected-resource/mcp',
       '/.well-known/oauth-protected-resource',
     ]);
@@ -304,6 +373,8 @@ describe('WWW-Authenticate', () => {
     jwksUri: JWKS_URI,
     scopesSupported: null,
     requiredScope: null,
+    requireAtJwt: false,
+    loopbackHttp: false,
   };
 
   it('resource_metadata を必ず載せる（discovery の起点）', () => {
@@ -395,6 +466,8 @@ describe('アクセストークンの検証', () => {
       jwksUri: JWKS_URI,
       scopesSupported: null,
       requiredScope: null,
+      requireAtJwt: false,
+      loopbackHttp: false,
       ...overrides,
     };
   }
@@ -550,6 +623,41 @@ describe('アクセストークンの検証', () => {
     const result = await verifyAccessToken(token, config());
 
     expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
+  });
+
+  // ログインできる利用者が、API の委譲を受けないまま課金の発生するツールを
+  // 呼べてしまう構成がある（同じ鍵・同じ issuer・audience にクライアント識別子）
+  it('ID トークン（at_hash を持つ）はアクセストークンとして受け付けない', async () => {
+    const token = await new SignJWT({ at_hash: 'abc' })
+      .setProtectedHeader({ alg: 'RS256' })
+      .setIssuedAt()
+      .setIssuer(ISSUER)
+      .setAudience(RESOURCE)
+      .setExpirationTime('5m')
+      .sign(keys.privateKey);
+
+    const result = await verifyAccessToken(token, config());
+
+    expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
+    expect(result.ok === false && result.description).toContain('ID トークン');
+  });
+
+  it('OAUTH_REQUIRE_AT_JWT=true なら typ が at+jwt でないトークンを拒否する', async () => {
+    const result = await verifyAccessToken(await issueToken(), config({ requireAtJwt: true }));
+
+    expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
+  });
+
+  it('OAUTH_REQUIRE_AT_JWT=true でも typ: at+jwt なら通る', async () => {
+    const token = await new SignJWT({})
+      .setProtectedHeader({ alg: 'RS256', typ: 'at+jwt' })
+      .setIssuedAt()
+      .setIssuer(ISSUER)
+      .setAudience(RESOURCE)
+      .setExpirationTime('5m')
+      .sign(keys.privateKey);
+
+    expect((await verifyAccessToken(token, config({ requireAtJwt: true }))).ok).toBe(true);
   });
 
   it('必須 scope が無ければ 403 insufficient_scope', async () => {

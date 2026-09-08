@@ -392,6 +392,7 @@ export const OAUTH_ENV_VARS = [
   'OAUTH_AUDIENCE',
   'OAUTH_SCOPES_SUPPORTED',
   'OAUTH_REQUIRED_SCOPE',
+  'OAUTH_REQUIRE_AT_JWT',
 ] as const;
 
 /** OAuth リソースサーバーモードの設定。未設定なら getOAuthConfig() が null を返す */
@@ -408,6 +409,10 @@ export interface OAuthConfig {
   scopesSupported: string[] | null;
   /** /mcp を呼ぶために必須の scope。未設定ならスコープを検査しない */
   requiredScope: string | null;
+  /** RFC 9068 の `typ: at+jwt` を必須にするか */
+  requireAtJwt: boolean;
+  /** issuer / resource / JWKS のいずれかが http（＝ループバック限定の構成）か */
+  loopbackHttp: boolean;
 }
 
 /**
@@ -499,11 +504,19 @@ export function getOAuthConfig(): OAuthConfig | null {
 
   // URL としての妥当性だけ確かめる。**値そのものは書かれたとおりに使う**
   // （末尾スラッシュを含めて OAuth の識別子だから。下の return を参照）。
-  if (raw.OAUTH_ISSUER !== undefined) {
-    parseHttpsUrl('OAUTH_ISSUER', raw.OAUTH_ISSUER, problems);
-  }
-  if (raw.OAUTH_JWKS_URI !== undefined) {
-    parseHttpsUrl('OAUTH_JWKS_URI', raw.OAUTH_JWKS_URI, problems);
+  const issuer =
+    raw.OAUTH_ISSUER === undefined ? null : parseHttpsUrl('OAUTH_ISSUER', raw.OAUTH_ISSUER, problems);
+  const jwks =
+    raw.OAUTH_JWKS_URI === undefined ? null : parseHttpsUrl('OAUTH_JWKS_URI', raw.OAUTH_JWKS_URI, problems);
+
+  // issuer 識別子はクエリもフラグメントも持てない（RFC 8414）。持ったまま起動できると、
+  // メタデータには載るのに **discovery の well-known URL を組み立てる段階で落ちる**
+  // （フラグメントは送れず、クエリは捨てられる）。起動は成功するのに繋がらない。
+  if (issuer !== null && (issuer.hash !== '' || issuer.search !== '')) {
+    problems.push(
+      `OAUTH_ISSUER にフラグメントまたはクエリが含まれています（${raw.OAUTH_ISSUER}）。` +
+        'OAuth の issuer 識別子はどちらも持てません（RFC 8414）。'
+    );
   }
   const resource =
     raw.OAUTH_RESOURCE === undefined ? null : parseHttpsUrl('OAUTH_RESOURCE', raw.OAUTH_RESOURCE, problems);
@@ -548,6 +561,11 @@ export function getOAuthConfig(): OAuthConfig | null {
     jwksUri: raw.OAUTH_JWKS_URI!,
     scopesSupported,
     requiredScope: raw.OAUTH_REQUIRED_SCOPE ?? null,
+    requireAtJwt: parseBooleanEnv('OAUTH_REQUIRE_AT_JWT'),
+    // http を許しているのは「ループバックでの動作確認のあいだだけ」という前提。
+    // その前提が bind するアドレスにも効いていないと、平文でトークンを受け取る
+    // サーバーが全インターフェースで待ち受ける（→ getBindHost）。
+    loopbackHttp: [issuer, resource, jwks].some((url) => url?.protocol === 'http:'),
   };
 }
 
@@ -642,7 +660,33 @@ export function getBindHost(): string {
     return raw.trim();
   }
 
-  return isHttpAuthConfigured() ? '0.0.0.0' : '127.0.0.1';
+  if (!isHttpAuthConfigured()) {
+    return '127.0.0.1';
+  }
+
+  // **ループバック限定の OAuth 構成では外に出さない。** http を許しているのは
+  // 「手元で試すあいだだけ」という前提であり、その構成で 0.0.0.0 に bind すると
+  // **平文でアクセストークンを受け取るサーバーが全インターフェースに出る**。
+  // 認証が構成済みだからといって、外部公開してよいとは限らない。
+  if (isOnlyLoopbackHttpOAuthConfigured()) {
+    return '127.0.0.1';
+  }
+
+  return '0.0.0.0';
+}
+
+/**
+ * 認証が「ループバック限定の http な OAuth 設定」だけで構成されているか。
+ *
+ * `MCP_AUTH_TOKEN` や `TRUST_UPSTREAM_AUTH` があるなら、外部公開の判断は
+ * そちらに委ねてよい。
+ */
+function isOnlyLoopbackHttpOAuthConfigured(): boolean {
+  if (getMcpAuthToken() !== null || isUpstreamAuthTrusted()) {
+    return false;
+  }
+
+  return getOAuthConfig()?.loopbackHttp === true;
 }
 
 /** HTTP サーバーの待ち受けポート */
@@ -877,6 +921,24 @@ export function validateStartupConfig(): string[] {
   }
 
   const bindHost = process.env.BIND_HOST?.trim();
+
+  if (bindHost !== undefined && bindHost !== '' && !isLoopbackHost(bindHost)) {
+    let loopbackOnlyOAuth = false;
+    try {
+      loopbackOnlyOAuth = isOnlyLoopbackHttpOAuthConfigured();
+    } catch {
+      // OAUTH_* のパースエラーは上で報告済み
+    }
+
+    if (loopbackOnlyOAuth) {
+      problems.push(
+        `BIND_HOST=${bindHost} は外部から到達できるアドレスですが、OAuth の設定が http です。` +
+          'アクセストークンが平文で流れます。https の issuer / resource / JWKS を指定するか、' +
+          'BIND_HOST を外してください（127.0.0.1 で待ち受けます）。'
+      );
+    }
+  }
+
   if (bindHost !== undefined && bindHost !== '' && !isLoopbackHost(bindHost) && !httpAuthConfigured) {
     problems.push(
       `BIND_HOST=${bindHost} は外部から到達できるアドレスですが、HTTP の認証が設定されていません。` +

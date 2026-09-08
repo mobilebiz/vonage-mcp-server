@@ -126,11 +126,21 @@ function jwksFor(config: OAuthConfig): JWTVerifyGetKey {
  * 片方だけにすると、落とし方の違うクライアントで discovery が失敗する。
  */
 export function protectedResourceMetadataPaths(config: OAuthConfig): string[] {
-  const path = new URL(config.resource).pathname.replace(/\/$/, '');
+  const path = new URL(config.resource).pathname;
   const paths = [PROTECTED_RESOURCE_METADATA_PREFIX];
 
   if (path !== '' && path !== '/') {
+    // **末尾のスラッシュは落とさない。** RFC 9728 はリソースのパスをそのまま
+    // 差し込むので、`https://h/mcp/` からクライアントが導くのは `.../mcp/` である。
+    // 削って `.../mcp` だけを配ると、チャレンジやルートへの落とし込みに頼らず
+    // 導出したエンドポイントを引くクライアントが 404 を受け取る。
     paths.unshift(`${PROTECTED_RESOURCE_METADATA_PREFIX}${path}`);
+
+    // 逆に、末尾スラッシュを付けずに引きに来るクライアントもいる。両方配る。
+    const trimmed = path.replace(/\/$/, '');
+    if (trimmed !== path && trimmed !== '') {
+      paths.splice(1, 0, `${PROTECTED_RESOURCE_METADATA_PREFIX}${trimmed}`);
+    }
   }
 
   return paths;
@@ -332,6 +342,23 @@ export async function verifyAccessToken(token: string, config: OAuthConfig): Pro
   // alg は鍵を引きに行く前に確かめる（→ ALLOWED_ALGORITHMS）
   try {
     const header = decodeProtectedHeader(token);
+
+    // RFC 9068 の `typ`。既定では要求しない（設定する IdP と設定しない IdP が
+    // 混在しており、必須にすると繋がらない基盤が出る）。**設定できる環境では
+    // 有効にするのが最も確実な ID トークン対策**なので、明示的に選べるようにする。
+    if (config.requireAtJwt) {
+      const typ = typeof header.typ === 'string' ? header.typ.toLowerCase() : '';
+      if (typ !== 'at+jwt' && typ !== 'application/at+jwt') {
+        return {
+          ok: false,
+          status: 401,
+          error: 'invalid_token',
+          description:
+            `OAUTH_REQUIRE_AT_JWT=true のため、typ が at+jwt のアクセストークンだけを受け付けます（受信: ${header.typ ?? '無し'}）。`,
+        };
+      }
+    }
+
     if (typeof header.alg !== 'string' || !(ALLOWED_ALGORITHMS as readonly string[]).includes(header.alg)) {
       return {
         ok: false,
@@ -405,6 +432,26 @@ export async function verifyAccessToken(token: string, config: OAuthConfig): Pro
               : 'アクセストークンを検証できませんでした。';
 
     return { ok: false, status: 401, error: 'invalid_token', description };
+  }
+
+  // **ID トークンをアクセストークンとして受け取らない。**
+  //
+  // 同じ IdP が同じ鍵・同じ issuer で ID トークンも発行する構成で、しかも
+  // `OAUTH_AUDIENCE` にクライアント識別子を設定してしまうと、`iss` / `aud` / `exp`
+  // だけでは両者を区別できない。**ログインできる利用者が、API の委譲を受けないまま
+  // 課金の発生するツールを呼べる**ことになる。
+  //
+  // `at_hash` / `c_hash` は OIDC が ID トークンにだけ載せる claim で、アクセストークンが
+  // 正当に持つことはない。持っていたら ID トークンである。
+  if (payload.at_hash !== undefined || payload.c_hash !== undefined) {
+    return {
+      ok: false,
+      status: 401,
+      error: 'invalid_token',
+      description:
+        'ID トークンをアクセストークンとして使うことはできません。' +
+        'このサーバー（OAUTH_RESOURCE）を audience とするアクセストークンを取得してください。',
+    };
   }
 
   const scopes = extractScopes(payload);
