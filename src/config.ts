@@ -373,6 +373,258 @@ export function getMcpAuthToken(): string | null {
   return token;
 }
 
+/**
+ * OAuth リソースサーバーモードで読む環境変数。
+ *
+ * MCP 仕様（2025-11-25 / Authorization）は、HTTP トランスポートで認可する場合の
+ * 標準的な手段として OAuth 2.1 を定めている。`MCP_AUTH_TOKEN` の静的 Bearer は
+ * 仕様には存在せず、**基盤側が任意ヘッダを設定させてくれる場合にだけ**使える。
+ * ChatGPT や Gemini Enterprise のコネクタのように「OAuth か無認証か」しか
+ * 選べない基盤には、この経路でしか繋がらない。
+ *
+ * このサーバーが担うのは **リソースサーバー（RS）だけ**である。認可サーバー（AS）は
+ * 仕様上もスコープ外で、外部 IdP に委ねる。
+ */
+export const OAUTH_ENV_VARS = [
+  'OAUTH_ISSUER',
+  'OAUTH_RESOURCE',
+  'OAUTH_JWKS_URI',
+  'OAUTH_AUDIENCE',
+  'OAUTH_SCOPES_SUPPORTED',
+  'OAUTH_REQUIRED_SCOPE',
+  'OAUTH_REQUIRE_AT_JWT',
+] as const;
+
+/** OAuth リソースサーバーモードの設定。未設定なら getOAuthConfig() が null を返す */
+export interface OAuthConfig {
+  /** 認可サーバーの issuer。トークンの iss と照合する */
+  issuer: string;
+  /** この MCP サーバーの正規 URI（RFC 8707 / RFC 9728 の resource） */
+  resource: string;
+  /** トークンの aud に期待する値。既定は resource と同じ */
+  audience: string;
+  /** アクセストークンの署名鍵を取りに行く先 */
+  jwksUri: string;
+  /** 保護リソースメタデータに載せる scope の一覧。未設定なら載せない */
+  scopesSupported: string[] | null;
+  /** /mcp を呼ぶために必須の scope。未設定ならスコープを検査しない */
+  requiredScope: string | null;
+  /** RFC 9068 の `typ: at+jwt` を必須にするか。既定は true */
+  requireAtJwt: boolean;
+  /** issuer / resource / JWKS のいずれかが http（＝ループバック限定の構成）か */
+  loopbackHttp: boolean;
+  /** ループバック構成のとき、resource が指しているホスト（bind 先に使う） */
+  loopbackBindHost: string | null;
+}
+
+/**
+ * https の絶対 URL として解釈する。
+ *
+ * ループバックだけは http を許す。手元で試すときに証明書を用意させると、
+ * 「とりあえず動かす」段階で詰まるため。それ以外で http を許すと、
+ * アクセストークンが平文で流れる経路を設定ミスで作れてしまう。
+ */
+function parseHttpsUrl(name: string, raw: string, problems: string[]): URL | null {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    problems.push(`${name} が URL として解釈できません（${raw}）。https から始まる絶対 URL を指定してください。`);
+    return null;
+  }
+
+  // URL の hostname は IPv6 を角括弧つきで返す（`http://[::1]:8080` → `[::1]`）。
+  // 剥がさずに比較すると、README が認めているループバックの http 構成が
+  // 起動エラーになる。
+  const hostname = url.hostname.replace(/^\[|\]$/g, '');
+
+  if (url.protocol === 'http:' && !isLoopbackHost(hostname)) {
+    problems.push(
+      `${name} が http です（${raw}）。アクセストークンが平文で流れるため、https を指定してください` +
+        '（localhost / 127.0.0.1 / [::1] での動作確認のときだけ http を許可します）。'
+    );
+    return null;
+  }
+
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    problems.push(`${name} のスキームが https ではありません（${raw}）。`);
+    return null;
+  }
+
+  return url;
+}
+
+/**
+ * scope の値を RFC 6749 の scope-token として検証する。
+ *
+ * 使えるのは印字可能な ASCII のうち、空白・`"`・`\` を除いたもの。
+ * **ここを通してしまうと、401 のチャレンジに載せられる値と実際に検査する値が
+ * 食い違う。** ヘッダーには ASCII しか入れられないため（oauthResourceServer の
+ * quote 参照）、`sms:送信` は `scope="sms:"` として案内されるのに、検査は
+ * `sms:送信` のまま行われる。案内どおりのトークンを取ってきても 403 が
+ * 解消しない、という直しようのない状態になる。
+ */
+function validateScopeToken(name: string, value: string, problems: string[]): void {
+  if (!/^[\u0021\u0023-\u005b\u005d-\u007e]+$/.test(value)) {
+    problems.push(
+      `${name} に scope として使えない文字が含まれています（${value}）。` +
+        'RFC 6749 の scope は、空白・二重引用符・バックスラッシュを除く印字可能な ASCII だけで構成されます。'
+    );
+  }
+}
+
+/**
+ * OAuth リソースサーバーモードの設定。1つも設定されていなければ null。
+ *
+ * **部分的な設定は起動エラーにする。** OAUTH_ISSUER だけ書いて JWKS を書き忘れた
+ * 状態で黙って静的トークンモードに落ちると、「OAuth にしたつもりのサーバーが
+ * 実は別の認証で動いていた」という最も気づきにくい形になる。
+ */
+export function getOAuthConfig(): OAuthConfig | null {
+  const raw: Record<string, string> = {};
+  for (const name of OAUTH_ENV_VARS) {
+    const value = process.env[name];
+    if (value !== undefined && value.trim() !== '') {
+      raw[name] = value.trim();
+    }
+  }
+
+  if (Object.keys(raw).length === 0) {
+    return null;
+  }
+
+  const problems: string[] = [];
+  for (const name of ['OAUTH_ISSUER', 'OAUTH_RESOURCE', 'OAUTH_JWKS_URI'] as const) {
+    if (raw[name] === undefined) {
+      problems.push(
+        `${name} が未設定です。OAuth リソースサーバーモードを使う場合、` +
+          'OAUTH_ISSUER / OAUTH_RESOURCE / OAUTH_JWKS_URI の3つは必須です。' +
+          'OAuth を使わないのであれば OAUTH_ で始まる環境変数をすべて削除してください。'
+      );
+    }
+  }
+
+  // URL としての妥当性だけ確かめる。**値そのものは書かれたとおりに使う**
+  // （末尾スラッシュを含めて OAuth の識別子だから。下の return を参照）。
+  const issuer =
+    raw.OAUTH_ISSUER === undefined ? null : parseHttpsUrl('OAUTH_ISSUER', raw.OAUTH_ISSUER, problems);
+  const jwks =
+    raw.OAUTH_JWKS_URI === undefined ? null : parseHttpsUrl('OAUTH_JWKS_URI', raw.OAUTH_JWKS_URI, problems);
+
+  // issuer 識別子はクエリもフラグメントも持てない（RFC 8414）。持ったまま起動できると、
+  // メタデータには載るのに **discovery の well-known URL を組み立てる段階で落ちる**
+  // （フラグメントは送れず、クエリは捨てられる）。起動は成功するのに繋がらない。
+  //
+  // **判定は生の文字列で行う。** `https://idp.example.com?` のように区切り文字だけの
+  // 場合、WHATWG URL の `search` / `hash` は空文字になって検証を素通りするが、
+  // **設定値は区切り文字を含んだまま `iss` と比較される**ので、実際の issuer が
+  // 発行したトークンが毎回 401 になる。起動は成功するのに、1本も通らない。
+  if (raw.OAUTH_ISSUER !== undefined && /[?#]/.test(raw.OAUTH_ISSUER)) {
+    problems.push(
+      `OAUTH_ISSUER にフラグメントまたはクエリが含まれています（${raw.OAUTH_ISSUER}）。` +
+        'OAuth の issuer 識別子はどちらも持てません（RFC 8414）。区切り文字だけでも同じです。'
+    );
+  }
+  const resource =
+    raw.OAUTH_RESOURCE === undefined ? null : parseHttpsUrl('OAUTH_RESOURCE', raw.OAUTH_RESOURCE, problems);
+
+  // RFC 8707 の canonical URI はフラグメントを持てない。クエリ付きも
+  // 「このサーバーを指す識別子」としては曖昧なので受け付けない。
+  // issuer と同じ理由で、判定は生の文字列で行う。
+  if (raw.OAUTH_RESOURCE !== undefined && /[?#]/.test(raw.OAUTH_RESOURCE)) {
+    problems.push(
+      `OAUTH_RESOURCE にフラグメントまたはクエリが含まれています（${raw.OAUTH_RESOURCE}）。` +
+        'RFC 8707 の正規 URI はどちらも持てません。例: https://example.com/mcp'
+    );
+  }
+
+  const scopesSupported = raw.OAUTH_SCOPES_SUPPORTED?.split(',').map((v) => v.trim()).filter((v) => v !== '') ?? null;
+  if (scopesSupported !== null && scopesSupported.length === 0) {
+    problems.push('OAUTH_SCOPES_SUPPORTED が設定されていますが、有効な scope が1件もありません。');
+  }
+
+  for (const scope of scopesSupported ?? []) {
+    validateScopeToken('OAUTH_SCOPES_SUPPORTED', scope, problems);
+  }
+
+  if (raw.OAUTH_REQUIRED_SCOPE !== undefined) {
+    validateScopeToken('OAUTH_REQUIRED_SCOPE', raw.OAUTH_REQUIRED_SCOPE, problems);
+
+    // **要求する scope は、広告する scope に入っていなければならない。**
+    // クライアントは保護リソースメタデータの `scopes_supported` を見て認可要求を
+    // 組み立てる。必須の scope がそこに無いと、**案内どおりに取ったトークンが
+    // 即座に 403 になる**。取り直しても同じ結果にしかならない。
+    if (scopesSupported !== null && !scopesSupported.includes(raw.OAUTH_REQUIRED_SCOPE)) {
+      problems.push(
+        `OAUTH_REQUIRED_SCOPE（${raw.OAUTH_REQUIRED_SCOPE}）が OAUTH_SCOPES_SUPPORTED に含まれていません。` +
+          'クライアントはメタデータの scopes_supported を見て認可要求を組み立てるため、' +
+          'この状態では案内どおりに取得したトークンが必ず 403 になります。'
+      );
+    }
+  }
+
+  // 既定は true。**アクセストークンであることを積極的に示すものを必ず1つ要求する。**
+  const requireAtJwt =
+    raw.OAUTH_REQUIRE_AT_JWT === undefined ? true : parseBooleanEnv('OAUTH_REQUIRE_AT_JWT');
+
+  // ID トークンとアクセストークンは、同じ IdP・同じ鍵・同じ issuer で発行されうる。
+  // `aud` にクライアント識別子が入っていれば `iss` / `aud` / `exp` では区別できず、
+  // **ログインできるだけの利用者が課金の発生するツールを呼べる**。
+  //
+  // `at_hash` / `c_hash` の拒否だけでは足りない。**あの2つは条件付きの claim で、
+  // 認可コードフローの ID トークンには通常入っていない。** 「無いこと」を根拠には
+  // できないので、**「アクセストークンであることを示すものが有る」**を要求する。
+  // 使えるのは次のどちらか:
+  //   - RFC 9068 の `typ: at+jwt`（IdP が付けてくれる場合）
+  //   - API 側の scope（ID トークンは API の scope を運ばない）
+  if (!requireAtJwt && (raw.OAUTH_REQUIRED_SCOPE === undefined || problems.length > 0)) {
+    if (raw.OAUTH_REQUIRED_SCOPE === undefined) {
+      problems.push(
+        'OAUTH_REQUIRE_AT_JWT=false にする場合は OAUTH_REQUIRED_SCOPE が必須です。' +
+          'どちらも無いと、ID トークンをアクセストークンとして受け取る余地が残ります' +
+          '（同じ IdP が同じ鍵・同じ issuer で両方を発行し、aud が一致する構成があるため）。' +
+          'IdP が typ: at+jwt を付けるなら OAUTH_REQUIRE_AT_JWT を外して既定の true に戻し、' +
+          '付けないなら API 側の scope を OAUTH_REQUIRED_SCOPE に指定してください。'
+      );
+    }
+  }
+
+  if (problems.length > 0) {
+    throw new ConfigError(problems);
+  }
+
+  // **末尾のスラッシュは削らない。** issuer は OAuth の識別子で、`https://idp/` と
+  // `https://idp` は別物として扱われる。こちらで正規化すると、IdP の設定どおりに
+  // 書いた運用者のトークンが iss 不一致で 401 になる（しかも「設定は合っている
+  // のに通らない」という最も追いにくい形で）。resource と audience も同じ理由で
+  // そのまま使う。
+  const resourceUri = raw.OAUTH_RESOURCE!;
+
+  return {
+    issuer: raw.OAUTH_ISSUER!,
+    resource: resourceUri,
+    audience: raw.OAUTH_AUDIENCE ?? resourceUri,
+    jwksUri: raw.OAUTH_JWKS_URI!,
+    scopesSupported,
+    requiredScope: raw.OAUTH_REQUIRED_SCOPE ?? null,
+    requireAtJwt,
+    // http を許しているのは「ループバックでの動作確認のあいだだけ」という前提。
+    // その前提が bind するアドレスにも効いていないと、平文でトークンを受け取る
+    // サーバーが全インターフェースで待ち受ける（→ getBindHost）。
+    loopbackHttp: [issuer, resource, jwks].some((url) => url?.protocol === 'http:'),
+    // クライアントが繋ぎに来るのは resource の URI である。IPv4 のループバックに
+    // 決め打つと、`http://[::1]:3000/mcp` を配っておきながら **その宛先では
+    // 待ち受けていない**サーバーになる。
+    loopbackBindHost:
+      resource?.protocol === 'http:' ? resource.hostname.replace(/^\[|\]$/g, '') : null,
+  };
+}
+
+/** OAuth リソースサーバーモードが構成されているか */
+export function isOAuthConfigured(): boolean {
+  return getOAuthConfig() !== null;
+}
+
 /** VONAGE_PRIVATE_KEY_PATH が未設定のときに使う既定のパス */
 export const DEFAULT_PRIVATE_KEY_PATH = './private.key';
 
@@ -428,9 +680,15 @@ export function isUpstreamAuthTrusted(): boolean {
   return parseBooleanEnv('TRUST_UPSTREAM_AUTH');
 }
 
-/** HTTP トランスポートの認証が何らかの形で構成されているか */
+/**
+ * HTTP トランスポートの認証が何らかの形で構成されているか。
+ *
+ * OAuth リソースサーバーモードもここに含める。含め忘れると、OAuth だけを
+ * 設定したサーバーが「認証なし」と判定されて 127.0.0.1 にしか bind されず、
+ * **正しく設定したのに外から繋がらない**という形で失敗する。
+ */
 export function isHttpAuthConfigured(): boolean {
-  return getMcpAuthToken() !== null || isUpstreamAuthTrusted();
+  return getMcpAuthToken() !== null || isUpstreamAuthTrusted() || isOAuthConfigured();
 }
 
 /** ループバックアドレスか */
@@ -453,7 +711,34 @@ export function getBindHost(): string {
     return raw.trim();
   }
 
-  return isHttpAuthConfigured() ? '0.0.0.0' : '127.0.0.1';
+  if (!isHttpAuthConfigured()) {
+    return '127.0.0.1';
+  }
+
+  // **ループバック限定の OAuth 構成では外に出さない。** http を許しているのは
+  // 「手元で試すあいだだけ」という前提であり、その構成で 0.0.0.0 に bind すると
+  // **平文でアクセストークンを受け取るサーバーが全インターフェースに出る**。
+  // 認証が構成済みだからといって、外部公開してよいとは限らない。
+  const oauth = getOAuthConfig();
+  if (oauth?.loopbackHttp === true) {
+    // 配っている URI と待ち受け先を揃える（localhost は名前解決に委ねず 127.0.0.1）。
+    const host = oauth.loopbackBindHost;
+    return host === null || host === 'localhost' ? '127.0.0.1' : host;
+  }
+
+  return '0.0.0.0';
+}
+
+/**
+ * OAuth の設定が http（＝ループバック限定）か。
+ *
+ * **`MCP_AUTH_TOKEN` が併設されていても免除しない。** 一度その形で書いたが、
+ * 認証は OR 条件なので、静的トークンがあっても**アクセストークンだけで認証を
+ * 通過できる**。静的トークンの存在は、その通信が暗号化されることを何も保証しない。
+ * 平文の経路が開いているかどうかだけで判断する。
+ */
+function isLoopbackHttpOAuthConfigured(): boolean {
+  return getOAuthConfig()?.loopbackHttp === true;
 }
 
 /** HTTP サーバーの待ち受けポート */
@@ -605,6 +890,7 @@ export function validateStartupConfig(): string[] {
   collect(() => parseBooleanEnv('ALLOW_PREMIUM_NUMBERS'));
   collect(() => getWebhookMaxAgeSeconds());
   collect(() => getMcpAuthToken());
+  collect(() => getOAuthConfig());
   collect(() => parseBooleanEnv('TRUST_UPSTREAM_AUTH'));
   collect(() => getPort());
   collect(() => getAllowedOrigins());
@@ -687,6 +973,74 @@ export function validateStartupConfig(): string[] {
   }
 
   const bindHost = process.env.BIND_HOST?.trim();
+
+  if (bindHost !== undefined && bindHost !== '' && !isLoopbackHost(bindHost)) {
+    let loopbackHttpOAuth = false;
+    try {
+      loopbackHttpOAuth = isLoopbackHttpOAuthConfigured();
+    } catch {
+      // OAUTH_* のパースエラーは上で報告済み
+    }
+
+    if (loopbackHttpOAuth) {
+      problems.push(
+        `BIND_HOST=${bindHost} は外部から到達できるアドレスですが、OAuth の設定が http です。` +
+          'アクセストークンが平文で流れます。https の issuer / resource / JWKS を指定するか、' +
+          'BIND_HOST を外してください（127.0.0.1 で待ち受けます）。'
+      );
+    }
+  }
+
+  // ループバックの http 構成では、**配っている URI のポートで待ち受けていなければ
+  // 意味がない。** ホスト名だけ合わせてポートが違うと、discovery で案内した宛先に
+  // 繋ぎに来たクライアントが接続に失敗する。
+  // （https の場合は上流で TLS を終端する構成が普通で、外向きのポートと待ち受け
+  //   ポートが違うのは正常なので検査しない。）
+  try {
+    const oauth = getOAuthConfig();
+    if (oauth !== null && oauth.loopbackBindHost !== null) {
+      const resourceUrl = new URL(oauth.resource);
+      const resourcePort = resourceUrl.port === '' ? 80 : Number(resourceUrl.port);
+      const listenPort = getPort();
+
+      if (resourcePort !== listenPort) {
+        problems.push(
+          `OAUTH_RESOURCE のポート（${resourcePort}）と待ち受けポート（PORT=${listenPort}）が違います。` +
+            'ループバックの http 構成では、配っている URI のポートで待ち受けていないと、' +
+            'メタデータを見て繋ぎに来たクライアントが接続できません。PORT か OAUTH_RESOURCE を揃えてください。'
+        );
+      }
+
+      // **アドレスの系統も揃っている必要がある。** `http://[::1]:3000/mcp` を配って
+      // `BIND_HOST=127.0.0.1` で待ち受けると、ポートは合っていても IPv4 でしか
+      // 受け付けない。配った宛先には繋がらない。
+      const advertised = oauth.loopbackBindHost;
+      const listening = bindHost === undefined || bindHost === '' ? advertised : bindHost;
+
+      if (advertised !== null && listening !== null && advertised !== listening) {
+        // **待ち受け側の `localhost` は「どちらでもよい」ではない。** Node の listen は
+        // 名前解決の結果から**1つだけ**を選ぶので、IPv6 が優先される環境では `::1` に
+        // なり、IPv4 の URI を配っていると繋がらない。配る側の `localhost` は
+        // クライアントが解決した候補を順に試せるため、こちらとは事情が違う。
+        if (listening === 'localhost') {
+          problems.push(
+            `BIND_HOST=localhost は名前解決の結果から1つのアドレスだけで待ち受けます。` +
+              `OAUTH_RESOURCE は ${advertised} を配っているので、環境によっては繋がりません。` +
+              `BIND_HOST に ${advertised} を明示してください。`
+          );
+        } else if (advertised !== 'localhost') {
+          problems.push(
+            `OAUTH_RESOURCE のホスト（${advertised}）と BIND_HOST（${listening}）が違います。` +
+              'IPv4 と IPv6 は別々のアドレスなので、配っている URI の系統で待ち受けていないと、' +
+              'メタデータを見て繋ぎに来たクライアントが接続できません。'
+          );
+        }
+      }
+    }
+  } catch {
+    // OAUTH_* / PORT のパースエラーは上で報告済み
+  }
+
   if (bindHost !== undefined && bindHost !== '' && !isLoopbackHost(bindHost) && !httpAuthConfigured) {
     problems.push(
       `BIND_HOST=${bindHost} は外部から到達できるアドレスですが、HTTP の認証が設定されていません。` +
@@ -714,8 +1068,42 @@ export function validateStartupConfig(): string[] {
   } else if (!httpAuthConfigured) {
     warnings.push(
       'MCP_AUTH_TOKEN が未設定のため、HTTPサーバーは 127.0.0.1 でのみ待ち受けます。' +
-        '外部から利用する場合は MCP_AUTH_TOKEN を設定してください。'
+        '外部から利用する場合は MCP_AUTH_TOKEN を設定するか、OAuth リソースサーバーモード' +
+        '（OAUTH_ISSUER / OAUTH_RESOURCE / OAUTH_JWKS_URI）を構成してください。'
     );
+  }
+
+  // 認証経路が2本ある構成は、それ自体は誤りではない（OAuth しか喋れない基盤と
+  // 任意ヘッダを送れる基盤を、同じデプロイに同時に繋ぐのは実際にある）。ただし
+  // **黙って2本開いているのが最悪**なので、起動のたびに名指しで知らせる。
+  let oauthConfigured = false;
+  try {
+    oauthConfigured = isOAuthConfigured();
+  } catch {
+    // OAUTH_* のパースエラーは上で報告済み
+  }
+
+  if (oauthConfigured) {
+    let staticToken: string | null = null;
+    try {
+      staticToken = getMcpAuthToken();
+    } catch {
+      staticToken = null;
+    }
+
+    if (staticToken !== null) {
+      warnings.push(
+        'OAuth リソースサーバーモードと MCP_AUTH_TOKEN の両方が設定されています。' +
+          '/mcp は**どちらの資格情報でも通ります**。OAuth だけに絞る場合は MCP_AUTH_TOKEN を削除してください。'
+      );
+    }
+
+    if (parseBooleanEnv('TRUST_UPSTREAM_AUTH')) {
+      warnings.push(
+        'TRUST_UPSTREAM_AUTH=true が OAuth 設定より優先されるため、アクセストークンは検証されません。' +
+          '上流で検証していない場合は TRUST_UPSTREAM_AUTH を外してください。'
+      );
+    }
   }
 
   // 全 OFF は「動くはずのものが動かない」という問い合わせに直結するので明示する

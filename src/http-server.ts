@@ -10,6 +10,16 @@ import { ingestCallEvent, setCallEventWebhookHosted } from './callEventStore.js'
 import { generateNCCO } from './voiceCall.js';
 import { authenticateWebhook, isWebhookAuthConfigured, safeEqual } from './webhookAuth.js';
 import {
+  activeOAuthConfig,
+  buildWwwAuthenticate,
+  PROTECTED_RESOURCE_METADATA_PREFIX,
+  parseAuthorizationHeader,
+  protectedResourceMetadata,
+  protectedResourceMetadataPaths,
+  verifyAccessToken,
+  type OAuthConfigOrNull,
+} from './oauthResourceServer.js';
+import {
   applyStartupConfig,
   getMaxRequestBodyBytes,
   extractHostname,
@@ -62,7 +72,10 @@ app.use((req, res, next) => {
     return;
   }
 
-  cors({ origin: origins, credentials: false })(req, res, next);
+  // WWW-Authenticate を expose しないと、許可したオリジンのブラウザ JS からでも
+  // チャレンジを読めない。403 の insufficient_scope を検出できず、追加スコープの
+  // 認可フローに進めなくなる。
+  cors({ origin: origins, credentials: false, exposedHeaders: ['WWW-Authenticate'] })(req, res, next);
 });
 // Webhookの署名検証（payload_hash）に生のボディが必要なため、パース時に保持しておく
 //
@@ -89,36 +102,119 @@ app.use(
  * bind されておらず（getBindHost 参照）、外部からは到達できない。リクエストごとに
  * 接続元を見て localhost か判定する方式は、プロキシ配下で誤判定するため採らない。
  */
-function requireMcpAuth(
+async function requireMcpAuth(
   req: express.Request,
   res: express.Response,
   next: express.NextFunction
+): Promise<void> {
+  let oauth: OAuthConfigOrNull;
+  let expected: string | null;
+
+  // 設定の解釈で落ちたら**拒否に倒す**。ここで例外を握り潰して素通りさせると、
+  // 壊れた設定のサーバーが無認証で動く。通常は applyStartupConfig が起動時に
+  // 止めるが、この経路自体が安全側でなければ「起動時検証を通らない読み込まれ方」
+  // で穴になる。
+  try {
+    if (isUpstreamAuthTrusted()) {
+      next();
+      return;
+    }
+
+    oauth = activeOAuthConfig();
+    expected = getMcpAuthToken();
+  } catch (error) {
+    denyMisconfigured(res, error);
+    return;
+  }
+
+  if (oauth === null && expected === null) {
+    next();
+    return;
+  }
+
+  const authorization = parseAuthorizationHeader(req.headers['authorization']);
+
+  // 認証情報がまったく無いリクエストへの 401 には error を載せない（RFC 6750 3.1）。
+  // 未認証は異常ではなく、認可フローの1歩目である。
+  // Bearer 以外の認証方式も、RFC 6750 では「認証情報が無い」のと同じ扱いにする。
+  // 400 を返すと、401 を起点とする認可フローに入れないクライアントが出る。
+  if (authorization.kind === 'absent' || authorization.kind === 'other-scheme') {
+    denyMcp(res, oauth, 401, undefined, 'Unauthorized: missing bearer token');
+    return;
+  }
+
+  // 送ってきたが Bearer として読めない。これは要求そのものが壊れているので 400。
+  if (authorization.kind === 'malformed') {
+    denyMcp(res, oauth, 400, 'invalid_request', 'Bad Request: malformed Authorization header');
+    return;
+  }
+
+  // 静的トークンを先に見る。両方設定されている構成では、どちらの資格情報でも
+  // 通る（起動時に警告済み）。OAuth しか喋れない基盤と任意ヘッダを送れる基盤を、
+  // 同じデプロイに同時に繋ぐのは実際にある構成なので、片方を黙って無効化しない。
+  if (expected !== null && safeEqual(authorization.token, expected)) {
+    next();
+    return;
+  }
+
+  if (oauth === null) {
+    denyMcp(res, null, 401, 'invalid_token', 'Unauthorized: invalid bearer token');
+    return;
+  }
+
+  const result = await verifyAccessToken(authorization.token, oauth);
+
+  if (result.ok) {
+    next();
+    return;
+  }
+
+  denyMcp(res, oauth, result.status, result.error, result.description);
+}
+
+/**
+ * 設定の解釈に失敗したときの応答。
+ *
+ * **例外を素通りさせない。** Express の既定のエラーハンドラに任せると 500 は返るが、
+ * ミドルウェアの並びによっては例外が認証より前で起きて、そこから先の判断が
+ * まるごと飛ぶ。設定が読めない状態は「誰も通さない」に倒す。
+ */
+function denyMisconfigured(res: express.Response, error: unknown): void {
+  console.error('設定の解釈に失敗しました:', error);
+  res.status(500).json({
+    jsonrpc: '2.0',
+    error: {
+      code: -32603,
+      message: 'Server misconfigured: settings could not be parsed',
+    },
+    id: null,
+  });
+}
+
+/**
+ * /mcp の認証失敗を返す。
+ *
+ * OAuth モードでは `WWW-Authenticate` を必ず付ける。**これが無いと、クライアントは
+ * どこへ認可を取りに行けばよいか分からない。** 仕様上、401 に載せるこのヘッダーが
+ * discovery の起点であり、付け忘れると「認証が要るのは分かるが繋ぎようがない」
+ * サーバーになる。
+ */
+function denyMcp(
+  res: express.Response,
+  oauth: OAuthConfigOrNull,
+  status: 400 | 401 | 403 | 503,
+  error: string | undefined,
+  description: string
 ): void {
-  if (isUpstreamAuthTrusted()) {
-    next();
-    return;
+  if (oauth !== null) {
+    res.setHeader('WWW-Authenticate', buildWwwAuthenticate(oauth, error));
   }
 
-  const expected = getMcpAuthToken();
-  if (expected === null) {
-    next();
-    return;
-  }
-
-  const header = req.headers['authorization'];
-  const value = Array.isArray(header) ? header[0] : header;
-  const match = typeof value === 'string' ? /^Bearer\s+(.+)$/i.exec(value.trim()) : null;
-
-  if (!match || !safeEqual(match[1].trim(), expected)) {
-    res.status(401).json({
-      jsonrpc: '2.0',
-      error: { code: -32000, message: 'Unauthorized: missing or invalid bearer token' },
-      id: null,
-    });
-    return;
-  }
-
-  next();
+  res.status(status).json({
+    jsonrpc: '2.0',
+    error: { code: -32000, message: description },
+    id: null,
+  });
 }
 
 /**
@@ -138,7 +234,17 @@ function requireAllowedHost(
   res: express.Response,
   next: express.NextFunction
 ): void {
-  const allowed = getAllowedHostnames();
+  let allowed: string[] | null;
+
+  // getAllowedHostnames() は BIND_HOST の既定を通じて認証設定まで読む。
+  // 認証設定が壊れていればここで落ちるので、拒否に倒す。
+  try {
+    allowed = getAllowedHostnames();
+  } catch (error) {
+    denyMisconfigured(res, error);
+    return;
+  }
+
   if (allowed === null) {
     next();
     return;
@@ -156,6 +262,36 @@ function requireAllowedHost(
 
   next();
 }
+
+/**
+ * RFC 9728 の保護リソースメタデータ
+ * GET /.well-known/oauth-protected-resource[/<リソースのパス>]
+ *
+ * **認証不要。** クライアントは「まだトークンを持っていない」状態でここを読む。
+ * 保護すると discovery が成立しない。載っているのは issuer と自分の URI だけで、
+ * 秘密は含まれない。
+ *
+ * OAuth モードでないときは 404 を返す。空のメタデータを返すと、クライアントは
+ * 「OAuth に対応しているが認可サーバーが無い」と読んで別の失敗の仕方をする。
+ */
+app.get(`${PROTECTED_RESOURCE_METADATA_PREFIX}{/*path}`, (req, res) => {
+  let oauth: OAuthConfigOrNull;
+
+  try {
+    oauth = activeOAuthConfig();
+  } catch (error) {
+    console.error('認証設定の解釈に失敗しました:', error);
+    res.status(500).json({ error: 'Server misconfigured: authentication settings could not be parsed' });
+    return;
+  }
+
+  if (oauth === null || !protectedResourceMetadataPaths(oauth).includes(req.path)) {
+    res.status(404).json({ error: 'Not found' });
+    return;
+  }
+
+  res.json(protectedResourceMetadata(oauth));
+});
 
 app.use('/mcp', requireAllowedHost, requireMcpAuth);
 

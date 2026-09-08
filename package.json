@@ -1,6 +1,6 @@
 {
   "name": "vonage-mcp-server",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "MCP server exposing Vonage SMS and Voice to AI agents, with guardrails for the prompt-injection threat model.",
   "main": "dist/index.js",
   "scripts": {
@@ -47,6 +47,7 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
+    "jose": "^6.2.12",
     "zod": "^3.25.72",
     "zod-to-json-schema": "^3.24.6"
   },

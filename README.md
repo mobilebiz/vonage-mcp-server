@@ -51,10 +51,11 @@ SMS 送信と音声通話は**取り消せず、課金が発生し、相手に�
 | [Claude Code](https://code.claude.com/docs/en/mcp) | stdio / HTTP | `--header` で Bearer | あり | 📄 |
 | **Streamable HTTP 全般**（Cloud Run 等） | Streamable HTTP | Bearer / 上流 IAM | クライアント次第 | ✅ |
 | [Claude.ai / Desktop（リモート）](https://claude.com/docs/connectors/building/authentication) | Streamable HTTP | OAuth、または静的ヘッダ（beta・組織管理者が設定） | あり | 📄 |
-| [Gemini Enterprise（コネクタ）](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server) | Streamable HTTP | **OAuth 2.0 か「認証なし」のみ** | あり（既定で必ず出る） | ⚠️ |
+| [Gemini Enterprise（コネクタ）](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server) | Streamable HTTP | **OAuth 2.0 か「認証なし」のみ**（[OAuth モード](#oauth-21-chatgpt--gemini-enterprise-のコネクタなど)で対応） | あり（既定で必ず出る） | 📄 |
 | [Gemini Enterprise（ADK で自作）](docs/gemini-enterprise-adk.md) | Streamable HTTP | 任意ヘッダで Bearer | **あり**（ADK の `require_confirmation`。Apps に承認ウィンドウが出ます） | ✅ |
 | [AWS Bedrock AgentCore Gateway](docs/agentcore.md) | Streamable HTTP（SSE は使いません） | **API キープロバイダ**で任意ヘッダに Bearer。**IAM SigV4 は使えません**（下記） | **無し** | ✅ |
 | [Dify](docs/dify.md) | Streamable HTTP（SSE は使いません） | 任意ヘッダで Bearer | **無し。** Workflow に Human Input ノードを置けば可 | ✅ |
+| ChatGPT（カスタムプラグイン / コネクタ） | Streamable HTTP | **OAuth 2.0 か「認証なし」のみ**（[OAuth モード](#oauth-21-chatgpt--gemini-enterprise-のコネクタなど)で対応） | クライアント次第 | 📄 |
 | [n8n（MCP Client Tool）](https://docs.n8n.io/integrations/builtin/cluster-nodes/sub-nodes/n8n-nodes-langchain.toolmcp/) | HTTP Streamable / stdio | Bearer / 任意ヘッダ / OAuth2 | AI Agent ノードで有効化すれば可 | 📄 |
 
 > [!NOTE]
@@ -793,6 +794,79 @@ curl -X POST http://localhost:3000/mcp \
 | `PORT` | `3000` | 待ち受けポート。 |
 | `ALLOWED_ORIGINS` | （未設定＝**すべて拒否**） | CORS で許可するオリジン（カンマ区切り）。ブラウザから `/mcp` を呼ぶ場合のみ設定する。 |
 | `ALLOWED_HOSTS` | ループバック運用なら `localhost` / `127.0.0.1` / `::1` | 許可する `Host` ヘッダーのホスト名（カンマ区切り）。ポートは比較に含まれない。 |
+
+#### OAuth 2.1（ChatGPT / Gemini Enterprise のコネクタなど）
+
+**MCP 仕様が定める認可の標準は OAuth 2.1 です。** 上の `MCP_AUTH_TOKEN` による静的 Bearer は**仕様には存在せず**、基盤が任意のヘッダを設定させてくれる場合にだけ使えます（Claude Code / ADK / Dify / AgentCore / n8n はこれに当たります）。
+
+一方、**エンドユーザーが触る入り口 — ChatGPT のカスタムプラグイン、Gemini Enterprise のカスタムコネクタ — は「OAuth か認証なし」の2択しか出しません。** 課金の発生するサーバーに「認証なし」は選べないため、この経路には OAuth でしか繋がりません。
+
+**このサーバーが担うのはリソースサーバー（RS）だけです。** 認可サーバー（AS）は MCP 仕様でも明確にスコープ外とされており、外部の IdP（Auth0 / Okta / Entra ID / Keycloak など）を使ってください。
+
+| 環境変数 | 必須 | 説明 |
+| --- | --- | --- |
+| `OAUTH_ISSUER` | ✅ | 認可サーバーの issuer。トークンの `iss` と照合します。https のみ（ループバックのみ http 可）。 |
+| `OAUTH_RESOURCE` | ✅ | **この MCP サーバーの正規 URI**（RFC 8707 / RFC 9728 の `resource`）。例: `https://example.com/mcp`。フラグメントとクエリは指定できません。 |
+| `OAUTH_JWKS_URI` | ✅ | アクセストークンの署名鍵の取得先。IdP の `/.well-known/openid-configuration` にある `jwks_uri` を使います。 |
+| `OAUTH_AUDIENCE` | | トークンの `aud` に期待する値。既定は `OAUTH_RESOURCE` と同じ。IdP の API 識別子が URI と異なる場合だけ設定します。 |
+| `OAUTH_SCOPES_SUPPORTED` | | 保護リソースメタデータに載せる scope（カンマ区切り）。`OAUTH_REQUIRED_SCOPE` を設定するなら、**それをここにも含めてください**（含めないと起動エラーです。クライアントはこの一覧から認可要求を組み立てるため、案内どおりに取ったトークンが必ず `403` になります）。 |
+| `OAUTH_REQUIRED_SCOPE` | | `/mcp` を呼ぶために必須の scope。設定すると、これを持たないトークンは `403 insufficient_scope` になります。 |
+| `OAUTH_REQUIRE_AT_JWT` | | **既定は `true`。** RFC 9068 の `typ: at+jwt` を持つトークンだけを受け付けます。`false` にする場合は `OAUTH_REQUIRED_SCOPE` が必須になります（下記）。 |
+
+```sh
+OAUTH_ISSUER=https://your-tenant.example.com
+OAUTH_RESOURCE=https://vonage-mcp.example.com/mcp
+OAUTH_JWKS_URI=https://your-tenant.example.com/.well-known/jwks.json
+```
+
+設定すると次の2つが有効になります。
+
+- **`GET /.well-known/oauth-protected-resource`**（およびリソースのパスを付けた `/.well-known/oauth-protected-resource/mcp`）— RFC 9728 の保護リソースメタデータ。**認証不要**です。クライアントはトークンを持つ前にここを読み、どの認可サーバーへ行けばよいかを知ります
+- **`/mcp` の 401 / 403 に `WWW-Authenticate: Bearer resource_metadata="..."` が付きます** — これが discovery の起点です
+
+> [!IMPORTANT]
+> **必須の3つは揃っている必要があります。** 1つでも欠けると起動エラーになります。部分的な設定を黙って無視すると、**「OAuth にしたつもりのサーバーが、実は静的トークンで動いていた」**という最も気づきにくい状態ができるためです。
+
+> [!IMPORTANT]
+> **有効期限（`exp`）を持たないアクセストークンは受け付けません。** 無期限のトークンは、漏れた1本を失効させる手段がありません。
+> また `OAUTH_ISSUER` / `OAUTH_RESOURCE` は**書いたとおりの文字列**として使います（末尾のスラッシュも含めて識別子の一部です）。IdP の設定と1文字違わないように書いてください。
+> `OAUTH_REQUIRED_SCOPE` / `OAUTH_SCOPES_SUPPORTED` に空白・二重引用符・バックスラッシュ・非 ASCII を含めると起動エラーになります（RFC 6749 の scope の文字集合）。`OAUTH_ISSUER` にクエリやフラグメントを含めることもできません（RFC 8414）。
+
+> [!IMPORTANT]
+> **`http://localhost` を使えるのは手元での確認だけです。** issuer / resource / JWKS のいずれかが http の場合、`BIND_HOST` を指定しなければ **`OAUTH_RESOURCE` が指しているループバックアドレスで待ち受けます**（`http://[::1]:3000/mcp` を配るなら `::1`。認証が構成済みでも `0.0.0.0` にはしません）。**`OAUTH_RESOURCE` のポートと `PORT`、そしてアドレスの系統（IPv4 / IPv6）も揃っている必要があります**（揃っていないと起動エラーです。配った URI に繋ぎに来たクライアントが接続できないため。`localhost` はどちらにも解決しうるので例外です）。平文でアクセストークンを受け取るサーバーを外部に出さないためです。この構成で `BIND_HOST` に外部アドレスを指定すると**起動時にエラーで停止**します。**`MCP_AUTH_TOKEN` を併用していても同じです** — 認証は「どちらか一方」で通るので、静的トークンがあってもアクセストークンは平文で流れます。
+
+> [!WARNING]
+> **ID トークンをアクセストークンとして受け取らないための設定が必須です。**
+> ID トークンの `aud` はクライアント識別子です。同じ IdP が同じ鍵・同じ issuer で ID トークンも発行する構成で `OAUTH_AUDIENCE` をクライアント識別子に合わせてしまうと、`iss` / `aud` / `exp` では両者を区別できません。**ログインできるだけの利用者が、API の委譲を受けないまま SMS を送れます。**
+>
+> そのため、**「アクセストークンであることを積極的に示すもの」を必ず1つ要求します。** 次のどちらかが必要で、両方欠けていると**起動時にエラーで停止**します。
+>
+> | 方法 | 設定 | 使える条件 |
+> | --- | --- | --- |
+> | RFC 9068 の `typ` | `OAUTH_REQUIRE_AT_JWT=true`（**既定**） | IdP がアクセストークンに `typ: at+jwt` を付ける（Auth0 など） |
+> | API の scope | `OAUTH_REQUIRE_AT_JWT=false` + `OAUTH_REQUIRED_SCOPE=...` | IdP が `typ` を付けない（Keycloak / Entra ID など）。**ID トークンは API の scope を運びません** |
+>
+> `at_hash` / `c_hash` を持つトークンも拒否しますが、**これは当てにできません** — どちらも条件付きの claim で、認可コードフローの ID トークンには通常入っていないためです。「無いこと」は根拠になりません。
+>
+> あわせて、**`OAUTH_AUDIENCE` は API / リソースの識別子にしてください。** クライアント識別子を指定しないでください。
+
+> [!IMPORTANT]
+> **アクセストークンは audience を検証します。** 同じ IdP が別のサービス向けに発行したトークンでは通りません（MCP 仕様の MUST）。IdP 側でこの MCP サーバーを1つの API / Resource として登録し、`aud` にその識別子が入るようにしてください。ここを省くと、**「別のサービスを使う」つもりで同意しただけの利用者のトークンで SMS が送れてしまいます。**
+
+> [!IMPORTANT]
+> **`MCP_AUTH_TOKEN` と併用すると、どちらの資格情報でも `/mcp` を通れます。** OAuth しか喋れない基盤と、任意ヘッダを送れる基盤を同じデプロイに繋ぐ構成は実際にあるため、片方を黙って無効化していません。この状態では起動のたびに警告が出ます。**OAuth だけに絞るなら `MCP_AUTH_TOKEN` を削除してください。**
+
+> [!WARNING]
+> **繋がるかどうかは IdP のクライアント登録方式で決まります。** ChatGPT や Claude のように事前の関係が無いクライアントは、Client ID Metadata Documents か動的クライアント登録（DCR）で `client_id` を得ます。**IdP がどちらにも対応していない場合、その基盤からは接続できません。** 基盤側で `client_id` / `client_secret` を手入力できるなら、事前登録でも構いません。
+
+> [!NOTE]
+> **`/mcp` の応答コードの意味づけ。** 認証情報を送っていないリクエストには、`error` を付けない `401` のチャレンジを返します（未認証は失敗ではなく認可フローの1歩目です）。`Bearer` 以外の認証方式も同じ扱いです。`Bearer` と書いてあるのに中身が無い場合だけ `400` を返します。**認可サーバーの署名鍵を取得できなかった場合は `503`** で、`invalid_token` にはしません — トークンが無効とは限らず、`401` を返すとクライアントは正当なトークンを捨てて取り直しに行きます。
+
+> [!NOTE]
+> **受け取ったアクセストークンは下流に流しません。** Vonage を呼ぶときに使うのは、アプリケーション ID と秘密鍵から組む別の JWT です。仕様が禁じる token passthrough には当たりません。
+
+> [!NOTE]
+> **OAuth 経路はまだ実機で確認していません。** 仕様（[MCP 2025-11-25 / Authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization)）に沿って実装し、トークン検証・メタデータ配信・401 の挙動はテストで固めていますが、ChatGPT や Gemini Enterprise のコネクタから実際に繋いだ報告はまだありません。**動作報告をいただけると助かります。**
 
 > [!IMPORTANT]
 > **CORS は既定で閉じています。**

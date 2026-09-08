@@ -33,12 +33,13 @@ RATE_LIMIT_PER_HOUR=5
 VONAGE_API_SIGNATURE_SECRET=...
 ```
 
-認証は次のどちらかを選びます。
+認証は次のいずれかを選びます。
 
 | 方式 | 設定 | 向いている場面 |
 | --- | --- | --- |
 | プラットフォーム IAM | `TRUST_UPSTREAM_AUTH=true` | Cloud Run / API Gateway の手前で認証できる場合（**推奨**） |
 | Bearer トークン | `MCP_AUTH_TOKEN=...` | IAM を挟めない場合、または MCP クライアントが Bearer しか話せない場合 |
+| **OAuth 2.1** | `OAUTH_ISSUER` / `OAUTH_RESOURCE` / `OAUTH_JWKS_URI` | **接続元が「OAuth か認証なし」しか選べない場合**（ChatGPT のカスタムプラグイン、Gemini Enterprise のコネクタ）。詳細は [README の OAuth 節](../README.md#oauth-21-chatgpt--gemini-enterprise-のコネクタなど) |
 
 ---
 
@@ -318,7 +319,11 @@ stdio では Webhook を受け取れないため、**`get_sms_status` は常に 
 | `tools/list` が `Method not found` | 同上（capability が全 OFF の古いバージョン） |
 | `/mcp` が `406` | POST に `Accept: application/json, text/event-stream` が無い |
 | `/mcp` が `403` | `Host` ヘッダーが `ALLOWED_HOSTS` に無い |
-| `/mcp` が `401` | `MCP_AUTH_TOKEN` が不一致、または未送信 |
+| `/mcp` が `401` | `MCP_AUTH_TOKEN` が不一致、または未送信。OAuth モードならアクセストークンの `iss` / `aud` / `exp` を確認する |
+| `/mcp` が `400` | `Authorization` は送っているが `Bearer <トークン>` として読めない |
+| `/mcp` が `403` | `OAUTH_REQUIRED_SCOPE` を持たないアクセストークン（`WWW-Authenticate` に必要な scope が入っています） |
+| `/mcp` が `503` | 認可サーバーの JWKS を取得できない。**トークンは無効とは限りません**。`OAUTH_JWKS_URI` への到達性を確認する |
+| **起動時に `OAUTH_ISSUER / OAUTH_RESOURCE / OAUTH_JWKS_URI が未設定です` で停止** | `OAUTH_*` の設定が不完全。3つ揃えるか、すべて削除する（部分設定は起動時に落とします） |
 | Webhook が `503` | `VONAGE_API_SIGNATURE_SECRET` も `VONAGE_WEBHOOK_SECRET` も未設定 |
 | Webhook が `401` | 署名・`payload_hash`・`iat`・`jti` のいずれかが不正または欠落 |
 | 外部から接続できない | 認証未設定のためループバックに bind されている |
