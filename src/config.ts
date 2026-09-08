@@ -512,10 +512,15 @@ export function getOAuthConfig(): OAuthConfig | null {
   // issuer 識別子はクエリもフラグメントも持てない（RFC 8414）。持ったまま起動できると、
   // メタデータには載るのに **discovery の well-known URL を組み立てる段階で落ちる**
   // （フラグメントは送れず、クエリは捨てられる）。起動は成功するのに繋がらない。
-  if (issuer !== null && (issuer.hash !== '' || issuer.search !== '')) {
+  //
+  // **判定は生の文字列で行う。** `https://idp.example.com?` のように区切り文字だけの
+  // 場合、WHATWG URL の `search` / `hash` は空文字になって検証を素通りするが、
+  // **設定値は区切り文字を含んだまま `iss` と比較される**ので、実際の issuer が
+  // 発行したトークンが毎回 401 になる。起動は成功するのに、1本も通らない。
+  if (raw.OAUTH_ISSUER !== undefined && /[?#]/.test(raw.OAUTH_ISSUER)) {
     problems.push(
       `OAUTH_ISSUER にフラグメントまたはクエリが含まれています（${raw.OAUTH_ISSUER}）。` +
-        'OAuth の issuer 識別子はどちらも持てません（RFC 8414）。'
+        'OAuth の issuer 識別子はどちらも持てません（RFC 8414）。区切り文字だけでも同じです。'
     );
   }
   const resource =
@@ -523,7 +528,8 @@ export function getOAuthConfig(): OAuthConfig | null {
 
   // RFC 8707 の canonical URI はフラグメントを持てない。クエリ付きも
   // 「このサーバーを指す識別子」としては曖昧なので受け付けない。
-  if (resource !== null && (resource.hash !== '' || resource.search !== '')) {
+  // issuer と同じ理由で、判定は生の文字列で行う。
+  if (raw.OAUTH_RESOURCE !== undefined && /[?#]/.test(raw.OAUTH_RESOURCE)) {
     problems.push(
       `OAUTH_RESOURCE にフラグメントまたはクエリが含まれています（${raw.OAUTH_RESOURCE}）。` +
         'RFC 8707 の正規 URI はどちらも持てません。例: https://example.com/mcp'
@@ -668,7 +674,7 @@ export function getBindHost(): string {
   // 「手元で試すあいだだけ」という前提であり、その構成で 0.0.0.0 に bind すると
   // **平文でアクセストークンを受け取るサーバーが全インターフェースに出る**。
   // 認証が構成済みだからといって、外部公開してよいとは限らない。
-  if (isOnlyLoopbackHttpOAuthConfigured()) {
+  if (isLoopbackHttpOAuthConfigured()) {
     return '127.0.0.1';
   }
 
@@ -676,16 +682,14 @@ export function getBindHost(): string {
 }
 
 /**
- * 認証が「ループバック限定の http な OAuth 設定」だけで構成されているか。
+ * OAuth の設定が http（＝ループバック限定）か。
  *
- * `MCP_AUTH_TOKEN` や `TRUST_UPSTREAM_AUTH` があるなら、外部公開の判断は
- * そちらに委ねてよい。
+ * **`MCP_AUTH_TOKEN` が併設されていても免除しない。** 一度その形で書いたが、
+ * 認証は OR 条件なので、静的トークンがあっても**アクセストークンだけで認証を
+ * 通過できる**。静的トークンの存在は、その通信が暗号化されることを何も保証しない。
+ * 平文の経路が開いているかどうかだけで判断する。
  */
-function isOnlyLoopbackHttpOAuthConfigured(): boolean {
-  if (getMcpAuthToken() !== null || isUpstreamAuthTrusted()) {
-    return false;
-  }
-
+function isLoopbackHttpOAuthConfigured(): boolean {
   return getOAuthConfig()?.loopbackHttp === true;
 }
 
@@ -923,14 +927,14 @@ export function validateStartupConfig(): string[] {
   const bindHost = process.env.BIND_HOST?.trim();
 
   if (bindHost !== undefined && bindHost !== '' && !isLoopbackHost(bindHost)) {
-    let loopbackOnlyOAuth = false;
+    let loopbackHttpOAuth = false;
     try {
-      loopbackOnlyOAuth = isOnlyLoopbackHttpOAuthConfigured();
+      loopbackHttpOAuth = isLoopbackHttpOAuthConfigured();
     } catch {
       // OAUTH_* のパースエラーは上で報告済み
     }
 
-    if (loopbackOnlyOAuth) {
+    if (loopbackHttpOAuth) {
       problems.push(
         `BIND_HOST=${bindHost} は外部から到達できるアドレスですが、OAuth の設定が http です。` +
           'アクセストークンが平文で流れます。https の issuer / resource / JWKS を指定するか、' +

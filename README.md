@@ -833,7 +833,7 @@ OAUTH_JWKS_URI=https://your-tenant.example.com/.well-known/jwks.json
 > `OAUTH_REQUIRED_SCOPE` / `OAUTH_SCOPES_SUPPORTED` に空白・二重引用符・バックスラッシュ・非 ASCII を含めると起動エラーになります（RFC 6749 の scope の文字集合）。`OAUTH_ISSUER` にクエリやフラグメントを含めることもできません（RFC 8414）。
 
 > [!IMPORTANT]
-> **`http://localhost` を使えるのは手元での確認だけです。** issuer / resource / JWKS のいずれかが http の場合、`BIND_HOST` を指定しなければ **`127.0.0.1` で待ち受けます**（認証が構成済みでも `0.0.0.0` にはしません）。平文でアクセストークンを受け取るサーバーを外部に出さないためです。この構成で `BIND_HOST` に外部アドレスを指定すると**起動時にエラーで停止**します。
+> **`http://localhost` を使えるのは手元での確認だけです。** issuer / resource / JWKS のいずれかが http の場合、`BIND_HOST` を指定しなければ **`127.0.0.1` で待ち受けます**（認証が構成済みでも `0.0.0.0` にはしません）。平文でアクセストークンを受け取るサーバーを外部に出さないためです。この構成で `BIND_HOST` に外部アドレスを指定すると**起動時にエラーで停止**します。**`MCP_AUTH_TOKEN` を併用していても同じです** — 認証は「どちらか一方」で通るので、静的トークンがあってもアクセストークンは平文で流れます。
 
 > [!WARNING]
 > **`OAUTH_AUDIENCE` にクライアント識別子（client_id）を設定しないでください。** ID トークンの `aud` はクライアント識別子です。同じ IdP が同じ鍵・同じ issuer で ID トークンも発行する構成でこれを一致させると、**ログインできるだけの利用者が、API の委譲を受けないまま SMS を送れます。**

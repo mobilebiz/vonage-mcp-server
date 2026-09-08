@@ -222,6 +222,27 @@ describe('OAuth 設定の解釈', () => {
     expect(() => getOAuthConfig()).toThrow(ConfigError);
   });
 
+  // WHATWG URL は `?` だけ・`#` だけを空文字として扱うため、パース結果を見ると
+  // 素通りする。しかし設定値は区切り文字を含んだまま iss と比較されるので、
+  // 起動は成功するのに1本も通らないサーバーができる
+  it.each(['https://idp.example.com?', 'https://idp.example.com#'])(
+    '区切り文字だけの issuer（%s）も拒否する',
+    (issuer) => {
+      configure({ OAUTH_ISSUER: issuer });
+
+      expect(() => getOAuthConfig()).toThrow(ConfigError);
+    }
+  );
+
+  it.each(['https://mcp.example.com/mcp?', 'https://mcp.example.com/mcp#'])(
+    '区切り文字だけの resource（%s）も拒否する',
+    (resource) => {
+      configure({ OAUTH_RESOURCE: resource });
+
+      expect(() => getOAuthConfig()).toThrow(ConfigError);
+    }
+  );
+
   it('末尾のスラッシュを含め、書かれたとおりの値を使う', () => {
     configure({ OAUTH_ISSUER: 'https://idp.example.com/', OAUTH_RESOURCE: 'https://mcp.example.com/' });
 
@@ -292,7 +313,9 @@ describe('OAuth 設定の解釈', () => {
     expect(() => validateStartupConfig()).toThrow(ConfigError);
   });
 
-  it('MCP_AUTH_TOKEN があれば、http な OAuth 設定でも外部 bind の判断は妨げない', () => {
+  // 認証は OR 条件なので、静的トークンがあってもアクセストークンだけで通過できる。
+  // 静的トークンの存在は、その通信が暗号化されることを何も保証しない
+  it('MCP_AUTH_TOKEN を併用しても、http な OAuth 設定なら外に出さない', () => {
     configure({
       OAUTH_ISSUER: 'http://localhost:8080',
       OAUTH_RESOURCE: 'http://localhost:3000/mcp',
@@ -300,7 +323,19 @@ describe('OAuth 設定の解釈', () => {
       MCP_AUTH_TOKEN: 'a'.repeat(32),
     });
 
-    expect(getBindHost()).toBe('0.0.0.0');
+    expect(getBindHost()).toBe('127.0.0.1');
+  });
+
+  it('MCP_AUTH_TOKEN を併用しても、外部 BIND_HOST は起動エラーのまま', () => {
+    configure({
+      OAUTH_ISSUER: 'http://localhost:8080',
+      OAUTH_RESOURCE: 'http://localhost:3000/mcp',
+      OAUTH_JWKS_URI: 'http://localhost:8080/jwks',
+      MCP_AUTH_TOKEN: 'a'.repeat(32),
+      BIND_HOST: '0.0.0.0',
+    });
+
+    expect(() => validateStartupConfig()).toThrow(ConfigError);
   });
 });
 
