@@ -14,8 +14,13 @@ import { SERVER_NAME, SERVER_VERSION } from '../src/mcpServer.js';
  * **デプロイの成否をこの値で確かめる運用をしていた**ので、「反映されていない」と
  * 読み違える一歩手前だった。
  *
- * バージョンは「コード / 配布マニフェスト / パッケージ定義」の3か所に散っている。
- * どれか1つを直したら残りも動く、という保証は人間の注意力しかない。ここで縛る。
+ * バージョンは**4か所**に散っている — コード / 配布マニフェスト / パッケージ定義 /
+ * **lockfile**。どれか1つを直したら残りも動く、という保証は人間の注意力しかない。
+ *
+ * **この一覧自体を数え違えた。** v3.1.1 で最初に書いたときは lockfile を数え落としており、
+ * その状態で `npm install` を実行すると追跡中の lockfile が書き換わり、
+ * **バンドルに焼き込まれる `node_modules/.package-lock.json` は 3.1.0 のままだった。**
+ * 「散らばりを縛るテスト」を書くときは、**散らばりの数え上げ自体が漏れる**。
  */
 describe('名乗るバージョン', () => {
   function readJson(relativePath: string): { name: string; version: string } {
@@ -31,6 +36,18 @@ describe('名乗るバージョン', () => {
   // Claude Desktop に出る版と、サーバーが名乗る版が食い違う
   it('manifest.json のバージョンも一致する', () => {
     expect(readJson('../manifest.json').version).toBe(SERVER_VERSION);
+  });
+
+  // 追跡している lockfile がずれていると、`npm install` のたびに作業ツリーが汚れ、
+  // **バンドルに焼き込まれる node_modules/.package-lock.json も古い版を名乗る**
+  it('package-lock.json のバージョンも一致する', () => {
+    const lock = readJson('../package-lock.json') as unknown as {
+      version: string;
+      packages: Record<string, { version?: string }>;
+    };
+
+    expect(lock.version).toBe(SERVER_VERSION);
+    expect(lock.packages[''].version).toBe(SERVER_VERSION);
   });
 
   it('SERVER_NAME が package.json と一致する', () => {
