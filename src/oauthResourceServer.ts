@@ -224,23 +224,26 @@ export function extractScopes(payload: JWTPayload): string[] {
 }
 
 /**
- * 「トークンが正しくない」ことを意味する jose のエラーコード。
+ * 鍵を取りに行けなかったことを意味する jose のエラーコード。
  *
- * **これ以外は、こちらの都合で確かめられなかったということである。** JWKS の取得が
- * タイムアウトしただけで `invalid_token` を返すと、クライアントは正当なトークンを
- * 捨てて取り直しに行く。認可サーバーが不調なときに、こちらから追加の負荷を
- * 掛けにいくことになる。
+ * JWKS の取得がタイムアウトしただけで `invalid_token` を返すと、クライアントは
+ * 正当なトークンを捨てて取り直しに行く。認可サーバーが不調なときに、こちらから
+ * 追加の負荷を掛けにいくことになる。
  */
-const TOKEN_ERROR_CODES: ReadonlySet<string> = new Set([
-  'ERR_JWT_EXPIRED',
-  'ERR_JWT_CLAIM_VALIDATION_FAILED',
-  'ERR_JWT_INVALID',
-  'ERR_JWS_INVALID',
-  'ERR_JWS_SIGNATURE_VERIFICATION_FAILED',
-  'ERR_JOSE_ALG_NOT_ALLOWED',
-  'ERR_JWKS_NO_MATCHING_KEY',
-  'ERR_JWKS_MULTIPLE_MATCHING_KEYS',
-]);
+const KEY_RETRIEVAL_ERROR_CODES: ReadonlySet<string> = new Set(['ERR_JWKS_TIMEOUT']);
+
+/**
+ * jose が付けるエラーコードか。
+ *
+ * **「トークン起因のコードを列挙する」形にはしない。** 一度その形で書いたところ、
+ * 列挙から漏れた `ERR_JOSE_NOT_SUPPORTED`（未対応の `crit` ヘッダーを持つトークン）が
+ * 「鍵を取得できなかった」側に落ち、**何度再試行しても直らないのに再試行を促す**
+ * 503 を返していた。jose のコードが付いているなら、それは受け取ったトークンを
+ * 処理した結果である。鍵の取得失敗だけを名指しして、残りはトークン起因に倒す。
+ */
+function isJoseErrorCode(code: string): boolean {
+  return /^ERR_(JWT|JWS|JWE|JWK|JOSE)/.test(code);
+}
 
 /**
  * Authorization ヘッダーの解釈結果。
@@ -309,7 +312,8 @@ export async function verifyAccessToken(token: string, config: OAuthConfig): Pro
     const code = (error as { code?: string })?.code ?? '';
 
     // 鍵を取りに行けなかっただけなら、トークンは無効ではない。
-    if (!TOKEN_ERROR_CODES.has(code)) {
+    // fetch が投げる TypeError のようにコードを持たないものも、こちら側の障害。
+    if (KEY_RETRIEVAL_ERROR_CODES.has(code) || !isJoseErrorCode(code)) {
       return {
         ok: false,
         status: 503,

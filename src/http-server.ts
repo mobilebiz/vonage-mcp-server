@@ -72,7 +72,10 @@ app.use((req, res, next) => {
     return;
   }
 
-  cors({ origin: origins, credentials: false })(req, res, next);
+  // WWW-Authenticate を expose しないと、許可したオリジンのブラウザ JS からでも
+  // チャレンジを読めない。403 の insufficient_scope を検出できず、追加スコープの
+  // 認可フローに進めなくなる。
+  cors({ origin: origins, credentials: false, exposedHeaders: ['WWW-Authenticate'] })(req, res, next);
 });
 // Webhookの署名検証（payload_hash）に生のボディが必要なため、パース時に保持しておく
 //

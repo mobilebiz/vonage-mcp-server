@@ -454,6 +454,32 @@ describe('アクセストークンの検証', () => {
     expect(result).toMatchObject({ ok: false, status: 503, error: undefined });
   });
 
+  // 列挙から漏れたトークン起因のエラーが 503 に落ちると、何度再試行しても
+  // 直らないのに再試行を促すことになる
+  it('未対応のヘッダーを持つトークンは 503 ではなく 401', async () => {
+    const token = await issueToken();
+    setJwksResolverForTesting(() => {
+      const error = new Error('unsupported crit') as Error & { code: string };
+      error.code = 'ERR_JOSE_NOT_SUPPORTED';
+      throw error;
+    });
+
+    const result = await verifyAccessToken(token, config());
+
+    expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
+  });
+
+  it('コードを持たない例外（ネットワーク障害など）は 503', async () => {
+    const token = await issueToken();
+    setJwksResolverForTesting(() => {
+      throw new TypeError('fetch failed');
+    });
+
+    const result = await verifyAccessToken(token, config());
+
+    expect(result).toMatchObject({ ok: false, status: 503 });
+  });
+
   it('必須 scope が無ければ 403 insufficient_scope', async () => {
     const result = await verifyAccessToken(
       await issueToken({ scope: 'sms:read' }),
@@ -669,6 +695,20 @@ describe('HTTP 経路', () => {
       .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
 
     expect(res.status).toBe(200);
+  });
+
+  // expose しないと、許可したオリジンのブラウザ JS からチャレンジを読めない
+  it('許可したオリジンには WWW-Authenticate を expose する', async () => {
+    configure({ ALLOWED_ORIGINS: 'https://app.example.com' });
+
+    const res = await request(app)
+      .post('/mcp')
+      .set('Accept', MCP_ACCEPT)
+      .set('Origin', 'https://app.example.com')
+      .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+
+    expect(res.status).toBe(401);
+    expect(res.headers['access-control-expose-headers']).toContain('WWW-Authenticate');
   });
 
   it('/health は OAuth を設定しても認証不要のまま', async () => {
