@@ -549,6 +549,18 @@ export function getOAuthConfig(): OAuthConfig | null {
 
   if (raw.OAUTH_REQUIRED_SCOPE !== undefined) {
     validateScopeToken('OAUTH_REQUIRED_SCOPE', raw.OAUTH_REQUIRED_SCOPE, problems);
+
+    // **要求する scope は、広告する scope に入っていなければならない。**
+    // クライアントは保護リソースメタデータの `scopes_supported` を見て認可要求を
+    // 組み立てる。必須の scope がそこに無いと、**案内どおりに取ったトークンが
+    // 即座に 403 になる**。取り直しても同じ結果にしかならない。
+    if (scopesSupported !== null && !scopesSupported.includes(raw.OAUTH_REQUIRED_SCOPE)) {
+      problems.push(
+        `OAUTH_REQUIRED_SCOPE（${raw.OAUTH_REQUIRED_SCOPE}）が OAUTH_SCOPES_SUPPORTED に含まれていません。` +
+          'クライアントはメタデータの scopes_supported を見て認可要求を組み立てるため、' +
+          'この状態では案内どおりに取得したトークンが必ず 403 になります。'
+      );
+    }
   }
 
   // 既定は true。**アクセストークンであることを積極的に示すものを必ず1つ要求する。**
@@ -977,6 +989,30 @@ export function validateStartupConfig(): string[] {
           'BIND_HOST を外してください（127.0.0.1 で待ち受けます）。'
       );
     }
+  }
+
+  // ループバックの http 構成では、**配っている URI のポートで待ち受けていなければ
+  // 意味がない。** ホスト名だけ合わせてポートが違うと、discovery で案内した宛先に
+  // 繋ぎに来たクライアントが接続に失敗する。
+  // （https の場合は上流で TLS を終端する構成が普通で、外向きのポートと待ち受け
+  //   ポートが違うのは正常なので検査しない。）
+  try {
+    const oauth = getOAuthConfig();
+    if (oauth !== null && oauth.loopbackBindHost !== null) {
+      const resourceUrl = new URL(oauth.resource);
+      const resourcePort = resourceUrl.port === '' ? 80 : Number(resourceUrl.port);
+      const listenPort = getPort();
+
+      if (resourcePort !== listenPort) {
+        problems.push(
+          `OAUTH_RESOURCE のポート（${resourcePort}）と待ち受けポート（PORT=${listenPort}）が違います。` +
+            'ループバックの http 構成では、配っている URI のポートで待ち受けていないと、' +
+            'メタデータを見て繋ぎに来たクライアントが接続できません。PORT か OAUTH_RESOURCE を揃えてください。'
+        );
+      }
+    }
+  } catch {
+    // OAUTH_* / PORT のパースエラーは上で報告済み
   }
 
   if (bindHost !== undefined && bindHost !== '' && !isLoopbackHost(bindHost) && !httpAuthConfigured) {

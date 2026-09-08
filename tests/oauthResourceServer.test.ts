@@ -50,6 +50,7 @@ const MANAGED_ENV = [
   'MCP_AUTH_TOKEN',
   'TRUST_UPSTREAM_AUTH',
   'BIND_HOST',
+  'PORT',
   'ALLOWED_HOSTS',
   'ALLOWED_ORIGINS',
 ];
@@ -308,6 +309,59 @@ describe('OAuth 設定の解釈', () => {
     });
 
     expect(getBindHost()).toBe('::1');
+  });
+
+  // クライアントは scopes_supported を見て認可要求を組み立てる。必須の scope が
+  // そこに無いと、案内どおりに取ったトークンが必ず 403 になる
+  it('OAUTH_REQUIRED_SCOPE が OAUTH_SCOPES_SUPPORTED に無ければ起動エラー', () => {
+    configure({ OAUTH_SCOPES_SUPPORTED: 'sms:read', OAUTH_REQUIRED_SCOPE: 'sms:send' });
+
+    expect(() => getOAuthConfig()).toThrow(ConfigError);
+  });
+
+  it('OAUTH_REQUIRED_SCOPE が広告に含まれていれば通る', () => {
+    configure({ OAUTH_SCOPES_SUPPORTED: 'sms:read,sms:send', OAUTH_REQUIRED_SCOPE: 'sms:send' });
+
+    expect(getOAuthConfig()?.requiredScope).toBe('sms:send');
+  });
+
+  // scopes_supported を設定していないなら、広告そのものが無いので矛盾しない
+  it('OAUTH_SCOPES_SUPPORTED が無ければ必須 scope だけでも通る', () => {
+    configure({ OAUTH_REQUIRED_SCOPE: 'sms:send' });
+
+    expect(getOAuthConfig()?.requiredScope).toBe('sms:send');
+  });
+
+  // ホスト名だけ合わせてポートが違うと、案内した宛先に繋ぎに来たクライアントが
+  // 接続に失敗する
+  it('ループバック http で OAUTH_RESOURCE のポートと PORT が違えば起動エラー', () => {
+    configure({
+      OAUTH_ISSUER: 'http://localhost:8080',
+      OAUTH_RESOURCE: 'http://localhost:8080/mcp',
+      OAUTH_JWKS_URI: 'http://localhost:8080/jwks',
+      PORT: '3000',
+    });
+
+    expect(() => validateStartupConfig()).toThrow(ConfigError);
+  });
+
+  it('ループバック http でポートが揃っていれば通る', () => {
+    configure({
+      OAUTH_ISSUER: 'http://localhost:8080',
+      OAUTH_RESOURCE: 'http://localhost:3000/mcp',
+      OAUTH_JWKS_URI: 'http://localhost:8080/jwks',
+      PORT: '3000',
+    });
+
+    expect(() => validateStartupConfig()).not.toThrow();
+  });
+
+  // https は上流で TLS を終端する構成が普通で、外向きと待ち受けのポートが
+  // 違うのは正常
+  it('https の resource ではポートを検査しない', () => {
+    configure({ PORT: '3000' });
+
+    expect(() => validateStartupConfig()).not.toThrow();
   });
 
   it('OAUTH_SCOPES_SUPPORTED はカンマ区切りで読む', () => {
