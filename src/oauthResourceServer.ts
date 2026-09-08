@@ -59,9 +59,10 @@ export type AccessTokenResult =
     }
   | {
       ok: false;
-      status: 401 | 403;
-      /** RFC 6750 の error パラメータ */
-      error: 'invalid_request' | 'invalid_token' | 'insufficient_scope';
+      /** 503 は「トークンが悪い」ではなく「こちらが確かめられない」 */
+      status: 401 | 403 | 503;
+      /** RFC 6750 の error パラメータ。503 では付けない */
+      error: 'invalid_token' | 'insufficient_scope' | undefined;
       /** 人間が読む理由。WWW-Authenticate の error_description とレスポンス本文に使う */
       description: string;
     };
@@ -223,6 +224,25 @@ export function extractScopes(payload: JWTPayload): string[] {
 }
 
 /**
+ * 「トークンが正しくない」ことを意味する jose のエラーコード。
+ *
+ * **これ以外は、こちらの都合で確かめられなかったということである。** JWKS の取得が
+ * タイムアウトしただけで `invalid_token` を返すと、クライアントは正当なトークンを
+ * 捨てて取り直しに行く。認可サーバーが不調なときに、こちらから追加の負荷を
+ * 掛けにいくことになる。
+ */
+const TOKEN_ERROR_CODES: ReadonlySet<string> = new Set([
+  'ERR_JWT_EXPIRED',
+  'ERR_JWT_CLAIM_VALIDATION_FAILED',
+  'ERR_JWT_INVALID',
+  'ERR_JWS_INVALID',
+  'ERR_JWS_SIGNATURE_VERIFICATION_FAILED',
+  'ERR_JOSE_ALG_NOT_ALLOWED',
+  'ERR_JWKS_NO_MATCHING_KEY',
+  'ERR_JWKS_MULTIPLE_MATCHING_KEYS',
+]);
+
+/**
  * Authorization ヘッダーの解釈結果。
  *
  * **「送っていない」と「送ったが形式が違う」を区別する。** RFC 6750 は、認証情報が
@@ -231,7 +251,11 @@ export function extractScopes(payload: JWTPayload): string[] {
  * クライアントによっては「認可を取りに行く」のではなく「失敗した」と扱う。
  */
 export type AuthorizationHeader =
+  /** ヘッダーが無い */
   | { kind: 'absent' }
+  /** Bearer 以外の認証方式。RFC 6750 は「認証情報が無い」のと同じ扱いにする */
+  | { kind: 'other-scheme' }
+  /** Bearer だが中身が無い。要求そのものが壊れている */
   | { kind: 'malformed' }
   | { kind: 'bearer'; token: string };
 
@@ -242,12 +266,16 @@ export function parseAuthorizationHeader(header: string | string[] | undefined):
     return { kind: 'absent' };
   }
 
-  const match = /^Bearer\s+(.+)$/i.exec(value.trim());
-  if (match === null) {
-    return { kind: 'malformed' };
+  const trimmed = value.trim();
+  if (!/^Bearer(\s|$)/i.test(trimmed)) {
+    // 「クライアントが認証の要否を知らなかった」場合と並べて例示されているのが
+    // **未対応の認証方式**である（RFC 6750 3.1）。壊れた Bearer 要求ではないので、
+    // エラーを付けずに 401 のチャレンジを返し、認可フローの入口へ案内する。
+    return { kind: 'other-scheme' };
   }
 
-  const token = match[1].trim();
+  const match = /^Bearer\s+(.+)$/i.exec(trimmed);
+  const token = match === null ? '' : match[1].trim();
   return token === '' ? { kind: 'malformed' } : { kind: 'bearer', token };
 }
 
@@ -279,6 +307,18 @@ export async function verifyAccessToken(token: string, config: OAuthConfig): Pro
     payload = verified.payload;
   } catch (error: unknown) {
     const code = (error as { code?: string })?.code ?? '';
+
+    // 鍵を取りに行けなかっただけなら、トークンは無効ではない。
+    if (!TOKEN_ERROR_CODES.has(code)) {
+      return {
+        ok: false,
+        status: 503,
+        error: undefined,
+        description:
+          '認可サーバーの署名鍵を取得できず、アクセストークンを検証できませんでした。' +
+          'トークンが無効とは限りません。時間をおいて再試行してください。',
+      };
+    }
 
     // 「なぜ落ちたか」は返す。トークンの中身は返さない。クライアントは自分の
     // トークンについてしか問い合わせできないので、原因の粒度は安全側で足りる。

@@ -133,7 +133,9 @@ async function requireMcpAuth(
 
   // 認証情報がまったく無いリクエストへの 401 には error を載せない（RFC 6750 3.1）。
   // 未認証は異常ではなく、認可フローの1歩目である。
-  if (authorization.kind === 'absent') {
+  // Bearer 以外の認証方式も、RFC 6750 では「認証情報が無い」のと同じ扱いにする。
+  // 400 を返すと、401 を起点とする認可フローに入れないクライアントが出る。
+  if (authorization.kind === 'absent' || authorization.kind === 'other-scheme') {
     denyMcp(res, oauth, 401, undefined, 'Unauthorized: missing bearer token');
     return;
   }
@@ -197,7 +199,7 @@ function denyMisconfigured(res: express.Response, error: unknown): void {
 function denyMcp(
   res: express.Response,
   oauth: OAuthConfigOrNull,
-  status: 400 | 401 | 403,
+  status: 400 | 401 | 403 | 503,
   error: string | undefined,
   description: string
 ): void {

@@ -197,12 +197,28 @@ describe('OAuth 設定の解釈', () => {
     expect(getOAuthConfig()?.resource).toBe('https://mcp.example.com/');
   });
 
-  it('scope に使えない文字があれば起動エラー', () => {
+  it('OAUTH_REQUIRED_SCOPE に使えない文字があれば起動エラー', () => {
     configure({ OAUTH_REQUIRED_SCOPE: 'sms:送信' });
-    expect(() => getOAuthConfig()).toThrow(ConfigError);
 
-    configure({ OAUTH_SCOPES_SUPPORTED: 'sms:send, sms send' });
     expect(() => getOAuthConfig()).toThrow(ConfigError);
+  });
+
+  // 2つを1つの it にまとめると、片方の不正値がもう片方の検証漏れを隠す
+  it('OAUTH_SCOPES_SUPPORTED に使えない文字があれば起動エラー', () => {
+    configure({ OAUTH_SCOPES_SUPPORTED: 'sms:send, sms"send' });
+
+    expect(() => getOAuthConfig()).toThrow(ConfigError);
+  });
+
+  // new URL('http://[::1]:8080').hostname は角括弧つきで返る
+  it('IPv6 のループバックも http で許す', () => {
+    configure({
+      OAUTH_ISSUER: 'http://[::1]:8080',
+      OAUTH_RESOURCE: 'http://[::1]:3000/mcp',
+      OAUTH_JWKS_URI: 'http://[::1]:8080/jwks',
+    });
+
+    expect(getOAuthConfig()?.issuer).toBe('http://[::1]:8080');
   });
 
   it('OAUTH_SCOPES_SUPPORTED はカンマ区切りで読む', () => {
@@ -348,9 +364,14 @@ describe('Authorization ヘッダーの解釈', () => {
     expect(parseAuthorizationHeader('   ')).toEqual({ kind: 'absent' });
   });
 
-  it('Bearer 以外や中身の無い Bearer は malformed', () => {
-    expect(parseAuthorizationHeader('Basic abc')).toEqual({ kind: 'malformed' });
+  // RFC 6750 は未対応の認証方式を「認証情報が無い」のと並べて例示している
+  it('Bearer 以外の方式は other-scheme', () => {
+    expect(parseAuthorizationHeader('Basic abc')).toEqual({ kind: 'other-scheme' });
+  });
+
+  it('Bearer だが中身が無ければ malformed', () => {
     expect(parseAuthorizationHeader('Bearer   ')).toEqual({ kind: 'malformed' });
+    expect(parseAuthorizationHeader('Bearer')).toEqual({ kind: 'malformed' });
   });
 });
 
@@ -416,6 +437,21 @@ describe('アクセストークンの検証', () => {
     const result = await verifyAccessToken(tampered, config());
 
     expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
+  });
+
+  // 鍵を取りに行けなかっただけで invalid_token を返すと、クライアントは
+  // 正当なトークンを捨てて取り直しに行く。不調な IdP に追加の負荷を掛ける
+  it('署名鍵を取得できないときは 503 を返し、トークンのせいにしない', async () => {
+    const token = await issueToken();
+    setJwksResolverForTesting(() => {
+      const error = new Error('Timeout') as Error & { code: string };
+      error.code = 'ERR_JWKS_TIMEOUT';
+      throw error;
+    });
+
+    const result = await verifyAccessToken(token, config());
+
+    expect(result).toMatchObject({ ok: false, status: 503, error: undefined });
   });
 
   it('必須 scope が無ければ 403 insufficient_scope', async () => {
@@ -499,7 +535,7 @@ describe('HTTP 経路', () => {
     expect(res.headers['www-authenticate']).not.toContain('error=');
   });
 
-  it('Bearer として読めない Authorization は 400 invalid_request', async () => {
+  it('Bearer 以外の認証方式は 401 のチャレンジに倒す（400 にしない）', async () => {
     configure();
 
     const res = await request(app)
@@ -508,12 +544,40 @@ describe('HTTP 経路', () => {
       .set('Authorization', 'Basic dXNlcjpwYXNz')
       .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
 
+    expect(res.status).toBe(401);
+    expect(res.headers['www-authenticate']).not.toContain('error=');
+  });
+
+  it('中身の無い Bearer は 400 invalid_request', async () => {
+    configure();
+
+    const res = await request(app)
+      .post('/mcp')
+      .set('Accept', MCP_ACCEPT)
+      .set('Authorization', 'Bearer')
+      .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+
     expect(res.status).toBe(400);
     expect(res.headers['www-authenticate']).toContain('error="invalid_request"');
   });
 
   // 壊れた設定で素通りさせると、無認証のサーバーができる
   it('OAUTH_* が部分設定なら、素通りさせず 500 を返す', async () => {
+    process.env.OAUTH_ISSUER = ISSUER;
+
+    const res = await request(app)
+      .post('/mcp')
+      .set('Accept', MCP_ACCEPT)
+      .send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.message).toContain('misconfigured');
+  });
+
+  // ALLOWED_HOSTS を設定すると requireAllowedHost は設定を読まずに通すので、
+  // 認証ミドルウェア自身の fail-closed が試される
+  it('ホスト検証を通過したあとでも、部分設定なら素通りさせない', async () => {
+    process.env.ALLOWED_HOSTS = '127.0.0.1';
     process.env.OAUTH_ISSUER = ISSUER;
 
     const res = await request(app)

@@ -426,7 +426,12 @@ function parseHttpsUrl(name: string, raw: string, problems: string[]): URL | nul
     return null;
   }
 
-  if (url.protocol === 'http:' && !isLoopbackHost(url.hostname)) {
+  // URL の hostname は IPv6 を角括弧つきで返す（`http://[::1]:8080` → `[::1]`）。
+  // 剥がさずに比較すると、README が認めているループバックの http 構成が
+  // 起動エラーになる。
+  const hostname = url.hostname.replace(/^\[|\]$/g, '');
+
+  if (url.protocol === 'http:' && !isLoopbackHost(hostname)) {
     problems.push(
       `${name} が http です（${raw}）。アクセストークンが平文で流れるため、https を指定してください` +
         '（localhost / 127.0.0.1 での動作確認のときだけ http を許可します）。'
