@@ -13,9 +13,18 @@ import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { enabledToolDefinitions, runTool } from './tools.js';
 import { toMcpResult, unexpectedErrorOutcome, type ToolOutcome } from './toolResponse.js';
 
-/** サーバー名とバージョン（package.json と揃える） */
+/**
+ * サーバー名とバージョン。
+ *
+ * **`SERVER_VERSION` は `package.json` の version と一致していなければテストが落ちる**
+ * （`tests/mcpServer.test.ts`）。この値は `/health` と MCP の initialize の両方で名乗るもので、
+ * **版を上げたときにここだけ取り残されると、配布物も稼働中のサーバーも古い版を名乗り続ける。**
+ * v3.1.0 で実際にそれをやった — `package.json` と `manifest.json` は 3.1.0 なのに、
+ * デプロイした本番が `/health` で `3.0.0` を返していた。デプロイの成否をこの値で
+ * 確かめる運用をしていたので、**「反映されていない」と読み違える一歩手前だった。**
+ */
 export const SERVER_NAME = 'vonage-mcp-server';
-export const SERVER_VERSION = '3.0.0';
+export const SERVER_VERSION = '3.1.1';
 
 /** ツール呼び出しを観測するためのフック（デバッグログ用） */
 export interface McpServerHooks {
