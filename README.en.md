@@ -122,7 +122,7 @@ Legend: ✅ verified on real hardware / 📄 documented as supported (not yet ve
 | [Gemini Enterprise (your own ADK agent)](docs/gemini-enterprise-adk.md) | Streamable HTTP | Bearer via arbitrary headers | **yes** (ADK `require_confirmation`; an approval window appears in Apps) | ✅ |
 | [AWS Bedrock AgentCore Gateway](docs/agentcore.md) | Streamable HTTP (it never opens SSE) | **API key provider** puts Bearer in a header. **IAM SigV4 does not work** (see below) | **none** | ✅ |
 | [Dify](docs/dify.md) | Streamable HTTP (it never opens SSE) | Bearer via arbitrary headers | **none.** Only if you add a Human Input node to a Workflow | ✅ |
-| ChatGPT (custom plugin / connector) | Streamable HTTP | **OAuth 2.0 or "no authentication" only** (supported via [OAuth mode](#oauth-21-resource-server-mode)) | client-dependent | 📄 |
+| [ChatGPT (custom plugin)](docs/chatgpt.md) | Streamable HTTP | **OAuth 2.1 only — `MCP_AUTH_TOKEN` cannot be used** ([a separate IdP is required](#oauth-21-resource-server-mode-requires-a-separate-idp)) | **not guaranteed** | ✅ |
 | [n8n (MCP Client Tool)](https://docs.n8n.io/integrations/builtin/cluster-nodes/sub-nodes/n8n-nodes-langchain.toolmcp/) | HTTP Streamable / stdio | Bearer / arbitrary headers / OAuth2 | only if enabled on the AI Agent node | 📄 |
 
 📄 means **we have not tried it yet**. The documentation says it should connect;
@@ -268,7 +268,38 @@ body to UCS-2**. So `RATE_LIMIT_PER_HOUR=5` permits up to
 | `ALLOWED_ORIGINS` | unset — **all cross-origin denied** | CORS allowlist |
 | `ALLOWED_HOSTS` | loopback names when bound to loopback | Host header allowlist (DNS rebinding) |
 
-### OAuth 2.1 resource server mode
+### OAuth 2.1 resource server mode requires a separate IdP
+
+> **This server issues no tokens. It only verifies them.**
+>
+> To connect over OAuth you must run an authorization server (an IdP) alongside
+> it. Showing the login screen and minting access tokens is the IdP's job, and
+> **without one no amount of configuration here will connect.**
+
+```
+ChatGPT ──① authorize ──▶ IdP (WorkOS, Keycloak, …)  ← you provide this
+   │                        │
+   │◀── ② access token ─────┘
+   │
+   └──③ Bearer <token> ──▶ this server ──▶ Vonage
+                              │
+                              └─ ④ verify signature / iss / aud / exp via JWKS
+```
+
+**Not every IdP will do.** Two conditions decide whether a platform can connect
+at all:
+
+| Requirement | What happens otherwise |
+| --- | --- |
+| **Supports CIMD or DCR** | The client cannot register itself and authorization never starts. ChatGPT has no prior relationship with your IdP and no way to be registered by hand |
+| **Can mint `aud` matching this server's URI** | Tokens are issued, and this server rejects every one of them as not meant for it |
+
+| IdP | CIMD / DCR | `aud` for this server |
+| --- | --- | --- |
+| **WorkOS** ([walkthrough](docs/chatgpt.md), Japanese) | ✅ CIMD | ✅ register a Resource Indicator |
+| Keycloak | ✅ DCR | ⚠️ no `resource` support; needs an audience mapper |
+| Auth0 | ✅ DCR | ❌ uses its own `audience` and ignores `resource` |
+| Entra ID | ❌ | ❌ |
 
 **OAuth 2.1 is what the MCP specification defines for HTTP transports.** The
 static `MCP_AUTH_TOKEN` above is *not* in the specification — it works only where
@@ -289,7 +320,7 @@ Entra ID, Keycloak, …).
 | `OAUTH_AUDIENCE` | | Expected `aud`. Defaults to `OAUTH_RESOURCE`; set it only when your IdP's API identifier differs |
 | `OAUTH_SCOPES_SUPPORTED` | | Comma-separated scopes advertised in the protected resource metadata. Must include `OAUTH_REQUIRED_SCOPE` if that is set — startup fails otherwise, since a client following the metadata would fetch a token the server immediately rejects |
 | `OAUTH_REQUIRED_SCOPE` | | Scope required to call `/mcp`. Tokens without it get `403 insufficient_scope` |
-| `OAUTH_REQUIRE_AT_JWT` | | **Defaults to `true`** — only tokens carrying RFC 9068's `typ: at+jwt` are accepted. Setting it to `false` requires `OAUTH_REQUIRED_SCOPE` |
+| `OAUTH_REQUIRE_AT_JWT` | | Accept only tokens carrying RFC 9068's `typ: at+jwt`. **Defaults to true only when `OAUTH_AUDIENCE` is overridden** (see below); set it explicitly to tighten |
 
 All three required variables must be present together — a partial configuration
 fails at startup rather than silently falling back to the static token.
@@ -308,22 +339,32 @@ slash included, because they are OAuth identifiers rather than URLs to normalise
 Scope values must fit RFC 6749's character set (printable ASCII, no space, quote
 or backslash) or startup fails.
 
-**One affirmative access-token marker is mandatory.** An ID token's `aud` *is*
-the client id, so if the same IdP signs ID tokens with the same keys and issuer
-and `OAUTH_AUDIENCE` points at that client id, `iss`/`aud`/`exp` cannot tell the
-two apart — anyone who can merely log in could send SMS without ever being
-delegated API access. So the server insists on one of:
+**Overriding `OAUTH_AUDIENCE` makes an access-token marker mandatory.** An ID
+token's `aud` *is* the client id. Leave `OAUTH_AUDIENCE` alone and the audience
+this server expects is the URI it advertises as its resource, which an ID token
+will never carry — nothing further to configure. Override it with something else
+(an IdP's API identifier, say) and that value can collide with a client id; if
+the same IdP signs ID tokens with the same keys and issuer, `iss`/`aud`/`exp`
+can no longer tell the two apart, and anyone who can merely log in could send
+SMS without ever being delegated API access.
+
+So **when the audience is overridden**, one of these is required and startup
+fails without them:
 
 | Marker | Configuration | When it applies |
 | --- | --- | --- |
-| RFC 9068 `typ` | `OAUTH_REQUIRE_AT_JWT=true` (**default**) | Your IdP stamps access tokens with `typ: at+jwt` (Auth0 and others) |
-| An API scope | `OAUTH_REQUIRE_AT_JWT=false` plus `OAUTH_REQUIRED_SCOPE` | Your IdP does not stamp `typ` (Keycloak, Entra ID). ID tokens do not carry API scopes |
+| RFC 9068 `typ` | `OAUTH_REQUIRE_AT_JWT=true` (the default once overridden) | Your IdP stamps access tokens with `typ: at+jwt` |
+| An API scope | `OAUTH_REQUIRE_AT_JWT=false` plus `OAUTH_REQUIRED_SCOPE` | Your IdP does not stamp `typ`. ID tokens do not carry API scopes |
 
-Startup fails if neither is present. Tokens carrying `at_hash` / `c_hash` are
-also rejected, but that check cannot be relied on: both claims are conditional
-and are usually absent from authorization-code ID tokens, so their absence
-proves nothing. Point `OAUTH_AUDIENCE` at the API/resource identifier, never at
-a client id.
+Point `OAUTH_AUDIENCE` at the API/resource identifier, never at a client id.
+Tokens carrying `at_hash` / `c_hash` are always rejected, but that check cannot
+be relied on: both claims are conditional and are usually absent from
+authorization-code ID tokens, so their absence proves nothing.
+
+This marker used to be required unconditionally. **WorkOS — the IdP that tracks
+the MCP spec most closely — does not stamp `typ: at+jwt`**, so a correctly
+configured deployment 401'd on every request. Demanding a marker where no
+collision is possible was the mistake; the condition now matches reality.
 
 `http://localhost` is for local testing only. When any of the issuer, resource
 or JWKS URL is plaintext http, the server **binds the loopback address
@@ -346,9 +387,17 @@ Whether a given platform can connect depends on your IdP's client registration
 support (Client ID Metadata Documents or Dynamic Client Registration) — clients
 like ChatGPT and Claude have no pre-existing relationship with your IdP.
 
-**Not yet confirmed against a live connector.** The implementation follows the
-[MCP 2025-11-25 authorization spec](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization)
-and is covered by tests; reports from real deployments are welcome.
+**Confirmed against a live connector on 2026-09-11**: ChatGPT custom plugin plus
+WorkOS AuthKit, through discovery, authorization, token verification, a real SMS
+(including its delivery receipt) and a real voice call (including its call
+events). Walkthrough in [docs/chatgpt.md](docs/chatgpt.md) (Japanese).
+
+That run turned up something no documentation mentions: **WorkOS does not stamp
+`typ: at+jwt` on its access tokens.** Expect other IdPs to behave the same way —
+which is why the three required variables are all you need.
+
+The Gemini Enterprise connector uses the same mechanism but has not been tried
+against a live deployment; reports welcome.
 
 Without authentication the server **binds loopback**. Asking for an external
 `BIND_HOST` without authentication fails at startup. Per-request localhost

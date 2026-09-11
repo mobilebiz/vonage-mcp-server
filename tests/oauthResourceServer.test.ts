@@ -156,7 +156,8 @@ describe('OAuth 設定の解釈', () => {
       jwksUri: JWKS_URI,
       scopesSupported: null,
       requiredScope: null,
-      requireAtJwt: true,
+      // audience を上書きしていないので、ID トークンとの衝突は起こりえない
+      requireAtJwt: false,
       loopbackHttp: false,
       loopbackBindHost: null,
     });
@@ -281,20 +282,49 @@ describe('OAuth 設定の解釈', () => {
   });
 
   // ID トークンとアクセストークンを区別できるものが1つも無い状態で起動させない
-  it('OAUTH_REQUIRE_AT_JWT=false で OAUTH_REQUIRED_SCOPE が無ければ起動エラー', () => {
-    configure({ OAUTH_REQUIRE_AT_JWT: 'false' });
+  // ID トークンの aud はクライアント識別子。期待する audience が
+  // OAUTH_RESOURCE のままなら衝突しえないので、標識は要らない
+  it('audience を上書きしていなければ、標識が無くても通る', () => {
+    configure();
 
-    expect(() => getOAuthConfig()).toThrow(ConfigError);
+    const config = getOAuthConfig();
+    expect(config?.requireAtJwt).toBe(false);
+    expect(config?.requiredScope).toBeNull();
   });
 
-  it('OAUTH_REQUIRE_AT_JWT=false でも scope があれば通る', () => {
-    configure({ OAUTH_REQUIRE_AT_JWT: 'false', OAUTH_REQUIRED_SCOPE: 'sms:send' });
+  // MCP 仕様に最も沿っている WorkOS ですら typ を付けない。素直に設定した
+  // 利用者が全員 401 を踏む状態だったので、条件を実態に合わせた
+  it('OAUTH_AUDIENCE が OAUTH_RESOURCE と同じ値なら「上書き」と扱わない', () => {
+    configure({ OAUTH_AUDIENCE: RESOURCE });
 
     expect(getOAuthConfig()?.requireAtJwt).toBe(false);
   });
 
-  it('OAUTH_REQUIRE_AT_JWT の既定は true', () => {
-    configure();
+  it('audience を上書きすると、既定で typ を要求する', () => {
+    configure({ OAUTH_AUDIENCE: 'vonage-mcp-api' });
+
+    expect(getOAuthConfig()?.requireAtJwt).toBe(true);
+  });
+
+  it('audience を上書きして標識を両方外すと起動エラー', () => {
+    configure({ OAUTH_AUDIENCE: 'vonage-mcp-api', OAUTH_REQUIRE_AT_JWT: 'false' });
+
+    expect(() => getOAuthConfig()).toThrow(ConfigError);
+  });
+
+  it('audience を上書きしても、scope があれば typ は要らない', () => {
+    configure({
+      OAUTH_AUDIENCE: 'vonage-mcp-api',
+      OAUTH_REQUIRE_AT_JWT: 'false',
+      OAUTH_REQUIRED_SCOPE: 'sms:send',
+    });
+
+    expect(getOAuthConfig()?.requireAtJwt).toBe(false);
+  });
+
+  // 衝突しえない構成でも、厳しくしたい運用者は明示的に要求できる
+  it('上書きしていなくても、明示すれば typ を要求できる', () => {
+    configure({ OAUTH_REQUIRE_AT_JWT: 'true' });
 
     expect(getOAuthConfig()?.requireAtJwt).toBe(true);
   });

@@ -563,30 +563,41 @@ export function getOAuthConfig(): OAuthConfig | null {
     }
   }
 
-  // 既定は true。**アクセストークンであることを積極的に示すものを必ず1つ要求する。**
-  const requireAtJwt =
-    raw.OAUTH_REQUIRE_AT_JWT === undefined ? true : parseBooleanEnv('OAUTH_REQUIRE_AT_JWT');
-
   // ID トークンとアクセストークンは、同じ IdP・同じ鍵・同じ issuer で発行されうる。
-  // `aud` にクライアント識別子が入っていれば `iss` / `aud` / `exp` では区別できず、
-  // **ログインできるだけの利用者が課金の発生するツールを呼べる**。
+  // **両者を `aud` で区別できない構成のときだけ**、別の標識が要る。
   //
-  // `at_hash` / `c_hash` の拒否だけでは足りない。**あの2つは条件付きの claim で、
-  // 認可コードフローの ID トークンには通常入っていない。** 「無いこと」を根拠には
-  // できないので、**「アクセストークンであることを示すものが有る」**を要求する。
-  // 使えるのは次のどちらか:
+  // ID トークンの `aud` は**クライアント識別子**である。こちらが期待する audience が
+  // `OAUTH_RESOURCE`（＝このサーバーがメタデータで配っている URI）のままなら、
+  // その値がクライアント識別子と一致することは通常ない。**衝突が起こりうるのは、
+  // 運用者が `OAUTH_AUDIENCE` を別の値に上書きしたとき**（IdP の API 識別子や、
+  // うっかりクライアント識別子を入れたとき）である。
+  //
+  // そこで、**標識を要求するのは上書きされたときだけ**にする。
+  //
+  // > 当初はこれを無条件に要求していた。しかし MCP 仕様に最も沿っている WorkOS ですら
+  // > `typ: at+jwt` を付けないため、**素直に設定した利用者が全員 401 を踏む**状態だった。
+  // > 衝突しえない構成にまで標識を求めていたのが誤りで、条件を実態に合わせた。
+  const audienceOverridden =
+    raw.OAUTH_AUDIENCE !== undefined && raw.OAUTH_AUDIENCE !== raw.OAUTH_RESOURCE;
+
+  // 既定は「上書きされているときだけ true」。
+  const requireAtJwt =
+    raw.OAUTH_REQUIRE_AT_JWT === undefined
+      ? audienceOverridden
+      : parseBooleanEnv('OAUTH_REQUIRE_AT_JWT');
+
+  // 標識に使えるのは次のどちらか:
   //   - RFC 9068 の `typ: at+jwt`（IdP が付けてくれる場合）
   //   - API 側の scope（ID トークンは API の scope を運ばない）
-  if (!requireAtJwt && (raw.OAUTH_REQUIRED_SCOPE === undefined || problems.length > 0)) {
-    if (raw.OAUTH_REQUIRED_SCOPE === undefined) {
-      problems.push(
-        'OAUTH_REQUIRE_AT_JWT=false にする場合は OAUTH_REQUIRED_SCOPE が必須です。' +
-          'どちらも無いと、ID トークンをアクセストークンとして受け取る余地が残ります' +
-          '（同じ IdP が同じ鍵・同じ issuer で両方を発行し、aud が一致する構成があるため）。' +
-          'IdP が typ: at+jwt を付けるなら OAUTH_REQUIRE_AT_JWT を外して既定の true に戻し、' +
-          '付けないなら API 側の scope を OAUTH_REQUIRED_SCOPE に指定してください。'
-      );
-    }
+  if (audienceOverridden && !requireAtJwt && raw.OAUTH_REQUIRED_SCOPE === undefined) {
+    problems.push(
+      'OAUTH_AUDIENCE を OAUTH_RESOURCE と別の値にする場合、' +
+        'OAUTH_REQUIRE_AT_JWT=true か OAUTH_REQUIRED_SCOPE のどちらかが必須です。' +
+        'どちらも無いと、ID トークンをアクセストークンとして受け取る余地が残ります' +
+        '（ID トークンの aud はクライアント識別子なので、上書きした値と一致しうるため）。' +
+        'IdP が typ: at+jwt を付けるなら OAUTH_REQUIRE_AT_JWT=true を、' +
+        '付けないなら API 側の scope を OAUTH_REQUIRED_SCOPE に指定してください。'
+    );
   }
 
   if (problems.length > 0) {
@@ -1103,6 +1114,23 @@ export function validateStartupConfig(): string[] {
         'TRUST_UPSTREAM_AUTH=true が OAuth 設定より優先されるため、アクセストークンは検証されません。' +
           '上流で検証していない場合は TRUST_UPSTREAM_AUTH を外してください。'
       );
+    }
+
+    // 標識が1つも無い状態は、`aud` がこのサーバーの URI そのものである限り安全だが、
+    // **その前提が崩れたときに気づける材料を残しておく**。
+    try {
+      const oauth = getOAuthConfig();
+      if (oauth !== null && !oauth.requireAtJwt && oauth.requiredScope === null) {
+        warnings.push(
+          'アクセストークンと ID トークンを区別する標識を設定していません' +
+            '（OAUTH_REQUIRE_AT_JWT / OAUTH_REQUIRED_SCOPE のどちらも未設定）。' +
+            `現在は aud にこのサーバーの URI（${oauth.audience}）を要求しているため、` +
+            'ID トークンが紛れ込む余地はありません。' +
+            '**IdP 側でこの URI をクライアント識別子として登録しないでください。**'
+        );
+      }
+    } catch {
+      // OAUTH_* のパースエラーは上で報告済み
     }
   }
 

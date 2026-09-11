@@ -24,7 +24,7 @@ import { toMcpResult, unexpectedErrorOutcome, type ToolOutcome } from './toolRes
  * 確かめる運用をしていたので、**「反映されていない」と読み違える一歩手前だった。**
  */
 export const SERVER_NAME = 'vonage-mcp-server';
-export const SERVER_VERSION = '3.1.1';
+export const SERVER_VERSION = '3.2.0';
 
 /** ツール呼び出しを観測するためのフック（デバッグログ用） */
 export interface McpServerHooks {
