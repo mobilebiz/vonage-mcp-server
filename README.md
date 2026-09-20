@@ -932,7 +932,9 @@ OAUTH_JWKS_URI=https://your-tenant.example.com/.well-known/jwks.json
 > [!NOTE]
 > **OAuth 経路は 2026-09-11 に実機で確認しました。** ChatGPT のカスタムプラグイン + WorkOS AuthKit で、discovery → 認可 → トークン検証 → **SMS の実送信（配信ステータス受信まで）と音声の実発信（通話イベント受信まで）**が通っています。手順は [docs/chatgpt.md](docs/chatgpt.md)。
 >
-> **そこで分かった、ドキュメントに書かれていない事実が1つあります。WorkOS はアクセストークンに `typ: at+jwt` を付けません。** 他の IdP でも同じことが起こりえます。**この構成では必須の3つ（`OAUTH_ISSUER` / `OAUTH_RESOURCE` / `OAUTH_JWKS_URI`）だけで動きました。**
+> **そこで分かった、ドキュメントに書かれていない事実が1つあります。WorkOS はアクセストークンに `typ: at+jwt` を付けません。** 他の IdP でも同じことが起こりえます。**v3.2.0 では必須の3つ（`OAUTH_ISSUER` / `OAUTH_RESOURCE` / `OAUTH_JWKS_URI`）だけで動くようにしてあります。**
+>
+> ただし **2026-09-11 に実機で通したのは、その3つだけの構成ではありません。** 当時は v3.1.1 で標識が無条件に必要だったため、`OAUTH_REQUIRE_AT_JWT=false` と `OAUTH_REQUIRED_SCOPE=email` を足した**5変数**で確認しています。**v3.2.0 の3変数構成は、まだ実機で確認していません。**
 >
 > **ただし3つで足りない場合があります。** `typ` を付けず、**かつ複数 audience のアクセストークンを出す** IdP では、`OAUTH_REQUIRE_AT_JWT` か `OAUTH_REQUIRED_SCOPE` の設定が要ります（設定しないと 401 が続きます）。理由は [上の標識の節](#oauth-を使うには-idp-が別途必要です)に書いたとおりです。
 >

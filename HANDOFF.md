@@ -231,6 +231,19 @@ curl -s https://$SERVICE-$HASH-an.a.run.app/health
 
 Cloud Run への反映も未実施です（→ 4.1）。**急ぐ理由は無く、v3.1.1 が動いていて実害はありません。**
 
+> [!WARNING]
+> **3変数構成を実機で確かめるつもりなら、標識の2つを外す必要があります。** 現在の Cloud Run には
+> `OAUTH_REQUIRE_AT_JWT=false` と `OAUTH_REQUIRED_SCOPE=email` が入っており、**フラグ無しのデプロイは
+> 既存の環境変数を引き継ぎます**（→ 4.1）。そのまま確認しても、通るのは今までと同じ5変数構成です。
+>
+> ```sh
+> gcloud run services update $SERVICE --project $PROJECT_ID --region asia-northeast1 \
+>   --remove-env-vars OAUTH_REQUIRE_AT_JWT,OAUTH_REQUIRED_SCOPE
+> ```
+>
+> **外すと認可の条件も変わります。** `OAUTH_REQUIRED_SCOPE=email` は「scope email を持つトークンだけ通す」
+> という制限でもあるので、外せばその制限が無くなります。**確認が済んだら戻すか、外したままにするかを決めてください。**
+
 ## 5. 環境の癖 — ここで詰まりやすい
 
 **サンドボックス** (多くは `dangerouslyDisableSandbox: true` で回避できます)
