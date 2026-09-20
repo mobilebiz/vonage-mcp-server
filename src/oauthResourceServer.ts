@@ -454,6 +454,36 @@ export async function verifyAccessToken(token: string, config: OAuthConfig): Pro
     };
   }
 
+  // **標識が無い構成では、`aud` がこのサーバーの URI 単独であることまで要求する。**
+  //
+  // `jwtVerify` の audience 検査は **配列のどれか1つが一致すれば通る**。つまり
+  // `aud: [クライアント識別子, このサーバーの URI]` という ID トークンは、`typ` も
+  // scope も要求していない構成では素通りする。**ログインの同意しかしていない利用者が、
+  // 課金の発生するツールを呼べる。**
+  //
+  // OIDC の ID トークンは **`aud` に必ずクライアント識別子を含む**。したがって `aud`
+  // がこのサーバーの URI **だけ**なら、それが ID トークンでありうるのは「その URI を
+  // クライアント識別子として登録した場合」に限られる —— 起動時の警告が名指ししている、
+  // ただ1つの前提である。単独性まで確かめて初めて、その警告どおりの保証になる。
+  //
+  // 複数 audience のアクセストークンを使う構成では `OAUTH_REQUIRE_AT_JWT` か
+  // `OAUTH_REQUIRED_SCOPE` を設定してもらう。どちらも「これはアクセストークンだ」を
+  // 積極的に示す標識なので、それが有るなら `aud` の単独性まで求める必要はない。
+  if (!config.requireAtJwt && config.requiredScope === null) {
+    const audiences = typeof payload.aud === 'string' ? [payload.aud] : (payload.aud ?? []);
+
+    if (audiences.length !== 1) {
+      return {
+        ok: false,
+        status: 401,
+        error: 'invalid_token',
+        description:
+          `aud を複数持つトークンは、アクセストークンと ID トークンを区別する標識が無い構成では受け付けません（受信: ${audiences.length} 件）。` +
+          'OAUTH_REQUIRE_AT_JWT=true か OAUTH_REQUIRED_SCOPE のどちらかを設定してください。',
+      };
+    }
+  }
+
   const scopes = extractScopes(payload);
 
   if (config.requiredScope !== null && !scopes.includes(config.requiredScope)) {

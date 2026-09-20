@@ -298,7 +298,7 @@ at all:
 | --- | --- | --- |
 | **WorkOS** ([walkthrough](docs/chatgpt.md), Japanese) | ✅ CIMD | ✅ register a Resource Indicator |
 | Keycloak | ✅ DCR | ⚠️ no `resource` support; needs an audience mapper |
-| Auth0 | ✅ DCR | ❌ uses its own `audience` and ignores `resource` |
+| Auth0 | ✅ DCR | ⚠️ ignores `resource` by default. Enabling **Resource Parameter Compatibility Profile** (Settings → Advanced) makes it derive the audience from `resource`, though `audience` still wins when both are sent |
 | Entra ID | ❌ | ❌ |
 
 **OAuth 2.1 is what the MCP specification defines for HTTP transports.** The
@@ -357,6 +357,13 @@ fails without them:
 | An API scope | `OAUTH_REQUIRE_AT_JWT=false` plus `OAUTH_REQUIRED_SCOPE` | Your IdP does not stamp `typ`. ID tokens do not carry API scopes |
 
 Point `OAUTH_AUDIENCE` at the API/resource identifier, never at a client id.
+
+When neither marker is configured, the server additionally requires `aud` to be
+this server's URI **and nothing else** — a token carrying multiple audiences is
+rejected with 401. An ID token's `aud` always contains the client id, so an
+`aud` of exactly this server's URI cannot be one (unless that URI is registered
+as a client id). If your access tokens legitimately carry several audiences, set
+`OAUTH_REQUIRE_AT_JWT` or `OAUTH_REQUIRED_SCOPE`.
 Tokens carrying `at_hash` / `c_hash` are always rejected, but that check cannot
 be relied on: both claims are conditional and are usually absent from
 authorization-code ID tokens, so their absence proves nothing.

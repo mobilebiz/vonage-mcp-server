@@ -572,6 +572,10 @@ export function getOAuthConfig(): OAuthConfig | null {
   // 運用者が `OAUTH_AUDIENCE` を別の値に上書きしたとき**（IdP の API 識別子や、
   // うっかりクライアント識別子を入れたとき）である。
   //
+  // なお `aud` が**配列**なら、クライアント識別子と並べてこのサーバーの URI を
+  // 載せた ID トークンが作れる。そちらは検証側で塞ぐ —— 標識が無い構成では
+  // `aud` が単独であることまで要求する（→ verifyAccessToken）。
+  //
   // そこで、**標識を要求するのは上書きされたときだけ**にする。
   //
   // > 当初はこれを無条件に要求していた。しかし MCP 仕様に最も沿っている WorkOS ですら
@@ -1124,9 +1128,10 @@ export function validateStartupConfig(): string[] {
         warnings.push(
           'アクセストークンと ID トークンを区別する標識を設定していません' +
             '（OAUTH_REQUIRE_AT_JWT / OAUTH_REQUIRED_SCOPE のどちらも未設定）。' +
-            `現在は aud にこのサーバーの URI（${oauth.audience}）を要求しているため、` +
-            'ID トークンが紛れ込む余地はありません。' +
-            '**IdP 側でこの URI をクライアント識別子として登録しないでください。**'
+            `この構成では aud がこのサーバーの URI（${oauth.audience}）**単独**であることを要求し、` +
+            'aud を複数持つトークンは拒否します（ID トークンの aud は必ずクライアント識別子を含むため）。' +
+            '**IdP 側でこの URI をクライアント識別子として登録しないでください。**' +
+            'aud が複数あるアクセストークンを使う場合は、OAUTH_REQUIRE_AT_JWT か OAUTH_REQUIRED_SCOPE を設定してください。'
         );
       }
     } catch {

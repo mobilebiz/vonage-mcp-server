@@ -850,7 +850,7 @@ MCP 仕様も同じ分担で、**認可サーバーの実装は仕様のスコ�
 > | --- | --- | --- |
 > | **WorkOS**（[手順あり](docs/chatgpt.md)） | ✅ CIMD | ✅ Resource Indicator を登録する |
 > | Keycloak | ✅ DCR | ⚠️ `resource` 非対応。audience mapper で固定する回避が要る |
-> | Auth0 | ✅ DCR | ❌ 独自の `audience` を使い `resource` を見ない |
+> | Auth0 | ✅ DCR | ⚠️ 既定では `resource` を見ない。**Resource Parameter Compatibility Profile**（Settings → Advanced）を有効にすると `resource` から audience を決める。ただし `audience` も送られた場合はそちらが優先される |
 > | Entra ID | ❌ | ❌ |
 
 **実機で通した構成は [docs/chatgpt.md](docs/chatgpt.md) にあります**（ChatGPT + WorkOS AuthKit）。
@@ -902,6 +902,8 @@ OAUTH_JWKS_URI=https://your-tenant.example.com/.well-known/jwks.json
 > | API の scope | `OAUTH_REQUIRE_AT_JWT=false` + `OAUTH_REQUIRED_SCOPE=...` | IdP が `typ` を付けない。**ID トークンは API の scope を運びません** |
 >
 > **`OAUTH_AUDIENCE` にクライアント識別子を指定しないでください。** API / リソースの識別子にしてください。
+>
+> **標識をどちらも設定しない構成では、`aud` がこのサーバーの URI 単独であることまで要求します。** `aud` を複数持つトークンは 401 で拒否します。ID トークンの `aud` は**必ずクライアント識別子を含む**ため、「このサーバーの URI だけ」であれば ID トークンではありえないからです（その URI をクライアント識別子として登録していない限り）。**複数 audience のアクセストークンを使う運用なら、`OAUTH_REQUIRE_AT_JWT` か `OAUTH_REQUIRED_SCOPE` を設定してください。**
 >
 > `at_hash` / `c_hash` を持つトークンは常に拒否しますが、**これは当てにできません** — どちらも条件付きの claim で、認可コードフローの ID トークンには通常入っていないためです。「無いこと」は根拠になりません。
 

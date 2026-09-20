@@ -62,7 +62,7 @@ ChatGPT が「OAuth」を選ぶと、ChatGPT は次の順に動きます。
 > | --- | --- | --- |
 > | **WorkOS** | ✅ CIMD | ✅ Resource Indicator を登録する |
 > | Keycloak | ✅ DCR | ⚠️ `resource` 非対応。audience mapper で固定する回避が要る |
-> | Auth0 | ✅ DCR | ❌ 独自の `audience` を使い `resource` を見ない |
+> | Auth0 | ✅ DCR | ⚠️ 既定では `resource` を見ない。**Resource Parameter Compatibility Profile**（Settings → Advanced）を有効にすると `resource` から audience を決める。ただし `audience` も送られた場合はそちらが優先される |
 > | Entra ID | ❌ | ❌ |
 >
 > **IdP 選びがこの経路の成否をほぼ決めます。**

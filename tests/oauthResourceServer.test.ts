@@ -97,7 +97,7 @@ function configure(overrides: Record<string, string | undefined> = {}): void {
  */
 async function issueToken(
   claims: {
-    aud?: string;
+    aud?: string | string[];
     iss?: string;
     scope?: string;
     expiresIn?: string;
@@ -864,6 +864,48 @@ describe('アクセストークンの検証', () => {
   it('OAUTH_REQUIRE_AT_JWT=false なら typ を要求しない', async () => {
     const result = await verifyAccessToken(
       await issueToken({ withoutTypeHeader: true, scope: 'sms:send' }),
+      config({ requireAtJwt: false, requiredScope: 'sms:send' })
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  // jwtVerify の audience 検査は「配列のどれか1つが一致すれば通る」。標識が
+  // 無い構成では、クライアント識別子と並べてこのサーバーの URI を載せた
+  // ID トークンが素通りしてしまう（Codex PR #8 P1）
+  it('標識が無い構成では aud を複数持つトークンを拒否する', async () => {
+    const result = await verifyAccessToken(
+      await issueToken({ aud: ['client-abc123', RESOURCE], withoutTypeHeader: true }),
+      config({ requireAtJwt: false })
+    );
+
+    expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
+    expect(result.ok === false && result.description).toContain('aud');
+  });
+
+  it('標識が無くても aud がこのサーバー単独なら通る（配列でも1件なら同じ）', async () => {
+    const result = await verifyAccessToken(
+      await issueToken({ aud: [RESOURCE], withoutTypeHeader: true }),
+      config({ requireAtJwt: false })
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  // 標識が有れば「これはアクセストークンだ」が積極的に示されるので、
+  // aud の単独性まで求める必要はない（複数 audience の運用を壊さない）
+  it('OAUTH_REQUIRE_AT_JWT=true なら aud が複数でも通る', async () => {
+    const result = await verifyAccessToken(
+      await issueToken({ aud: ['https://other.example.com', RESOURCE] }),
+      config()
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('OAUTH_REQUIRED_SCOPE が有れば aud が複数でも通る', async () => {
+    const result = await verifyAccessToken(
+      await issueToken({ aud: ['https://other.example.com', RESOURCE], scope: 'sms:send', withoutTypeHeader: true }),
       config({ requireAtJwt: false, requiredScope: 'sms:send' })
     );
 
