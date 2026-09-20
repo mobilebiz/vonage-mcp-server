@@ -170,7 +170,14 @@ OAUTH_REQUIRE_AT_JWT=true のため、typ が at+jwt のアクセストークン
 **そのため、WorkOS では追加の設定が要りません。** 必須の3つだけで動きます。
 
 > [!NOTE]
-> **`OAUTH_AUDIENCE` を上書きする場合は話が変わります。** `OAUTH_REQUIRE_AT_JWT=true` か `OAUTH_REQUIRED_SCOPE` のどちらかが必須になり、両方欠けていると起動時にエラーで停止します。WorkOS が既定で出す scope は `email` / `profile` / `openid` / `offline_access` で、**どれも API のスコープではないので標識としては弱いものです。**
+> **`OAUTH_AUDIENCE` を上書きする場合は話が変わります。** 標識が必須になり、両方欠けていると起動時にエラーで停止します。選べるのは次の2つです。
+>
+> - `OAUTH_REQUIRE_AT_JWT=true`（上書き時の既定）
+> - `OAUTH_REQUIRE_AT_JWT=false` **と** `OAUTH_REQUIRED_SCOPE=...` の**両方**
+>
+> **scope を標識にするなら `OAUTH_REQUIRE_AT_JWT=false` を明示してください。** 上書き時の `OAUTH_REQUIRE_AT_JWT` の既定は `true` なので、`OAUTH_REQUIRED_SCOPE` だけを足しても `typ: at+jwt` は要求されたままです。**WorkOS は `typ` を付けないため、起動はするのに全リクエストが 401 になります**（scope が見られる前に落ちます）。
+>
+> なお WorkOS が既定で出す scope は `email` / `profile` / `openid` / `offline_access` で、**どれも API のスコープではないので標識としては弱いものです。**
 
 ### ツール実行前の承認は保証されません
 

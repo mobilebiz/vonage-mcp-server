@@ -118,7 +118,7 @@ Legend: ✅ verified on real hardware / 📄 documented as supported (not yet ve
 | [Claude Code](https://code.claude.com/docs/en/mcp) | stdio / HTTP | Bearer via `--header` | yes | 📄 |
 | **Streamable HTTP in general** (Cloud Run, etc.) | Streamable HTTP | Bearer / upstream IAM | depends on the client | ✅ |
 | [Claude.ai / Desktop (remote)](https://claude.com/docs/connectors/building/authentication) | Streamable HTTP | OAuth, or static headers (beta, set by an org admin) | yes | 📄 |
-| [Gemini Enterprise (connector)](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server) | Streamable HTTP | **OAuth 2.0 or "no authentication" only** (supported via [OAuth mode](#oauth-21-resource-server-mode)) | yes, by default | 📄 |
+| [Gemini Enterprise (connector)](https://docs.cloud.google.com/gemini/enterprise/docs/connectors/custom-mcp-server/set-up-custom-mcp-server) | Streamable HTTP | **OAuth 2.0 or "no authentication" only** (supported via [OAuth mode](#oauth-21-resource-server-mode-requires-a-separate-idp)) | yes, by default | 📄 |
 | [Gemini Enterprise (your own ADK agent)](docs/gemini-enterprise-adk.md) | Streamable HTTP | Bearer via arbitrary headers | **yes** (ADK `require_confirmation`; an approval window appears in Apps) | ✅ |
 | [AWS Bedrock AgentCore Gateway](docs/agentcore.md) | Streamable HTTP (it never opens SSE) | **API key provider** puts Bearer in a header. **IAM SigV4 does not work** (see below) | **none** | ✅ |
 | [Dify](docs/dify.md) | Streamable HTTP (it never opens SSE) | Bearer via arbitrary headers | **none.** Only if you add a Human Input node to a Workflow | ✅ |
@@ -175,7 +175,7 @@ Choosing "no authentication" therefore **exposes a server that can spend your
 money to the entire internet. Do not do it.** Three workable setups:
 
 0. **Turn on this server's own OAuth resource-server mode** — see
-   [OAuth 2.1 resource server mode](#oauth-21-resource-server-mode) below. This
+   [OAuth 2.1 resource server mode](#oauth-21-resource-server-mode-requires-a-separate-idp) below. This
    is the path the MCP specification actually defines; it is implemented but not
    yet confirmed against a live connector.
 1. **Terminate OAuth 2.0 upstream** — put an API gateway or Identity-Aware Proxy
