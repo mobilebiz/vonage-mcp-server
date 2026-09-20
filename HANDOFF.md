@@ -96,6 +96,11 @@ OAUTH_JWKS_URI=https://<authkit-tenant>.authkit.app/oauth2/jwks
 OAUTH_REQUIRE_AT_JWT=false / OAUTH_REQUIRED_SCOPE=email
 ```
 
+**`OAUTH_REQUIRE_AT_JWT=false` と `OAUTH_REQUIRED_SCOPE=email` が入っているのは、v3.1.1 が標識を無条件に要求していたからです。**
+WorkOS は `typ: at+jwt` を付けないので、この2つを足さないと全リクエストが 401 になりました。
+**2026-09-11 の実機確認はこの5変数の構成で通しています。** v3.2.0 では必須3つだけでも動くようになりましたが、
+**その3変数構成は実機では未確認**です（→ 4.6 でデプロイするときに確認するとよい）。
+
 **issuer は AuthKit の staging です。** 本番運用に移すときは差し替えが要ります。
 `OAUTH_*` が入っている以上 `/.well-known/oauth-protected-resource` は 200 を返すはずですが、**実機では未確認**です。
 
