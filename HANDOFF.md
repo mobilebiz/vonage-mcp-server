@@ -39,7 +39,7 @@
 
 | | |
 |---|---|
-| `main` | **v3.2.0**（PR #8）。標識の条件を実態に合わせた（`typ: at+jwt` は `OAUTH_AUDIENCE` 上書き時のみ必須）/ 標識が無い構成では `aud` の単独一致を要求 / `docs/chatgpt.md` 追加 |
+| `main` | **v3.2.0**（PR #8）。標識の**既定**を実態に合わせた（`typ: at+jwt` が既定で要るのは `OAUTH_AUDIENCE` 上書き時のみ。**`OAUTH_REQUIRE_AT_JWT=true` を明示すれば上書きが無くても要求される**）/ 標識が無い構成では `aud` の単独一致と、クライアント識別子の衝突を検査 / `docs/chatgpt.md` 追加 |
 | 未マージの PR | **なし** |
 | テスト | **542 passed** |
 | 本番依存の脆弱性 | **0 件**（`fast-uri` / `qs` を #5、`hono` を #7 で解消） |
@@ -146,7 +146,7 @@ curl -s https://$SERVICE-$HASH-an.a.run.app/health
 タグ・GitHub Release・MCPB / PDF の添付まで済んでいます。Release から実際に
 ダウンロードした MCPB が v3.0.0・user_config 7項目・bulk の記述なしであることを確認済みです。
 
-### 4.3 OAuth リソースサーバーモード — **v3.1.0 でマージ。ChatGPT + WorkOS で実機確認済み**（v3.2.0 / 2026-09-20）
+### 4.3 OAuth リソースサーバーモード — **v3.1.0 でマージ。ChatGPT + WorkOS で実機確認済み**（2026-09-11 / 記録は v3.2.0）
 
 **ChatGPT の認証の選択肢は「OAuth / 認証なし / 両方」の3つだけでした。** ここから調べて分かったのは、
 **これは ChatGPT が特別なのではなく、OAuth が MCP の標準だということ**です。
@@ -185,10 +185,10 @@ curl -s https://$SERVICE-$HASH-an.a.run.app/health
 
 **PR レビューで見つかった P1 は2件。どちらも実害があるものでした。**
 
-- **ID トークンをアクセストークンとして受け取れた。** 対策を「`at_hash`/`c_hash` が無いこと」に置いていたが、**あの2つは条件付きの claim で、認可コードフローの ID トークンには入っていない。**「無いこと」は根拠にならない。`OAUTH_REQUIRE_AT_JWT` か `OAUTH_REQUIRED_SCOPE` のどちらかを必須にし、**「アクセストークンであることを積極的に示すもの」**を要求する形に変えた。**v3.2.0 で条件を絞った** —— 標識が要るのは `OAUTH_AUDIENCE` を `OAUTH_RESOURCE` と別の値に上書きしたときだけで、`OAUTH_REQUIRE_AT_JWT` の既定が true になるのも同じ条件のときだけ。無条件に要求していたため、**`typ` を付けない WorkOS では素直に設定した利用者が全員 401 を踏んでいた**。標識が無い構成では代わりに `aud` の単独一致を要求する
+- **ID トークンをアクセストークンとして受け取れた。** 対策を「`at_hash`/`c_hash` が無いこと」に置いていたが、**あの2つは条件付きの claim で、認可コードフローの ID トークンには入っていない。**「無いこと」は根拠にならない。`OAUTH_REQUIRE_AT_JWT` か `OAUTH_REQUIRED_SCOPE` のどちらかを必須にし、**「アクセストークンであることを積極的に示すもの」**を要求する形に変えた。**v3.2.0 で「既定で」要求する条件を絞った** —— `OAUTH_REQUIRE_AT_JWT` の既定が true になるのは `OAUTH_AUDIENCE` を `OAUTH_RESOURCE` と別の値に上書きしたときだけ。**明示的に `OAUTH_REQUIRE_AT_JWT=true` と書けば、上書きが無くても要求される**（厳しくする道は常に開いている）。無条件に要求していたため、**`typ` を付けない WorkOS では素直に設定した利用者が全員 401 を踏んでいた**。標識が無い構成では代わりに `aud` の単独一致を要求する
 - **ループバック http の許容が全インターフェースに漏れていた。** OAuth を「認証済み」と数えたため `0.0.0.0` に bind され、平文でトークンを受け取るサーバーが外に出ていた
 
-1. ~~**実機検証**~~ → **完了**（v3.2.0）。ChatGPT のプラグイン画面から WorkOS AuthKit 経由で接続し、discovery → 認可 → 実 SMS と DLR → 実発信とイベントまで通しました。手順は `docs/chatgpt.md`
+1. ~~**実機検証**~~ → **完了**（2026-09-11。記録は v3.2.0）。ChatGPT のプラグイン画面から WorkOS AuthKit 経由で接続し、discovery → 認可 → 実 SMS と DLR → 実発信とイベントまで通しました。手順は `docs/chatgpt.md`
 2. ~~**IdP の選定**~~ → **WorkOS に決着**。繋がるかどうかは **IdP のクライアント登録方式**（Client ID Metadata Documents か DCR）と **`resource` への対応**で決まります。WorkOS は CIMD にネイティブ対応していて無料枠で足ります。**Entra ID は満たしません。Auth0 は Resource Parameter Compatibility Profile を有効にすれば使えます**（README の表を参照）
 3. **D-11 の再判断**（VONAGE_MCP-1）と、VONAGE_MCP-2 の §3.3 / 4.4 への反映。**実装記録は VONAGE_MCP-33 に作成済み**。**ここが実質的な残作業です**
 4. **v3.2.0 のタグと GitHub Release**（→ **4.6**）

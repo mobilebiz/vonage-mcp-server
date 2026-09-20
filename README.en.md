@@ -367,6 +367,12 @@ rejected with 401. An ID token's `aud` always contains the client id, so an
 `aud` of exactly this server's URI cannot be one (unless that URI is registered
 as a client id). If your access tokens legitimately carry several audiences, set
 `OAUTH_REQUIRE_AT_JWT` or `OAUTH_REQUIRED_SCOPE`.
+
+The server also rejects a token whose `azp` / `client_id` equals its audience:
+that is exactly the state where this server's URI has been registered as a
+client id, which is what the reasoning above rules out. Neither claim is
+mandatory, so this does not close the hole on its own — set
+`OAUTH_REQUIRE_AT_JWT=true` or `OAUTH_REQUIRED_SCOPE` if you need certainty.
 Tokens carrying `at_hash` / `c_hash` are always rejected, but that check cannot
 be relied on: both claims are conditional and are usually absent from
 authorization-code ID tokens, so their absence proves nothing.

@@ -482,6 +482,37 @@ export async function verifyAccessToken(token: string, config: OAuthConfig): Pro
           'OAUTH_REQUIRE_AT_JWT=true か OAUTH_REQUIRED_SCOPE のどちらかを設定してください。',
       };
     }
+
+    // **この URI がクライアント識別子として登録されていないか、トークン自身に訊く。**
+    //
+    // 標識を省ける根拠は「`aud` がこのサーバーの URI 単独なら ID トークンではありえない」
+    // だが、**その URI をクライアント識別子として登録してしまうと根拠ごと崩れる**。
+    // ID トークンの `aud` はクライアント識別子なので、単独一致してしまうからである。
+    // 起動時の警告はそれを「やらないでください」と頼んでいるだけで、**強制できない**。
+    //
+    // `azp` / `client_id` にこのサーバーの audience が入っていれば、まさにその状態が
+    // 起きている。正当なアクセストークンがこの値を名乗ることはないので、拒否して
+    // 構わない（＝誤検知で塞ぐ構成が無い）。**塞ぎきれるわけではない** —— どちらの
+    // claim も必須ではないため、付けない IdP では検出できない。確実にしたいなら
+    // `OAUTH_REQUIRE_AT_JWT` か `OAUTH_REQUIRED_SCOPE` を設定すること。
+    const clientId =
+      typeof payload.azp === 'string'
+        ? payload.azp
+        : typeof payload.client_id === 'string'
+          ? payload.client_id
+          : null;
+
+    if (clientId !== null && clientId === config.audience) {
+      return {
+        ok: false,
+        status: 401,
+        error: 'invalid_token',
+        description:
+          `このトークンのクライアント識別子（${clientId}）が、このサーバーの audience と同じです。` +
+          'その URI をクライアント識別子として登録すると、ID トークンとアクセストークンを aud で区別できなくなります。' +
+          'IdP 側で別のクライアント識別子を割り当てるか、OAUTH_REQUIRE_AT_JWT=true か OAUTH_REQUIRED_SCOPE を設定してください。',
+      };
+    }
   }
 
   const scopes = extractScopes(payload);

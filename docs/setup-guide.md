@@ -367,7 +367,7 @@ grep 'method="tools/call"' ~/Library/Logs/Claude/mcp-server-*.log | tail -3
 
 VONAGE_MCP-4 の「6. 実機確認チェックリスト」を参照してください。
 
-**確認済み**: Dify Cloud / AWS Bedrock AgentCore Gateway（いずれも 2026-08-31。SMS の実送信と音声の実発信まで）、Gemini Enterprise（ADK 経由 / 2026-08-25）、**ChatGPT（カスタムプラグイン / WorkOS AuthKit 経由 / 2026-09-20）**。
+**確認済み**: Dify Cloud / AWS Bedrock AgentCore Gateway（いずれも 2026-08-31。SMS の実送信と音声の実発信まで）、Gemini Enterprise（ADK 経由 / 2026-08-25）、**ChatGPT（カスタムプラグイン / WorkOS AuthKit 経由 / 2026-09-11）**。
 
 残っているものの優先順位は次のとおりです。
 

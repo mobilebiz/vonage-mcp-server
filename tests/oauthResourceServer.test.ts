@@ -106,10 +106,13 @@ async function issueToken(
     withoutExpiry?: boolean;
     /** true にすると typ を付けない（ID トークンと見分けが付かないトークン） */
     withoutTypeHeader?: boolean;
+    /** OIDC の azp（＝クライアント識別子） */
+    azp?: string;
   } = {}
 ): Promise<string> {
   let jwt = new SignJWT({
     ...(claims.scope === undefined ? {} : { scope: claims.scope }),
+    ...(claims.azp === undefined ? {} : { azp: claims.azp }),
   })
     // 既定で RFC 9068 の typ を付ける。本番の既定が「typ を要求する」なので、
     // テストの既定も本物のアクセストークンに合わせる
@@ -908,6 +911,35 @@ describe('アクセストークンの検証', () => {
       await issueToken({ aud: ['https://other.example.com', RESOURCE], scope: 'sms:send', withoutTypeHeader: true }),
       config({ requireAtJwt: false, requiredScope: 'sms:send' })
     );
+
+    expect(result.ok).toBe(true);
+  });
+
+  // 標識を省ける根拠は「aud がこのサーバーの URI 単独なら ID トークンではありえない」
+  // だが、その URI をクライアント識別子として登録されると根拠ごと崩れる。起動時の
+  // 警告では強制できないので、トークン自身にも訊く（Codex PR #8 P1 の再提起）
+  it('標識が無い構成では azp がこのサーバーの audience と同じトークンを拒否する', async () => {
+    const result = await verifyAccessToken(
+      await issueToken({ azp: RESOURCE, withoutTypeHeader: true }),
+      config({ requireAtJwt: false })
+    );
+
+    expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
+    expect(result.ok === false && result.description).toContain('クライアント識別子');
+  });
+
+  it('azp が別の値なら通る（正当なクライアント）', async () => {
+    const result = await verifyAccessToken(
+      await issueToken({ azp: 'client-abc123', withoutTypeHeader: true }),
+      config({ requireAtJwt: false })
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  // 標識が有るなら「これはアクセストークンだ」が示されているので、この検査は要らない
+  it('OAUTH_REQUIRE_AT_JWT=true なら azp が audience と同じでも通る', async () => {
+    const result = await verifyAccessToken(await issueToken({ azp: RESOURCE }), config());
 
     expect(result.ok).toBe(true);
   });
