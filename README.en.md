@@ -345,7 +345,8 @@ or backslash) or startup fails.
 **Overriding `OAUTH_AUDIENCE` makes an access-token marker mandatory.** An ID
 token's `aud` *is* the client id. Leave `OAUTH_AUDIENCE` alone and the audience
 this server expects is the URI it advertises as its resource, which an ID token
-will never carry — nothing further to configure. Override it with something else
+will not carry — unless that URI has been registered as a client id (see below
+for what the server does then). Nothing further to configure. Override it with something else
 (an IdP's API identifier, say) and that value can collide with a client id; if
 the same IdP signs ID tokens with the same keys and issuer, `iss`/`aud`/`exp`
 can no longer tell the two apart, and anyone who can merely log in could send
