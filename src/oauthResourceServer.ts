@@ -332,6 +332,8 @@ export function parseAuthorizationHeader(header: string | string[] | undefined):
  */
 export async function verifyAccessToken(token: string, config: OAuthConfig): Promise<AccessTokenResult> {
   let payload: JWTPayload;
+  /** 検証済みヘッダーの `typ` が RFC 9068 の標識か。**署名の対象なので信用してよい。** */
+  let hasAtJwtTyp = false;
 
   // 「鍵を取りに行って失敗した」のか「トークンが正しくない」のかを、**エラー
   // コードの分類ではなく、どこで落ちたかで**判定する。コードで分類しようとして
@@ -399,6 +401,10 @@ export async function verifyAccessToken(token: string, config: OAuthConfig): Pro
       requiredClaims: ['exp'],
     });
     payload = verified.payload;
+
+    const verifiedTyp =
+      typeof verified.protectedHeader.typ === 'string' ? verified.protectedHeader.typ.toLowerCase() : '';
+    hasAtJwtTyp = verifiedTyp === 'at+jwt' || verifiedTyp === 'application/at+jwt';
   } catch (error: unknown) {
     const code = (error as { code?: string })?.code ?? '';
 
@@ -469,7 +475,13 @@ export async function verifyAccessToken(token: string, config: OAuthConfig): Pro
   // 複数 audience のアクセストークンを使う構成では `OAUTH_REQUIRE_AT_JWT` か
   // `OAUTH_REQUIRED_SCOPE` を設定してもらう。どちらも「これはアクセストークンだ」を
   // 積極的に示す標識なので、それが有るなら `aud` の単独性まで求める必要はない。
-  if (!config.requireAtJwt && config.requiredScope === null) {
+  //
+  // **「要求していない」と「実際に無い」は別である。** `typ: at+jwt` を**持っている**
+  // トークンは、要求していなくても標識が有る。ここを区別しないと、**IdP が正しく
+  // `typ` を付けている多 audience の構成が、v3.2.0 で突然 401 になる**（以前の既定は
+  // `typ` を要求していたので、同じトークンが通っていた）。`typ` は署名の対象なので、
+  // 検証を通ったあとのヘッダーは信用してよい。
+  if (!config.requireAtJwt && config.requiredScope === null && !hasAtJwtTyp) {
     const audiences = typeof payload.aud === 'string' ? [payload.aud] : (payload.aud ?? []);
 
     if (audiences.length !== 1) {

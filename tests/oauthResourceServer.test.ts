@@ -967,6 +967,27 @@ describe('アクセストークンの検証', () => {
     expect(result.ok).toBe(true);
   });
 
+  // 「要求していない」と「実際に無い」は別。typ を持っているトークンは、要求して
+  // いなくても標識が有る。ここを区別しないと、IdP が正しく typ を付けている
+  // 多 audience の構成が v3.2.0 で突然 401 になる（Codex PR #8 P2）
+  it('typ が at+jwt なら、要求していなくても aud 複数を通す', async () => {
+    const result = await verifyAccessToken(
+      await issueToken({ aud: ['https://other.example.com', RESOURCE] }),
+      config({ requireAtJwt: false })
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('typ が at+jwt なら、要求していなくても azp の衝突検査を飛ばす', async () => {
+    const result = await verifyAccessToken(
+      await issueToken({ azp: RESOURCE }),
+      config({ requireAtJwt: false })
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
   it('必須 scope が無ければ 403 insufficient_scope', async () => {
     const result = await verifyAccessToken(
       await issueToken({ scope: 'sms:read' }),

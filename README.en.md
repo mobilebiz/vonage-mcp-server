@@ -368,6 +368,10 @@ rejected with 401. An ID token's `aud` always contains the client id, so an
 as a client id). If your access tokens legitimately carry several audiences, set
 `OAUTH_REQUIRE_AT_JWT` or `OAUTH_REQUIRED_SCOPE`.
 
+Both fallbacks are skipped for a token that actually carries `typ: at+jwt`, even
+when the marker is not required: not requiring a marker is not the same as the
+marker being absent, and `typ` is covered by the signature.
+
 The server also rejects a token whose `azp` / `client_id` equals its audience:
 that is exactly the state where this server's URI has been registered as a
 client id, which is what the reasoning above rules out. Neither claim is
