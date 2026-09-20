@@ -46,7 +46,7 @@
 | GitHub Release (Latest) | **v3.1.1**（2026-09-09）。**v3.2.0 のタグと Release はまだ作っていません** → 4.6 |
 | Cloud Run | **リビジョン `00047-rn7` = v3.1.1**（2026-09-20、`ALLOWED_NUMBERS` 追加の環境変数更新）。`/health` が `3.1.1` を返すことを確認済み。**v3.2.0 はまだ反映していません** |
 
-**実機検証 — README の対応プラットフォーム表で ✅ は6行**（v3.2.0 で ChatGPT が加わりました）。**エージェント基盤で残っているのは n8n だけです**（Gemini Enterprise の経路A は D-11 の判断待ち）。
+**実機検証 — README の対応プラットフォーム表で ✅ は6行**（v3.2.0 で ChatGPT が加わりました）。**📄（未検証）は4行**: n8n / Claude Code / Claude.ai・Desktop（リモート）/ Gemini Enterprise のコネクタ（経路A は D-11 の判断待ち）。
 
 | 経路 | 状態 |
 |---|---|
@@ -63,7 +63,7 @@
 
 **未追跡ファイル1件** (意図的):
 
-- `vonage_mcp_server_enhancement_spec.md` — 旧仕様書。VONAGE_MCP-2 が後継。削除推奨だが判断待ち
+- `vonage_mcp_server_enhancement_spec.md` — 旧仕様書。VONAGE_MCP-2 が後継。削除推奨だが判断待ち。**このファイルは一度もコミットされておらず、作業者の手元にしか存在しません。** clone しても現れないので、他の人がこの判断をする必要はありません
 
 `HANDOFF.md`（このファイル）は 2026-09-20 に追跡対象にしました。**public リポジトリなので、
 電話番号・プロジェクト名・ホスト名は伏せて書くこと。**
@@ -195,15 +195,15 @@ curl -s https://$SERVICE-$HASH-an.a.run.app/health
 
 ### 4.4 残っている確認事項
 
-- **実機検証で残っているのは n8n だけです。** Dify と AgentCore は 2026-08-31 に完了し、README も ✅ に更新済み
-- **Gemini のトライアル（`free_trial_gemini`）は 2026-09-24 に失効します**（残り約2週間）。ADK 経路を再確認するならその前に
+- **実機検証で残っているのは n8n / Claude Code / Claude.ai・Desktop（リモート）/ Gemini Enterprise のコネクタです。** README の凡例で 📄 は「ドキュメント上は対応（未検証）」を意味し、この4つが 📄 のままです。Dify と AgentCore は 2026-08-31 に、ChatGPT は v3.2.0 で完了し、README も ✅ に更新済み
+- **Gemini のトライアル（`free_trial_gemini`）は 2026-09-24 に失効します。本日 2026-09-20 時点で残り4日です。** ADK 経路を再確認するならその前に
 - **Dify Cloud のワークスペースは稼働中です**（Sandbox プラン / 無料枠200クレジット / Agent アプリ「Vonage MCP test」）。AgentCore 側は削除済み
 - **`MCP_AUTH_TOKEN` の所在は2箇所** — Cloud Run（Secret Manager の `mcp-auth-token`）と Dify のカスタムヘッダー。**ローテーションするなら両方**
 - **dev 依存に脆弱性が11件（うち critical 2件）残っています。** 配布物には入りません（バンドルは本番依存しかインストールしないため）。
   消すには `vite` 7 が必要で、**vite 7 は Node ≥22.12 を要求する一方 `package.json` は `node >=22.0.0` を宣言**しています。
   **`engines.node` を上げるかどうかは「誰がこのサーバーを動かせるか」の判断**なので保留にしています（PR #5 のレビューで判明）
 - **UTM による計測は行わない判断**のため、OSS 経由の流入を定量把握する手段がありません（D-2）
-- `vonage_mcp_server_enhancement_spec.md` を削除するかの判断
+- `vonage_mcp_server_enhancement_spec.md` を削除するかの判断（**作業者の手元にしか無いファイルです**。→ 3）
 
 ### 4.5 v3.1.0 / v3.1.1 のリリース — **完了しました**
 
@@ -220,6 +220,7 @@ curl -s https://$SERVICE-$HASH-an.a.run.app/health
 `3.2.0` を名乗り、`vonage-mcp-server.mcpb` も v3.2.0 の中身で再ビルド済みです。残っているのは:
 
 - タグ `v3.2.0` を打つ
+- **先に `docs/setup-guide.md` を確認してから** `npm run build:docs` で PDF を作り直す（v3.2.0 で副題と残作業リストを直しました）
 - GitHub Release を作り、**MCPB と PDF を添付する**（手順は → 9）
 - **リリース後に Release からダウンロードした MCPB で、バージョンを名乗る5か所を確認する**（v3.1.0 の事故があるため。→ 4.5）
 

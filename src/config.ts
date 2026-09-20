@@ -409,7 +409,13 @@ export interface OAuthConfig {
   scopesSupported: string[] | null;
   /** /mcp を呼ぶために必須の scope。未設定ならスコープを検査しない */
   requiredScope: string | null;
-  /** RFC 9068 の `typ: at+jwt` を必須にするか。既定は true */
+  /**
+   * RFC 9068 の `typ: at+jwt` を必須にするか。
+   *
+   * **既定は「`OAUTH_AUDIENCE` を `OAUTH_RESOURCE` と別の値に上書きしたときだけ true」。**
+   * 上書きが無ければ false で、代わりに `aud` の単独一致を要求する（→ verifyAccessToken）。
+   * `OAUTH_REQUIRE_AT_JWT` を明示すれば、どちらの場合もその値が優先される。
+   */
   requireAtJwt: boolean;
   /** issuer / resource / JWKS のいずれかが http（＝ループバック限定の構成）か */
   loopbackHttp: boolean;

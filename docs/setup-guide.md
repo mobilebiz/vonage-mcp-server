@@ -1,7 +1,7 @@
 ---
 title: "Vonage MCP Server 導入・動作確認手順書"
-subtitle: "v3.0.0 対応"
-date: "2026-08-21"
+subtitle: "v3.2.0 対応"
+date: "2026-09-20"
 ---
 
 # 0. この文書について
@@ -367,11 +367,11 @@ grep 'method="tools/call"' ~/Library/Logs/Claude/mcp-server-*.log | tail -3
 
 VONAGE_MCP-4 の「6. 実機確認チェックリスト」を参照してください。
 
-**確認済み**: Dify Cloud / AWS Bedrock AgentCore Gateway（いずれも 2026-08-31。SMS の実送信と音声の実発信まで）、Gemini Enterprise（ADK 経由 / 2026-08-25）。
+**確認済み**: Dify Cloud / AWS Bedrock AgentCore Gateway（いずれも 2026-08-31。SMS の実送信と音声の実発信まで）、Gemini Enterprise（ADK 経由 / 2026-08-25）、**ChatGPT（カスタムプラグイン / WorkOS AuthKit 経由 / 2026-09-20）**。
 
 残っているものの優先順位は次のとおりです。
 
-1. **ChatGPT / Gemini Enterprise のコネクタ** — どちらも認証は「OAuth か認証なし」の2択で、`MCP_AUTH_TOKEN` を渡せません。**OAuth リソースサーバーモード**（`OAUTH_ISSUER` / `OAUTH_RESOURCE` / `OAUTH_JWKS_URI`）を使って実機で確認する。**繋がるかどうかは IdP のクライアント登録方式（Client ID Metadata Documents か動的クライアント登録）で決まります**
+1. **Gemini Enterprise のコネクタ** — 認証は「OAuth か認証なし」の2択で、`MCP_AUTH_TOKEN` を渡せません。**OAuth リソースサーバーモード**（`OAUTH_ISSUER` / `OAUTH_RESOURCE` / `OAUTH_JWKS_URI`）を使って実機で確認する。**繋がるかどうかは IdP のクライアント登録方式（Client ID Metadata Documents か動的クライアント登録）と `resource` への対応で決まります。** 同じ条件の ChatGPT は WorkOS AuthKit で確認済みで、手順は `docs/chatgpt.md` にあります
 2. **n8n** — AI Agent ノードの Human review が MCP Client Tool にも適用できるか
 
 ---
