@@ -379,8 +379,10 @@ authorization-code ID tokens, so their absence proves nothing.
 
 This marker used to be required unconditionally. **WorkOS — the IdP that tracks
 the MCP spec most closely — does not stamp `typ: at+jwt`**, so a correctly
-configured deployment 401'd on every request. Demanding a marker where no
-collision is possible was the mistake; the condition now matches reality.
+configured deployment 401'd on every request. Demanding a marker where a
+collision cannot happen — unless this server's URI is registered as a client id
+— was the mistake; the condition now matches reality. See above for what the
+server does when it has been registered that way.
 
 `http://localhost` is for local testing only. When any of the issuer, resource
 or JWKS URL is plaintext http, the server **binds the loopback address
