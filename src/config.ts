@@ -586,7 +586,9 @@ export function getOAuthConfig(): OAuthConfig | null {
   //
   // > 当初はこれを無条件に要求していた。しかし MCP 仕様に最も沿っている WorkOS ですら
   // > `typ: at+jwt` を付けないため、**素直に設定した利用者が全員 401 を踏む**状態だった。
-  // > 衝突しえない構成にまで標識を求めていたのが誤りで、条件を実態に合わせた。
+  // > **その URI をクライアント識別子として登録しない限り衝突しない**構成にまで標識を
+  // > 求めていたのが誤りで、条件を実態に合わせた。登録してしまった場合は
+  // > `aud` の単独一致と `azp` / `client_id` の衝突検査で拾う（→ verifyAccessToken）。
   const audienceOverridden =
     raw.OAUTH_AUDIENCE !== undefined && raw.OAUTH_AUDIENCE !== raw.OAUTH_RESOURCE;
 
@@ -1134,8 +1136,9 @@ export function validateStartupConfig(): string[] {
         warnings.push(
           'アクセストークンと ID トークンを区別する標識を設定していません' +
             '（OAUTH_REQUIRE_AT_JWT / OAUTH_REQUIRED_SCOPE のどちらも未設定）。' +
-            `この構成では aud がこのサーバーの URI（${oauth.audience}）**単独**であることを要求し、` +
-            'aud を複数持つトークンは拒否します（ID トークンの aud は必ずクライアント識別子を含むため）。' +
+            `この構成では、**typ: at+jwt を持たないトークン**について aud がこのサーバーの URI（${oauth.audience}）` +
+            '**単独**であることを要求し、aud を複数持つものは拒否します（ID トークンの aud は必ずクライアント識別子を含むため）。' +
+            '**トークン自身が typ: at+jwt を持っていれば、要求していなくても標識が有るものとして扱い、この検査は行いません。**' +
             '**IdP 側でこの URI をクライアント識別子として登録しないでください。**' +
             'aud が複数あるアクセストークンを使う場合は、OAUTH_REQUIRE_AT_JWT か OAUTH_REQUIRED_SCOPE を設定してください。'
         );
