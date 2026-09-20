@@ -237,6 +237,7 @@ Cloud Run への反映も未実施です（→ 4.1）。**急ぐ理由は無く�
 - **ネットワークの許可リストが狭い。** `*.run.app` も Google の API も入っていないため、**稼働確認の `curl` と `gcloud ... describe` すらサンドボックス内では失敗します**（`curl` は exit 56）
 - プロセス一覧が取れない (`pgrep` / `pkill` / `lsof` が無効)
 - `codex` CLI が起動しない
+- **`npm run build:docs` が無言で失敗する。** PDF 変換に Chrome のヘッドレス起動を使うため、サンドボックス内では `🖨  HTML → PDF...` の行で止まります。**`set -e` の下で Chrome の stderr を捨てているので、コマンドは成功したように見えるのに PDF だけ古いまま**です。作り直したら必ず `ls -la docs/setup-guide.pdf` で日付を確認してください
 
 **サンドボックスで回避できないもの**
 
