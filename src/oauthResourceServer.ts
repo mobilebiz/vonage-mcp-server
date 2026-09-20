@@ -495,14 +495,15 @@ export async function verifyAccessToken(token: string, config: OAuthConfig): Pro
     // 構わない（＝誤検知で塞ぐ構成が無い）。**塞ぎきれるわけではない** —— どちらの
     // claim も必須ではないため、付けない IdP では検出できない。確実にしたいなら
     // `OAUTH_REQUIRE_AT_JWT` か `OAUTH_REQUIRED_SCOPE` を設定すること。
-    const clientId =
-      typeof payload.azp === 'string'
-        ? payload.azp
-        : typeof payload.client_id === 'string'
-          ? payload.client_id
-          : null;
+    // **両方を独立に見る。** `azp` があれば `client_id` を見ない書き方にしていたが、
+    // それでは `azp` が別値・`client_id` が衝突、という組み合わせを取りこぼす
+    // （IdP によっては両方載る）。どちらか一方でも一致したら拒否する。
+    const clientIdClaims = [payload.azp, payload.client_id].filter(
+      (value): value is string => typeof value === 'string'
+    );
+    const clientId = clientIdClaims.find((value) => value === config.audience) ?? null;
 
-    if (clientId !== null && clientId === config.audience) {
+    if (clientId !== null) {
       return {
         ok: false,
         status: 401,

@@ -108,11 +108,14 @@ async function issueToken(
     withoutTypeHeader?: boolean;
     /** OIDC の azp（＝クライアント識別子） */
     azp?: string;
+    /** RFC 9068 の client_id */
+    client_id?: string;
   } = {}
 ): Promise<string> {
   let jwt = new SignJWT({
     ...(claims.scope === undefined ? {} : { scope: claims.scope }),
     ...(claims.azp === undefined ? {} : { azp: claims.azp }),
+    ...(claims.client_id === undefined ? {} : { client_id: claims.client_id }),
   })
     // 既定で RFC 9068 の typ を付ける。本番の既定が「typ を要求する」なので、
     // テストの既定も本物のアクセストークンに合わせる
@@ -926,6 +929,26 @@ describe('アクセストークンの検証', () => {
 
     expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
     expect(result.ok === false && result.description).toContain('クライアント識別子');
+  });
+
+  // azp があれば client_id を見ない書き方にしていて、この組み合わせを取りこぼしていた
+  it('azp が別値でも client_id が audience と同じなら拒否する', async () => {
+    const result = await verifyAccessToken(
+      await issueToken({ azp: 'client-abc123', client_id: RESOURCE, withoutTypeHeader: true }),
+      config({ requireAtJwt: false })
+    );
+
+    expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
+    expect(result.ok === false && result.description).toContain('クライアント識別子');
+  });
+
+  it('client_id だけを持つトークンでも衝突を検出する', async () => {
+    const result = await verifyAccessToken(
+      await issueToken({ client_id: RESOURCE, withoutTypeHeader: true }),
+      config({ requireAtJwt: false })
+    );
+
+    expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
   });
 
   it('azp が別の値なら通る（正当なクライアント）', async () => {
