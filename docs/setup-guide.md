@@ -373,6 +373,7 @@ VONAGE_MCP-4 の「6. 実機確認チェックリスト」を参照してくだ�
 
 1. **Gemini Enterprise のコネクタ** — 認証は「OAuth か認証なし」の2択で、`MCP_AUTH_TOKEN` を渡せません。**OAuth リソースサーバーモード**（`OAUTH_ISSUER` / `OAUTH_RESOURCE` / `OAUTH_JWKS_URI`）を使って実機で確認する。**繋がるかどうかは IdP のクライアント登録方式（Client ID Metadata Documents か動的クライアント登録）と `resource` への対応で決まります。** 同じ条件の ChatGPT は WorkOS AuthKit で確認済みで、手順は `docs/chatgpt.md` にあります
 2. **n8n** — AI Agent ノードの Human review が MCP Client Tool にも適用できるか
+3. **Claude Code** と **Claude.ai / Claude Desktop（リモート）** — README の対応表では 📄（ドキュメント上は対応・未検証）のままです。どちらも任意のヘッダーを設定できるので `MCP_AUTH_TOKEN` で繋がる見込みですが、**実機では確認していません**
 
 ---
 

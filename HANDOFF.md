@@ -29,7 +29,7 @@
 
 **Gemini Enterprise の Agent Apps から、このサーバーのツールを実行できています。** 記録は **VONAGE_MCP-30**、手順は `docs/gemini-enterprise-adk.md` です。採ったのは**経路B（ADK）**で、経路A（コネクタ直結）は保留です（→ D-11）。
 
-他基盤の検証は副次的です。**Dify と AWS AgentCore は 2026-08-31 に完了し、残るのは n8n だけになりました。**
+他基盤の検証は副次的です。**Dify と AWS AgentCore は 2026-08-31 に、ChatGPT は v3.2.0 で完了しました。**未検証（README の凡例で 📄）は **n8n / Claude Code / Claude.ai・Desktop（リモート）/ Gemini Enterprise のコネクタ**の4つです（→ 4.4）。
 
 **トライアルライセンス（`free_trial_gemini`）は 2026-09-24 に切れます。**
 

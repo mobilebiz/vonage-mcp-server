@@ -309,8 +309,11 @@ n8n). End-user surfaces — ChatGPT custom plugins, the Gemini Enterprise connec
 option for a server that spends money.
 
 This server implements the **resource server (RS) role only**. The authorization
-server is out of scope per the specification; bring your own IdP (Auth0, Okta,
-Entra ID, Keycloak, …).
+server is out of scope per the specification, so you bring your own IdP — but
+check it against the two conditions in the table above before you commit to one.
+**Entra ID meets neither, so it cannot serve the ChatGPT or Gemini Enterprise
+connector routes at all**, and Auth0 works only with its Resource Parameter
+Compatibility Profile enabled. WorkOS was the one verified end to end here.
 
 | Variable | Required | Notes |
 | --- | --- | --- |
