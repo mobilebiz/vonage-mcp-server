@@ -417,7 +417,10 @@ events). Walkthrough in [docs/chatgpt.md](docs/chatgpt.md) (Japanese).
 
 That run turned up something no documentation mentions: **WorkOS does not stamp
 `typ: at+jwt` on its access tokens.** Expect other IdPs to behave the same way —
-which is why the three required variables are all you need.
+which is why the three required variables were all this deployment needed. They
+are not always enough: an IdP that skips `typ` *and* issues access tokens
+carrying several audiences needs `OAUTH_REQUIRE_AT_JWT` or
+`OAUTH_REQUIRED_SCOPE` as well (see the marker section above).
 
 The Gemini Enterprise connector uses the same mechanism but has not been tried
 against a live deployment; reports welcome.

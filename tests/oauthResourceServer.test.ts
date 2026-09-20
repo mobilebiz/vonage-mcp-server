@@ -117,8 +117,9 @@ async function issueToken(
     ...(claims.azp === undefined ? {} : { azp: claims.azp }),
     ...(claims.client_id === undefined ? {} : { client_id: claims.client_id }),
   })
-    // 既定で RFC 9068 の typ を付ける。本番の既定が「typ を要求する」なので、
-    // テストの既定も本物のアクセストークンに合わせる
+    // 既定で RFC 9068 の typ を付ける。**本番の既定が要求するからではない**
+    // （v3.2.0 の既定は OAUTH_AUDIENCE を上書きしたときだけ要求する）。
+    // typ を付けるのが本物のアクセストークンの姿なので、テストもそれに合わせる
     .setProtectedHeader({ alg: 'RS256', ...(claims.withoutTypeHeader === true ? {} : { typ: 'at+jwt' }) })
     .setIssuedAt()
     .setIssuer(claims.iss ?? ISSUER)
@@ -862,8 +863,10 @@ describe('アクセストークンの検証', () => {
   });
 
   // at_hash / c_hash は条件付きの claim で、認可コードフローの ID トークンには
-  // 入っていない。「無いこと」は根拠にならないので、既定では typ を要求する
-  it('既定では typ が at+jwt でないトークンを拒否する', async () => {
+  // 入っていない。「無いこと」は根拠にならないので、要求する設定では typ で見分ける。
+  // **ここが検証しているのは `requireAtJwt: true` を明示した構成**（config() の既定値）で、
+  // v3.2.0 の本番の既定ではない（本番は OAUTH_AUDIENCE を上書きしたときだけ true）
+  it('requireAtJwt: true なら typ が at+jwt でないトークンを拒否する', async () => {
     const result = await verifyAccessToken(await issueToken({ withoutTypeHeader: true }), config());
 
     expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
