@@ -162,7 +162,8 @@ describe('OAuth 設定の解釈', () => {
       jwksUri: JWKS_URI,
       scopesSupported: null,
       requiredScope: null,
-      // audience を上書きしていないので、ID トークンとの衝突は起こりえない
+      // audience を上書きしていないので、この URI をクライアント識別子として
+      // 登録していない限り、ID トークンとは衝突しない
       requireAtJwt: false,
       loopbackHttp: false,
       loopbackBindHost: null,
@@ -288,8 +289,9 @@ describe('OAuth 設定の解釈', () => {
   });
 
   // ID トークンとアクセストークンを区別できるものが1つも無い状態で起動させない
-  // ID トークンの aud はクライアント識別子。期待する audience が
-  // OAUTH_RESOURCE のままなら衝突しえないので、標識は要らない
+  // ID トークンの aud はクライアント識別子。期待する audience が OAUTH_RESOURCE の
+  // ままなら、**その URI をクライアント識別子として登録しない限り**衝突しないので、
+  // 起動時には標識を求めない（登録された場合は verifyAccessToken 側で拾う）
   it('audience を上書きしていなければ、標識が無くても通る', () => {
     configure();
 
@@ -328,7 +330,7 @@ describe('OAuth 設定の解釈', () => {
     expect(getOAuthConfig()?.requireAtJwt).toBe(false);
   });
 
-  // 衝突しえない構成でも、厳しくしたい運用者は明示的に要求できる
+  // 上書きしていない構成でも、厳しくしたい運用者は明示的に要求できる
   it('上書きしていなくても、明示すれば typ を要求できる', () => {
     configure({ OAUTH_REQUIRE_AT_JWT: 'true' });
 
