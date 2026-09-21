@@ -204,7 +204,8 @@ curl -s https://$SERVICE-$HASH-an.a.run.app/health
 - **v3.2.0 の3変数構成（標識なし）は、まだ実機で確認していません。** ChatGPT を通したのは v3.1.1 + 標識2つの5変数構成で、**2026-09-21 の v3.2.0 デプロイでも標識2つは残ったままです**（フラグ無しのデプロイは環境変数を引き継ぐため）。確かめるには `--remove-env-vars OAUTH_REQUIRE_AT_JWT,OAUTH_REQUIRED_SCOPE` が要ります（**外すと `OAUTH_REQUIRED_SCOPE=email` による認可の制限も消えます**。手順と注意は 4.6 の警告）
 - **実機検証で残っているのは n8n / Claude Code / Claude.ai・Desktop（リモート）/ Gemini Enterprise のコネクタです。** README の凡例で 📄 は「ドキュメント上は対応（未検証）」を意味し、この4つが 📄 のままです。Dify と AgentCore は 2026-08-31 に、**ChatGPT は 2026-09-11 に**完了し、README も ✅ に更新済み（**ChatGPT を通したのは v3.1.1 + 標識2つの5変数構成**です。v3.2.0 の3変数構成は未確認 → 4.4）
 - **Gemini のトライアル（`free_trial_gemini`）は 2026-09-24 に失効します。2026-09-21 時点で残り3日です。**
-  **ADK 経路は v3.2.0 で再確認済みです**（→ 4.7）。ただし **Apps の画面から承認ウィンドウを経て実送信する経路は未再確認**で、やるなら失効前に
+  **ADK 経路は v3.2.0 で再確認済みです。Apps の画面から承認ウィンドウを経る経路も 2026-09-21 に確認しました**（→ 4.7）。
+  **このトライアルで確かめたいことは残っていません。**
 - **Dify Cloud のワークスペースは稼働中です**（Sandbox プラン / 無料枠200クレジット / Agent アプリ「Vonage MCP test」）。AgentCore 側は削除済み
 - **`MCP_AUTH_TOKEN` の所在は2箇所** — Cloud Run（Secret Manager の `mcp-auth-token`）と Dify のカスタムヘッダー。**ローテーションするなら両方**
 - **dev 依存に脆弱性が11件（うち critical 2件）残っています。** 配布物には入りません（バンドルは本番依存しかインストールしないため）。
