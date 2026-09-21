@@ -332,6 +332,8 @@ export function parseAuthorizationHeader(header: string | string[] | undefined):
  */
 export async function verifyAccessToken(token: string, config: OAuthConfig): Promise<AccessTokenResult> {
   let payload: JWTPayload;
+  /** 検証済みヘッダーの `typ` が RFC 9068 の標識か。**署名の対象なので信用してよい。** */
+  let hasAtJwtTyp = false;
 
   // 「鍵を取りに行って失敗した」のか「トークンが正しくない」のかを、**エラー
   // コードの分類ではなく、どこで落ちたかで**判定する。コードで分類しようとして
@@ -399,6 +401,10 @@ export async function verifyAccessToken(token: string, config: OAuthConfig): Pro
       requiredClaims: ['exp'],
     });
     payload = verified.payload;
+
+    const verifiedTyp =
+      typeof verified.protectedHeader.typ === 'string' ? verified.protectedHeader.typ.toLowerCase() : '';
+    hasAtJwtTyp = verifiedTyp === 'at+jwt' || verifiedTyp === 'application/at+jwt';
   } catch (error: unknown) {
     const code = (error as { code?: string })?.code ?? '';
 
@@ -452,6 +458,74 @@ export async function verifyAccessToken(token: string, config: OAuthConfig): Pro
         'ID トークンをアクセストークンとして使うことはできません。' +
         'このサーバー（OAUTH_RESOURCE）を audience とするアクセストークンを取得してください。',
     };
+  }
+
+  // **標識が無い構成では、`aud` がこのサーバーの URI 単独であることまで要求する。**
+  //
+  // `jwtVerify` の audience 検査は **配列のどれか1つが一致すれば通る**。つまり
+  // `aud: [クライアント識別子, このサーバーの URI]` という ID トークンは、`typ` も
+  // scope も要求していない構成では素通りする。**ログインの同意しかしていない利用者が、
+  // 課金の発生するツールを呼べる。**
+  //
+  // OIDC の ID トークンは **`aud` に必ずクライアント識別子を含む**。したがって `aud`
+  // がこのサーバーの URI **だけ**なら、それが ID トークンでありうるのは「その URI を
+  // クライアント識別子として登録した場合」に限られる —— 起動時の警告が名指ししている、
+  // ただ1つの前提である。単独性まで確かめて初めて、その警告どおりの保証になる。
+  //
+  // 複数 audience のアクセストークンを使う構成では `OAUTH_REQUIRE_AT_JWT` か
+  // `OAUTH_REQUIRED_SCOPE` を設定してもらう。どちらも「これはアクセストークンだ」を
+  // 積極的に示す標識なので、それが有るなら `aud` の単独性まで求める必要はない。
+  //
+  // **「要求していない」と「実際に無い」は別である。** `typ: at+jwt` を**持っている**
+  // トークンは、要求していなくても標識が有る。ここを区別しないと、**IdP が正しく
+  // `typ` を付けている多 audience の構成が、v3.2.0 で突然 401 になる**（以前の既定は
+  // `typ` を要求していたので、同じトークンが通っていた）。`typ` は署名の対象なので、
+  // 検証を通ったあとのヘッダーは信用してよい。
+  if (!config.requireAtJwt && config.requiredScope === null && !hasAtJwtTyp) {
+    const audiences = typeof payload.aud === 'string' ? [payload.aud] : (payload.aud ?? []);
+
+    if (audiences.length !== 1) {
+      return {
+        ok: false,
+        status: 401,
+        error: 'invalid_token',
+        description:
+          `aud を複数持つトークンは、アクセストークンと ID トークンを区別する標識が無い構成では受け付けません（受信: ${audiences.length} 件）。` +
+          'OAUTH_REQUIRE_AT_JWT=true か OAUTH_REQUIRED_SCOPE のどちらかを設定してください。',
+      };
+    }
+
+    // **この URI がクライアント識別子として登録されていないか、トークン自身に訊く。**
+    //
+    // 標識を省ける根拠は「`aud` がこのサーバーの URI 単独なら ID トークンではありえない」
+    // だが、**その URI をクライアント識別子として登録してしまうと根拠ごと崩れる**。
+    // ID トークンの `aud` はクライアント識別子なので、単独一致してしまうからである。
+    // 起動時の警告はそれを「やらないでください」と頼んでいるだけで、**強制できない**。
+    //
+    // `azp` / `client_id` にこのサーバーの audience が入っていれば、まさにその状態が
+    // 起きている。正当なアクセストークンがこの値を名乗ることはないので、拒否して
+    // 構わない（＝誤検知で塞ぐ構成が無い）。**塞ぎきれるわけではない** —— どちらの
+    // claim も必須ではないため、付けない IdP では検出できない。確実にしたいなら
+    // `OAUTH_REQUIRE_AT_JWT` か `OAUTH_REQUIRED_SCOPE` を設定すること。
+    // **両方を独立に見る。** `azp` があれば `client_id` を見ない書き方にしていたが、
+    // それでは `azp` が別値・`client_id` が衝突、という組み合わせを取りこぼす
+    // （IdP によっては両方載る）。どちらか一方でも一致したら拒否する。
+    const clientIdClaims = [payload.azp, payload.client_id].filter(
+      (value): value is string => typeof value === 'string'
+    );
+    const clientId = clientIdClaims.find((value) => value === config.audience) ?? null;
+
+    if (clientId !== null) {
+      return {
+        ok: false,
+        status: 401,
+        error: 'invalid_token',
+        description:
+          `このトークンのクライアント識別子（${clientId}）が、このサーバーの audience と同じです。` +
+          'その URI をクライアント識別子として登録すると、ID トークンとアクセストークンを aud で区別できなくなります。' +
+          'IdP 側で別のクライアント識別子を割り当てるか、OAUTH_REQUIRE_AT_JWT=true か OAUTH_REQUIRED_SCOPE を設定してください。',
+      };
+    }
   }
 
   const scopes = extractScopes(payload);

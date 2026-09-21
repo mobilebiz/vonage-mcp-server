@@ -97,7 +97,7 @@ function configure(overrides: Record<string, string | undefined> = {}): void {
  */
 async function issueToken(
   claims: {
-    aud?: string;
+    aud?: string | string[];
     iss?: string;
     scope?: string;
     expiresIn?: string;
@@ -106,13 +106,20 @@ async function issueToken(
     withoutExpiry?: boolean;
     /** true にすると typ を付けない（ID トークンと見分けが付かないトークン） */
     withoutTypeHeader?: boolean;
+    /** OIDC の azp（＝クライアント識別子） */
+    azp?: string;
+    /** RFC 9068 の client_id */
+    client_id?: string;
   } = {}
 ): Promise<string> {
   let jwt = new SignJWT({
     ...(claims.scope === undefined ? {} : { scope: claims.scope }),
+    ...(claims.azp === undefined ? {} : { azp: claims.azp }),
+    ...(claims.client_id === undefined ? {} : { client_id: claims.client_id }),
   })
-    // 既定で RFC 9068 の typ を付ける。本番の既定が「typ を要求する」なので、
-    // テストの既定も本物のアクセストークンに合わせる
+    // 既定で RFC 9068 の typ を付ける。**本番の既定が要求するからではない**
+    // （v3.2.0 の既定は OAUTH_AUDIENCE を上書きしたときだけ要求する）。
+    // typ を付けるのが本物のアクセストークンの姿なので、テストもそれに合わせる
     .setProtectedHeader({ alg: 'RS256', ...(claims.withoutTypeHeader === true ? {} : { typ: 'at+jwt' }) })
     .setIssuedAt()
     .setIssuer(claims.iss ?? ISSUER)
@@ -156,7 +163,9 @@ describe('OAuth 設定の解釈', () => {
       jwksUri: JWKS_URI,
       scopesSupported: null,
       requiredScope: null,
-      requireAtJwt: true,
+      // audience を上書きしていないので、この URI をクライアント識別子として
+      // 登録していない限り、ID トークンとは衝突しない
+      requireAtJwt: false,
       loopbackHttp: false,
       loopbackBindHost: null,
     });
@@ -281,20 +290,50 @@ describe('OAuth 設定の解釈', () => {
   });
 
   // ID トークンとアクセストークンを区別できるものが1つも無い状態で起動させない
-  it('OAUTH_REQUIRE_AT_JWT=false で OAUTH_REQUIRED_SCOPE が無ければ起動エラー', () => {
-    configure({ OAUTH_REQUIRE_AT_JWT: 'false' });
+  // ID トークンの aud はクライアント識別子。期待する audience が OAUTH_RESOURCE の
+  // ままなら、**その URI をクライアント識別子として登録しない限り**衝突しないので、
+  // 起動時には標識を求めない（登録された場合は verifyAccessToken 側で拾う）
+  it('audience を上書きしていなければ、標識が無くても通る', () => {
+    configure();
 
-    expect(() => getOAuthConfig()).toThrow(ConfigError);
+    const config = getOAuthConfig();
+    expect(config?.requireAtJwt).toBe(false);
+    expect(config?.requiredScope).toBeNull();
   });
 
-  it('OAUTH_REQUIRE_AT_JWT=false でも scope があれば通る', () => {
-    configure({ OAUTH_REQUIRE_AT_JWT: 'false', OAUTH_REQUIRED_SCOPE: 'sms:send' });
+  // MCP 仕様に最も沿っている WorkOS ですら typ を付けない。素直に設定した
+  // 利用者が全員 401 を踏む状態だったので、条件を実態に合わせた
+  it('OAUTH_AUDIENCE が OAUTH_RESOURCE と同じ値なら「上書き」と扱わない', () => {
+    configure({ OAUTH_AUDIENCE: RESOURCE });
 
     expect(getOAuthConfig()?.requireAtJwt).toBe(false);
   });
 
-  it('OAUTH_REQUIRE_AT_JWT の既定は true', () => {
-    configure();
+  it('audience を上書きすると、既定で typ を要求する', () => {
+    configure({ OAUTH_AUDIENCE: 'vonage-mcp-api' });
+
+    expect(getOAuthConfig()?.requireAtJwt).toBe(true);
+  });
+
+  it('audience を上書きして標識を両方外すと起動エラー', () => {
+    configure({ OAUTH_AUDIENCE: 'vonage-mcp-api', OAUTH_REQUIRE_AT_JWT: 'false' });
+
+    expect(() => getOAuthConfig()).toThrow(ConfigError);
+  });
+
+  it('audience を上書きしても、scope があれば typ は要らない', () => {
+    configure({
+      OAUTH_AUDIENCE: 'vonage-mcp-api',
+      OAUTH_REQUIRE_AT_JWT: 'false',
+      OAUTH_REQUIRED_SCOPE: 'sms:send',
+    });
+
+    expect(getOAuthConfig()?.requireAtJwt).toBe(false);
+  });
+
+  // 上書きしていない構成でも、厳しくしたい運用者は明示的に要求できる
+  it('上書きしていなくても、明示すれば typ を要求できる', () => {
+    configure({ OAUTH_REQUIRE_AT_JWT: 'true' });
 
     expect(getOAuthConfig()?.requireAtJwt).toBe(true);
   });
@@ -824,8 +863,10 @@ describe('アクセストークンの検証', () => {
   });
 
   // at_hash / c_hash は条件付きの claim で、認可コードフローの ID トークンには
-  // 入っていない。「無いこと」は根拠にならないので、既定では typ を要求する
-  it('既定では typ が at+jwt でないトークンを拒否する', async () => {
+  // 入っていない。「無いこと」は根拠にならないので、要求する設定では typ で見分ける。
+  // **ここが検証しているのは `requireAtJwt: true` を明示した構成**（config() の既定値）で、
+  // v3.2.0 の本番の既定ではない（本番は OAUTH_AUDIENCE を上書きしたときだけ true）
+  it('requireAtJwt: true なら typ が at+jwt でないトークンを拒否する', async () => {
     const result = await verifyAccessToken(await issueToken({ withoutTypeHeader: true }), config());
 
     expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
@@ -835,6 +876,118 @@ describe('アクセストークンの検証', () => {
     const result = await verifyAccessToken(
       await issueToken({ withoutTypeHeader: true, scope: 'sms:send' }),
       config({ requireAtJwt: false, requiredScope: 'sms:send' })
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  // jwtVerify の audience 検査は「配列のどれか1つが一致すれば通る」。標識が
+  // 無い構成では、クライアント識別子と並べてこのサーバーの URI を載せた
+  // ID トークンが素通りしてしまう（Codex PR #8 P1）
+  it('標識が無い構成では aud を複数持つトークンを拒否する', async () => {
+    const result = await verifyAccessToken(
+      await issueToken({ aud: ['client-abc123', RESOURCE], withoutTypeHeader: true }),
+      config({ requireAtJwt: false })
+    );
+
+    expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
+    expect(result.ok === false && result.description).toContain('aud');
+  });
+
+  it('標識が無くても aud がこのサーバー単独なら通る（配列でも1件なら同じ）', async () => {
+    const result = await verifyAccessToken(
+      await issueToken({ aud: [RESOURCE], withoutTypeHeader: true }),
+      config({ requireAtJwt: false })
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  // 標識が有れば「これはアクセストークンだ」が積極的に示されるので、
+  // aud の単独性まで求める必要はない（複数 audience の運用を壊さない）
+  it('OAUTH_REQUIRE_AT_JWT=true なら aud が複数でも通る', async () => {
+    const result = await verifyAccessToken(
+      await issueToken({ aud: ['https://other.example.com', RESOURCE] }),
+      config()
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('OAUTH_REQUIRED_SCOPE が有れば aud が複数でも通る', async () => {
+    const result = await verifyAccessToken(
+      await issueToken({ aud: ['https://other.example.com', RESOURCE], scope: 'sms:send', withoutTypeHeader: true }),
+      config({ requireAtJwt: false, requiredScope: 'sms:send' })
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  // 標識を省ける根拠は「aud がこのサーバーの URI 単独なら ID トークンではありえない」
+  // だが、その URI をクライアント識別子として登録されると根拠ごと崩れる。起動時の
+  // 警告では強制できないので、トークン自身にも訊く（Codex PR #8 P1 の再提起）
+  it('標識が無い構成では azp がこのサーバーの audience と同じトークンを拒否する', async () => {
+    const result = await verifyAccessToken(
+      await issueToken({ azp: RESOURCE, withoutTypeHeader: true }),
+      config({ requireAtJwt: false })
+    );
+
+    expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
+    expect(result.ok === false && result.description).toContain('クライアント識別子');
+  });
+
+  // azp があれば client_id を見ない書き方にしていて、この組み合わせを取りこぼしていた
+  it('azp が別値でも client_id が audience と同じなら拒否する', async () => {
+    const result = await verifyAccessToken(
+      await issueToken({ azp: 'client-abc123', client_id: RESOURCE, withoutTypeHeader: true }),
+      config({ requireAtJwt: false })
+    );
+
+    expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
+    expect(result.ok === false && result.description).toContain('クライアント識別子');
+  });
+
+  it('client_id だけを持つトークンでも衝突を検出する', async () => {
+    const result = await verifyAccessToken(
+      await issueToken({ client_id: RESOURCE, withoutTypeHeader: true }),
+      config({ requireAtJwt: false })
+    );
+
+    expect(result).toMatchObject({ ok: false, status: 401, error: 'invalid_token' });
+  });
+
+  it('azp が別の値なら通る（正当なクライアント）', async () => {
+    const result = await verifyAccessToken(
+      await issueToken({ azp: 'client-abc123', withoutTypeHeader: true }),
+      config({ requireAtJwt: false })
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  // 標識が有るなら「これはアクセストークンだ」が示されているので、この検査は要らない
+  it('OAUTH_REQUIRE_AT_JWT=true なら azp が audience と同じでも通る', async () => {
+    const result = await verifyAccessToken(await issueToken({ azp: RESOURCE }), config());
+
+    expect(result.ok).toBe(true);
+  });
+
+  // 「要求していない」と「実際に無い」は別。typ を持っているトークンは、要求して
+  // いなくても標識が有る。ここを区別しないと、IdP が正しく typ を付けている
+  // 多 audience の構成が v3.2.0 で突然 401 になる（Codex PR #8 P2）
+  it('typ が at+jwt なら、要求していなくても aud 複数を通す', async () => {
+    const result = await verifyAccessToken(
+      await issueToken({ aud: ['https://other.example.com', RESOURCE] }),
+      config({ requireAtJwt: false })
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('typ が at+jwt なら、要求していなくても azp の衝突検査を飛ばす', async () => {
+    const result = await verifyAccessToken(
+      await issueToken({ azp: RESOURCE }),
+      config({ requireAtJwt: false })
     );
 
     expect(result.ok).toBe(true);
