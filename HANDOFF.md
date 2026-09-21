@@ -29,7 +29,7 @@
 
 **Gemini Enterprise の Agent Apps から、このサーバーのツールを実行できています。** 記録は **VONAGE_MCP-30**、手順は `docs/gemini-enterprise-adk.md` です。採ったのは**経路B（ADK）**で、経路A（コネクタ直結）は保留です（→ D-11）。
 
-他基盤の検証は副次的です。**Dify と AWS AgentCore は 2026-08-31 に、ChatGPT は v3.2.0 で完了しました。**未検証（README の凡例で 📄）は **n8n / Claude Code / Claude.ai・Desktop（リモート）/ Gemini Enterprise のコネクタ**の4つです（→ 4.4）。
+他基盤の検証は副次的です。**Dify と AWS AgentCore は 2026-08-31 に、ChatGPT は 2026-09-11 に完了しました**（ChatGPT は v3.1.1 の5変数構成で。記録は v3.2.0）。未検証（README の凡例で 📄）は **n8n / Claude Code / Claude.ai・Desktop（リモート）/ Gemini Enterprise のコネクタ**の4つです（→ 4.4）。
 
 **トライアルライセンス（`free_trial_gemini`）は 2026-09-24 に切れます。**
 
@@ -46,7 +46,7 @@
 | GitHub Release (Latest) | **v3.1.1**（2026-09-09）。**v3.2.0 のタグと Release はまだ作っていません** → 4.6 |
 | Cloud Run | **リビジョン `00047-rn7` = v3.1.1**（2026-09-20、`ALLOWED_NUMBERS` 追加の環境変数更新）。`/health` が `3.1.1` を返すことを確認済み。**v3.2.0 はまだ反映していません** |
 
-**実機検証 — README の対応プラットフォーム表で ✅ は6行**（v3.2.0 で ChatGPT が加わりました）。**📄（未検証）は4行**: n8n / Claude Code / Claude.ai・Desktop（リモート）/ Gemini Enterprise のコネクタ（経路A は D-11 の判断待ち）。
+**実機検証 — README の対応プラットフォーム表で ✅ は6行**（v3.2.0 で ChatGPT が加わりました。**通したのは v3.1.1 の5変数構成**）。**📄（未検証）は4行**: n8n / Claude Code / Claude.ai・Desktop（リモート）/ Gemini Enterprise のコネクタ（経路A は D-11 の判断待ち）。
 
 | 経路 | 状態 |
 |---|---|
@@ -58,7 +58,7 @@
 | **AWS AgentCore Gateway** | ✅ **2026-08-31（`ap-northeast-1`）。** エージェントが自分でツールを選んで実送信・実発信。**検証リソースは課金対象のため全削除済み** |
 | CSV一括送信 | ❌ **v3.0.0 で廃止**（D-12 / VONAGE_MCP-32） |
 | n8n | ⬜ 未実施 |
-| ChatGPT（カスタムプラグイン / コネクタ） | ✅ **WorkOS AuthKit で実機確認済み**（discovery → 認可 → 実 SMS と DLR → 実発信とイベント）。手順は `docs/chatgpt.md` |
+| ChatGPT（カスタムプラグイン / コネクタ） | ✅ **WorkOS AuthKit で実機確認済み**（2026-09-11。discovery → 認可 → 実 SMS と DLR → 実発信とイベント）。**通したのは v3.1.1 + 標識2つの5変数構成**で、v3.2.0 の3変数構成は未確認（→ 4.6）。手順は `docs/chatgpt.md` |
 | Gemini Enterprise（コネクタ / 経路A） | 🔨 同上。**同じ実装で開きます**（D-11 の再判断が必要） |
 
 **未追跡ファイル1件** (意図的):
@@ -200,7 +200,7 @@ curl -s https://$SERVICE-$HASH-an.a.run.app/health
 
 ### 4.4 残っている確認事項
 
-- **実機検証で残っているのは n8n / Claude Code / Claude.ai・Desktop（リモート）/ Gemini Enterprise のコネクタです。** README の凡例で 📄 は「ドキュメント上は対応（未検証）」を意味し、この4つが 📄 のままです。Dify と AgentCore は 2026-08-31 に、ChatGPT は v3.2.0 で完了し、README も ✅ に更新済み
+- **実機検証で残っているのは n8n / Claude Code / Claude.ai・Desktop（リモート）/ Gemini Enterprise のコネクタです。** README の凡例で 📄 は「ドキュメント上は対応（未検証）」を意味し、この4つが 📄 のままです。Dify と AgentCore は 2026-08-31 に、**ChatGPT は 2026-09-11 に**完了し、README も ✅ に更新済み（**ChatGPT を通したのは v3.1.1 + 標識2つの5変数構成**です。v3.2.0 の3変数構成は未確認 → 4.6）
 - **Gemini のトライアル（`free_trial_gemini`）は 2026-09-24 に失効します。本日 2026-09-20 時点で残り4日です。** ADK 経路を再確認するならその前に
 - **Dify Cloud のワークスペースは稼働中です**（Sandbox プラン / 無料枠200クレジット / Agent アプリ「Vonage MCP test」）。AgentCore 側は削除済み
 - **`MCP_AUTH_TOKEN` の所在は2箇所** — Cloud Run（Secret Manager の `mcp-auth-token`）と Dify のカスタムヘッダー。**ローテーションするなら両方**
