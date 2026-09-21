@@ -44,7 +44,7 @@
 | テスト | **549 passed** |
 | 本番依存の脆弱性 | **0 件**（`fast-uri` / `qs` を #5、`hono` を #7 で解消） |
 | GitHub Release (Latest) | **v3.2.0**（2026-09-21）。**Release からダウンロードした MCPB の4項目が `3.2.0`**（`manifest.json` / `package.json` / `node_modules/.package-lock.json` / `SERVER_VERSION`）。**MCPB そのものが「5か所目」です**（→ 4.5） |
-| Cloud Run | **リビジョン `00048-ksp` = v3.2.0**（2026-09-21 デプロイ）。`/health` が `3.2.0` を返し、`/.well-known/oauth-protected-resource` が **200** を返すことを確認済み。**対応不要** |
+| Cloud Run | **リビジョン `00048-ksp` = v3.2.0**（2026-09-21 デプロイ）。`/health` が `3.2.0`、`/.well-known/oauth-protected-resource` が **200**。**実送信まで確認済み**（→ 4.7）。**対応不要** |
 
 **実機検証 — README の対応プラットフォーム表で ✅ は6行**（v3.2.0 で ChatGPT が加わりました。**通したのは v3.1.1 の5変数構成**）。**📄（未検証）は4行**: n8n / Claude Code / Claude.ai・Desktop（リモート）/ Gemini Enterprise のコネクタ（経路A は D-11 の判断待ち）。
 
@@ -203,7 +203,8 @@ curl -s https://$SERVICE-$HASH-an.a.run.app/health
 
 - **v3.2.0 の3変数構成（標識なし）は、まだ実機で確認していません。** ChatGPT を通したのは v3.1.1 + 標識2つの5変数構成で、**2026-09-21 の v3.2.0 デプロイでも標識2つは残ったままです**（フラグ無しのデプロイは環境変数を引き継ぐため）。確かめるには `--remove-env-vars OAUTH_REQUIRE_AT_JWT,OAUTH_REQUIRED_SCOPE` が要ります（**外すと `OAUTH_REQUIRED_SCOPE=email` による認可の制限も消えます**。手順と注意は 4.6 の警告）
 - **実機検証で残っているのは n8n / Claude Code / Claude.ai・Desktop（リモート）/ Gemini Enterprise のコネクタです。** README の凡例で 📄 は「ドキュメント上は対応（未検証）」を意味し、この4つが 📄 のままです。Dify と AgentCore は 2026-08-31 に、**ChatGPT は 2026-09-11 に**完了し、README も ✅ に更新済み（**ChatGPT を通したのは v3.1.1 + 標識2つの5変数構成**です。v3.2.0 の3変数構成は未確認 → 4.4）
-- **Gemini のトライアル（`free_trial_gemini`）は 2026-09-24 に失効します。2026-09-21 時点で残り3日です。** ADK 経路を再確認するならその前に
+- **Gemini のトライアル（`free_trial_gemini`）は 2026-09-24 に失効します。2026-09-21 時点で残り3日です。**
+  **ADK 経路は v3.2.0 で再確認済みです**（→ 4.7）。ただし **Apps の画面から承認ウィンドウを経て実送信する経路は未再確認**で、やるなら失効前に
 - **Dify Cloud のワークスペースは稼働中です**（Sandbox プラン / 無料枠200クレジット / Agent アプリ「Vonage MCP test」）。AgentCore 側は削除済み
 - **`MCP_AUTH_TOKEN` の所在は2箇所** — Cloud Run（Secret Manager の `mcp-auth-token`）と Dify のカスタムヘッダー。**ローテーションするなら両方**
 - **dev 依存に脆弱性が11件（うち critical 2件）残っています。** 配布物には入りません（バンドルは本番依存しかインストールしないため）。
@@ -247,6 +248,41 @@ Release からダウンロードした MCPB で、**ソース4か所**（同梱 
 >
 > **外すと認可の条件も変わります。** `OAUTH_REQUIRED_SCOPE=email` は「scope email を持つトークンだけ通す」
 > という制限でもあるので、外せばその制限が無くなります。**確認が済んだら戻すか、外したままにするかを決めてください。**
+
+### 4.7 本番の疎通確認 — **2026-09-21 に実施**
+
+**v3.2.0 の本番で、SMS の実送信と配信通知まで通りました。**
+
+| 経路 | 結果 |
+|---|---|
+| `tools/list`（静的 Bearer） | `send_sms` / `make_voice_call` / `get_call_status` / `get_sms_status` の4つ |
+| `send_sms` の `dry_run` | `+8180xxxxxxxx` に正規化（国内形式 `0` 始まりから）、`ALLOWED_NUMBERS` を通過、UCS-2 / 1セグメント |
+| **実送信** | 成功。**端末に着信** |
+| `get_sms_status` | **`delivered`**（Status Webhook が v3.2.0 でも生きている） |
+| **ADK 経路**（Agent Engine 直接呼び出し） | **`function_call` → `function_response` まで確認。** 引数名は `message` でスキーマと一致 |
+| **Apps の画面**（承認ウィンドウ経由） | **`dry_run` → 承認ウィンドウ → 実送信 → `delivered` まで確認**（下記） |
+
+**`OAUTH_*` と `MCP_AUTH_TOKEN` が両方設定された構成で、静的 Bearer が通ることも実機で確かめました**
+（`src/http-server.ts` は静的トークンを先に見る作りで、その意図どおりでした）。
+
+> **ADK は「呼んでください」と明示しないとツールを呼ばないことがあります。** 「dry_run で検証だけして、
+> 実際には送信しないで」と頼んだ1回目は、**ツールを呼ばずに `tool_code` のテキストを書いて終わりました**
+> （しかも引数名が `text=` で、このサーバーのスキーマと違う）。`docs/gemini-enterprise-adk.md` の
+> 「画面の `tool_code` を承認の根拠にするな」が、そのまま再現した形です。**判断は `function_response` で行うこと。**
+
+**Apps の画面からも確認しました（2026-09-21）。** プレビュー → `@` でエージェントを指名 → 依頼 → `dry_run` の提示 →
+「はい」→ **承認ウィンドウ** → 送信 → 端末に着信 → `get_sms_status` が `delivered`。
+**読み取り専用ツール（`get_sms_status`）は承認ウィンドウ無しで即実行**されました（1秒）。
+
+> **承認ウィンドウは信用してよい情報源です。** `Action Name` / `To` / `Message` を**編集可能なフォームとして**見せ、
+> その値がそのままツールに渡ります。**チャット本文に出る `tool_code` とは別物**で、そちらは当てになりません（→ `docs/gemini-enterprise-adk.md`）。
+> なお `dry_run` の段階でもチャットには `Send Sms ✓` というステップが出ますが、**引数と戻り値は展開できません。**
+> 「ツールが動いた」ことは分かっても「何を渡したか」は画面からは分からない、ということです。
+
+**確認に使ったスクリプトは残していません**（セッションのスクラッチパッドに置いたため）。
+やり方は `/mcp` に `Authorization: Bearer <MCP_AUTH_TOKEN>` を付けて JSON-RPC を投げるだけです。
+Agent Engine 側は `POST https://us-central1-aiplatform.googleapis.com/v1/<エンジン>:streamQuery?alt=sse` に
+`{"class_method":"stream_query","input":{"user_id":"...","message":"..."}}` を送ります。
 
 ## 5. 環境の癖 — ここで詰まりやすい
 
