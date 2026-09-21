@@ -280,10 +280,24 @@ Release からダウンロードした MCPB で、**ソース4か所**（同梱 
 > なお `dry_run` の段階でもチャットには `Send Sms ✓` というステップが出ますが、**引数と戻り値は展開できません。**
 > 「ツールが動いた」ことは分かっても「何を渡したか」は画面からは分からない、ということです。
 
-**確認に使ったスクリプトは残していません**（セッションのスクラッチパッドに置いたため）。
-やり方は `/mcp` に `Authorization: Bearer <MCP_AUTH_TOKEN>` を付けて JSON-RPC を投げるだけです。
+**確認に使ったスクリプトは残していません**（セッションのスクラッチパッドに置いたため）。やり方は次のとおりです。
+
+```sh
+TOKEN=$(gcloud secrets versions access latest --secret=mcp-auth-token --project=$PROJECT_ID)
+curl -s -X POST "https://$SERVICE-$HASH-an.a.run.app/mcp" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+> **`Accept: application/json, text/event-stream` は必須です。** 省くと Streamable HTTP の
+> トランスポートが **406** を返します（`tests/http-server.test.ts` がこのヘッダーで固定しています）。
+> `Content-Type: application/json` も要ります。動く形は `docs/deployment.md` にもあります。
+
 Agent Engine 側は `POST https://us-central1-aiplatform.googleapis.com/v1/<エンジン>:streamQuery?alt=sse` に
-`{"class_method":"stream_query","input":{"user_id":"...","message":"..."}}` を送ります。
+`{"class_method":"stream_query","input":{"user_id":"...","message":"..."}}` を送ります（こちらは
+`gcloud auth print-access-token` の Bearer で通ります）。
 
 ## 5. 環境の癖 — ここで詰まりやすい
 
