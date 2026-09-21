@@ -43,7 +43,7 @@
 | 未マージの PR | **なし** |
 | テスト | **549 passed** |
 | 本番依存の脆弱性 | **0 件**（`fast-uri` / `qs` を #5、`hono` を #7 で解消） |
-| GitHub Release (Latest) | **v3.1.1**（2026-09-09）。**v3.2.0 のタグと Release はまだ作っていません** → 4.6 |
+| GitHub Release (Latest) | **v3.2.0**（2026-09-21）。**Release からダウンロードした MCPB で5か所すべてのバージョンを確認済み** |
 | Cloud Run | **リビジョン `00047-rn7` = v3.1.1**（2026-09-20、`ALLOWED_NUMBERS` 追加の環境変数更新）。`/health` が `3.1.1` を返すことを確認済み。**v3.2.0 はまだ反映していません** |
 
 **実機検証 — README の対応プラットフォーム表で ✅ は6行**（v3.2.0 で ChatGPT が加わりました。**通したのは v3.1.1 の5変数構成**）。**📄（未検証）は4行**: n8n / Claude Code / Claude.ai・Desktop（リモート）/ Gemini Enterprise のコネクタ（経路A は D-11 の判断待ち）。
@@ -219,17 +219,17 @@ curl -s https://$SERVICE-$HASH-an.a.run.app/health
 > **v3.1.0 は自分を `3.0.0` と名乗っていました。** `SERVER_VERSION` は手書きの定数で `package.json` を読んでおらず、
 > バンプから取り残されていました。v3.1.1 で修正し、**5か所のずれをテストで縛りました**（`tests/mcpServer.test.ts`）。
 
-### 4.6 v3.2.0 のリリース — **未実施**
+### 4.6 v3.2.0 のリリース — **2026-09-21 に完了しました**
 
-**PR #8 をマージした時点では、タグも GitHub Release も作っていません。** `package.json` / `manifest.json` は
-`3.2.0` を名乗り、`vonage-mcp-server.mcpb` も v3.2.0 の中身で再ビルド済みです。残っているのは:
+タグ `v3.2.0`（`487b637`）/ GitHub Release / MCPB と PDF の添付まで済んでいます。
+**Release から実際にダウンロードした MCPB で確認済み**です:
 
-- タグ `v3.2.0` を打つ
-- **先に `docs/setup-guide.md` を確認してから** `npm run build:docs` で PDF を作り直す（v3.2.0 で副題と残作業リストを直しました）
-- GitHub Release を作り、**MCPB と PDF を添付する**（手順は → 9）
-- **リリース後に Release からダウンロードした MCPB で、バージョンを名乗る5か所を確認する**（v3.1.0 の事故があるため。→ 4.5）
+- バージョンを名乗る4か所すべてが `3.2.0`（`manifest.json` / `package.json` / `node_modules/.package-lock.json` / `dist/mcpServer.js` の `SERVER_VERSION`）
+- v3.2.0 の実装が入っている（`audiences.length !== 1` / `clientIdClaims` / `hasAtJwtTyp`）
+- 同梱 README の Auth0 行が新しい
+- PDF が `v3.2.0 対応` / `2026-09-20`
 
-Cloud Run への反映も未実施です（→ 4.1）。**急ぐ理由は無く、v3.1.1 が動いていて実害はありません。**
+**残っているのは Cloud Run への反映だけです（→ 4.1）。急ぐ理由は無く、v3.1.1 が動いていて実害はありません。**
 
 > [!WARNING]
 > **3変数構成を実機で確かめるつもりなら、標識の2つを外す必要があります。** 現在の Cloud Run には
