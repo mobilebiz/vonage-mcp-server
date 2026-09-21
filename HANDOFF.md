@@ -58,7 +58,7 @@
 | **AWS AgentCore Gateway** | ✅ **2026-08-31（`ap-northeast-1`）。** エージェントが自分でツールを選んで実送信・実発信。**検証リソースは課金対象のため全削除済み** |
 | CSV一括送信 | ❌ **v3.0.0 で廃止**（D-12 / VONAGE_MCP-32） |
 | n8n | ⬜ 未実施 |
-| ChatGPT（カスタムプラグイン / コネクタ） | ✅ **WorkOS AuthKit で実機確認済み**（2026-09-11。discovery → 認可 → 実 SMS と DLR → 実発信とイベント）。**通したのは v3.1.1 + 標識2つの5変数構成**で、v3.2.0 の3変数構成は未確認（→ 4.6）。手順は `docs/chatgpt.md` |
+| ChatGPT（カスタムプラグイン / コネクタ） | ✅ **WorkOS AuthKit で実機確認済み**（2026-09-11。discovery → 認可 → 実 SMS と DLR → 実発信とイベント）。**通したのは v3.1.1 + 標識2つの5変数構成**で、v3.2.0 の3変数構成は未確認（→ 4.4）。手順は `docs/chatgpt.md` |
 | Gemini Enterprise（コネクタ / 経路A） | 🔨 同上。**同じ実装で開きます**（D-11 の再判断が必要） |
 
 **未追跡ファイル1件** (意図的):
@@ -99,7 +99,8 @@ OAUTH_REQUIRE_AT_JWT=false / OAUTH_REQUIRED_SCOPE=email
 **`OAUTH_REQUIRE_AT_JWT=false` と `OAUTH_REQUIRED_SCOPE=email` が入っているのは、v3.1.1 が標識を無条件に要求していたからです。**
 WorkOS は `typ: at+jwt` を付けないので、この2つを足さないと全リクエストが 401 になりました。
 **2026-09-11 の実機確認はこの5変数の構成で通しています。** v3.2.0 では必須3つだけでも動くようになりましたが、
-**その3変数構成は実機では未確認**です（→ 4.6 でデプロイするときに確認するとよい）。
+**その3変数構成は実機では未確認**です。**2026-09-21 の v3.2.0 デプロイはフラグ無しで行ったため、標識2つはそのまま残っています。**
+確かめるには標識を外す操作が別途必要です（→ 4.4 / 手順は 4.6 の警告）。
 
 **issuer は AuthKit の staging です。** 本番運用に移すときは差し替えが要ります。
 `/.well-known/oauth-protected-resource` が **200 を返すことを 2026-09-21 に確認しました**（それまで未確認でした）。
@@ -200,7 +201,8 @@ curl -s https://$SERVICE-$HASH-an.a.run.app/health
 
 ### 4.4 残っている確認事項
 
-- **実機検証で残っているのは n8n / Claude Code / Claude.ai・Desktop（リモート）/ Gemini Enterprise のコネクタです。** README の凡例で 📄 は「ドキュメント上は対応（未検証）」を意味し、この4つが 📄 のままです。Dify と AgentCore は 2026-08-31 に、**ChatGPT は 2026-09-11 に**完了し、README も ✅ に更新済み（**ChatGPT を通したのは v3.1.1 + 標識2つの5変数構成**です。v3.2.0 の3変数構成は未確認 → 4.6）
+- **v3.2.0 の3変数構成（標識なし）は、まだ実機で確認していません。** ChatGPT を通したのは v3.1.1 + 標識2つの5変数構成で、**2026-09-21 の v3.2.0 デプロイでも標識2つは残ったままです**（フラグ無しのデプロイは環境変数を引き継ぐため）。確かめるには `--remove-env-vars OAUTH_REQUIRE_AT_JWT,OAUTH_REQUIRED_SCOPE` が要ります（**外すと `OAUTH_REQUIRED_SCOPE=email` による認可の制限も消えます**。手順と注意は 4.6 の警告）
+- **実機検証で残っているのは n8n / Claude Code / Claude.ai・Desktop（リモート）/ Gemini Enterprise のコネクタです。** README の凡例で 📄 は「ドキュメント上は対応（未検証）」を意味し、この4つが 📄 のままです。Dify と AgentCore は 2026-08-31 に、**ChatGPT は 2026-09-11 に**完了し、README も ✅ に更新済み（**ChatGPT を通したのは v3.1.1 + 標識2つの5変数構成**です。v3.2.0 の3変数構成は未確認 → 4.4）
 - **Gemini のトライアル（`free_trial_gemini`）は 2026-09-24 に失効します。本日 2026-09-20 時点で残り4日です。** ADK 経路を再確認するならその前に
 - **Dify Cloud のワークスペースは稼働中です**（Sandbox プラン / 無料枠200クレジット / Agent アプリ「Vonage MCP test」）。AgentCore 側は削除済み
 - **`MCP_AUTH_TOKEN` の所在は2箇所** — Cloud Run（Secret Manager の `mcp-auth-token`）と Dify のカスタムヘッダー。**ローテーションするなら両方**
