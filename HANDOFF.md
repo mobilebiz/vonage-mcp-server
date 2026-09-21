@@ -43,8 +43,8 @@
 | 未マージの PR | **なし** |
 | テスト | **549 passed** |
 | 本番依存の脆弱性 | **0 件**（`fast-uri` / `qs` を #5、`hono` を #7 で解消） |
-| GitHub Release (Latest) | **v3.2.0**（2026-09-21）。**Release からダウンロードした MCPB で5か所すべてのバージョンを確認済み** |
-| Cloud Run | **リビジョン `00047-rn7` = v3.1.1**（2026-09-20、`ALLOWED_NUMBERS` 追加の環境変数更新）。`/health` が `3.1.1` を返すことを確認済み。**v3.2.0 はまだ反映していません** |
+| GitHub Release (Latest) | **v3.2.0**（2026-09-21）。**Release からダウンロードした MCPB の4項目が `3.2.0`**（`manifest.json` / `package.json` / `node_modules/.package-lock.json` / `SERVER_VERSION`）。**MCPB そのものが「5か所目」です**（→ 4.5） |
+| Cloud Run | **リビジョン `00048-ksp` = v3.2.0**（2026-09-21 デプロイ）。`/health` が `3.2.0` を返し、`/.well-known/oauth-protected-resource` が **200** を返すことを確認済み。**対応不要** |
 
 **実機検証 — README の対応プラットフォーム表で ✅ は6行**（v3.2.0 で ChatGPT が加わりました。**通したのは v3.1.1 の5変数構成**）。**📄（未検証）は4行**: n8n / Claude Code / Claude.ai・Desktop（リモート）/ Gemini Enterprise のコネクタ（経路A は D-11 の判断待ち）。
 
@@ -70,15 +70,15 @@
 
 ## 4. 次にやること
 
-### 4.1 Cloud Run — **対応は不要です**（最終更新 2026-09-20: `ALLOWED_NUMBERS` に1件追加）
+### 4.1 Cloud Run — **対応は不要です**（最終更新 2026-09-21: v3.2.0 をデプロイ）
 
-稼働中は **`00047-rn7` = v3.1.1**（トラフィック100%、`maxScale=1`）。
+稼働中は **`00048-ksp` = v3.2.0**（トラフィック100%、`maxScale=1`）。
 
 ```
 https://$SERVICE-$HASH-an.a.run.app
 （新形式 https://$SERVICE-$PROJECT_NUMBER.asia-northeast1.run.app も同じ実体）
-プロジェクト $PROJECT_ID / asia-northeast1 / リビジョン 00047-rn7
-/health → {"status":"ok","connected":true,"version":"3.1.1"}  ← 2026-09-20 に 00047-rn7 で再確認
+プロジェクト $PROJECT_ID / asia-northeast1 / リビジョン 00048-ksp
+/health → {"status":"ok","connected":true,"version":"3.2.0"}  ← 2026-09-21 に 00048-ksp で確認
 ENABLE_SMS=true / ENABLE_VOICE=true / RATE_LIMIT_PER_HOUR=10
 ALLOWED_NUMBERS=+8190xxxxxxxx,+8136xxxxxxx,+8180xxxxxxxx（3件）/ VONAGE_VOICE_FROM=813xxxxxxxx
 ```
@@ -102,7 +102,7 @@ WorkOS は `typ: at+jwt` を付けないので、この2つを足さないと全
 **その3変数構成は実機では未確認**です（→ 4.6 でデプロイするときに確認するとよい）。
 
 **issuer は AuthKit の staging です。** 本番運用に移すときは差し替えが要ります。
-`OAUTH_*` が入っている以上 `/.well-known/oauth-protected-resource` は 200 を返すはずですが、**実機では未確認**です。
+`/.well-known/oauth-protected-resource` が **200 を返すことを 2026-09-21 に確認しました**（それまで未確認でした）。
 
 > 環境変数に `ENABLE_BULK_SMS=false` が残っています。v3.0.0 以降は未知の変数として無視されるだけなので、
 > 整理したい場合のみ**次回のデプロイ時に** `--remove-env-vars ENABLE_BULK_SMS,BULK_MAX_ROWS` を足してください。
@@ -196,7 +196,7 @@ curl -s https://$SERVICE-$HASH-an.a.run.app/health
 1. ~~**実機検証**~~ → **完了**（2026-09-11。記録は v3.2.0）。ChatGPT のプラグイン画面から WorkOS AuthKit 経由で接続し、discovery → 認可 → 実 SMS と DLR → 実発信とイベントまで通しました。手順は `docs/chatgpt.md`
 2. ~~**IdP の選定**~~ → **WorkOS に決着**。繋がるかどうかは **IdP のクライアント登録方式**（Client ID Metadata Documents か DCR）と **`resource` への対応**で決まります。WorkOS は CIMD にネイティブ対応していて無料枠で足ります。**Entra ID は満たしません。Auth0 は Resource Parameter Compatibility Profile を有効にすれば使えます**（README の表を参照）
 3. **D-11 の再判断**（VONAGE_MCP-1）と、VONAGE_MCP-2 の §3.3 / 4.4 への反映。**実装記録は VONAGE_MCP-33 に作成済み**。**ここが実質的な残作業です**
-4. **v3.2.0 のタグと GitHub Release**（→ **4.6**）
+4. ~~**v3.2.0 のタグと GitHub Release**~~ → **2026-09-21 に完了**（→ 4.6）
 
 ### 4.4 残っている確認事項
 
@@ -212,9 +212,11 @@ curl -s https://$SERVICE-$HASH-an.a.run.app/health
 
 ### 4.5 v3.1.0 / v3.1.1 のリリース — **完了しました**
 
-**v3.1.1 が Latest**（2026-09-09）。Release からダウンロードした MCPB で、**バージョンを名乗る5か所すべて**
-（同梱 `manifest.json` / `package.json` / 生成された `node_modules/.package-lock.json` / コンパイル済み `SERVER_VERSION`）が
-`3.1.1` であること、`hono` が 4.13.7 であることを確認済みです。
+**当時 v3.1.1 が Latest でした**（2026-09-09）。**現在の Latest は v3.2.0 です**（→ 4.6）。
+Release からダウンロードした MCPB で、**ソース4か所**（同梱 `manifest.json` / `package.json` /
+生成された `node_modules/.package-lock.json` / コンパイル済み `SERVER_VERSION`）が `3.1.1` であること、
+`hono` が 4.13.7 であることを確認済みです。**5か所目は MCPB そのもの**で、ソースを直しても作り直さなければ
+利用者には旧版が配られます（`tests/mcpServer.test.ts` の冒頭にそう書いてあります）。
 
 > **v3.1.0 は自分を `3.0.0` と名乗っていました。** `SERVER_VERSION` は手書きの定数で `package.json` を読んでおらず、
 > バンプから取り残されていました。v3.1.1 で修正し、**5か所のずれをテストで縛りました**（`tests/mcpServer.test.ts`）。
@@ -224,12 +226,12 @@ curl -s https://$SERVICE-$HASH-an.a.run.app/health
 タグ `v3.2.0`（`487b637`）/ GitHub Release / MCPB と PDF の添付まで済んでいます。
 **Release から実際にダウンロードした MCPB で確認済み**です:
 
-- バージョンを名乗る4か所すべてが `3.2.0`（`manifest.json` / `package.json` / `node_modules/.package-lock.json` / `dist/mcpServer.js` の `SERVER_VERSION`）
+- **MCPB の中の4項目**すべてが `3.2.0`（`manifest.json` / `package.json` / `node_modules/.package-lock.json` / `dist/mcpServer.js` の `SERVER_VERSION`）。**MCPB そのものが5か所目**で、それを Release から取り直して確かめたのがこの確認です
 - v3.2.0 の実装が入っている（`audiences.length !== 1` / `clientIdClaims` / `hasAtJwtTyp`）
 - 同梱 README の Auth0 行が新しい
 - PDF が `v3.2.0 対応` / `2026-09-20`
 
-**残っているのは Cloud Run への反映だけです（→ 4.1）。急ぐ理由は無く、v3.1.1 が動いていて実害はありません。**
+**Cloud Run への反映も 2026-09-21 に完了しました（→ 4.1）。リビジョン `00048-ksp`、`/health` は `3.2.0` です。**
 
 > [!WARNING]
 > **3変数構成を実機で確かめるつもりなら、標識の2つを外す必要があります。** 現在の Cloud Run には
